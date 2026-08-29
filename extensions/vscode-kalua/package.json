@@ -1,0 +1,94 @@
+{
+  "name": "vscode-kalua",
+  "displayName": "KALUA",
+  "description": "KALUA language support: completion, hover, go-to-definition and inline diagnostics for Kalipso-style Lua web apps.",
+  "version": "0.1.0",
+  "publisher": "MichalHerstus",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MichalHerstus/kalua.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "lua",
+    "kalipso",
+    "kalua"
+  ],
+  "activationEvents": [
+    "onLanguage:kalua"
+  ],
+  "main": "./client/out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "kalua",
+        "aliases": [
+          "KALUA",
+          "kalua",
+          "lua-kalua"
+        ],
+        "extensions": [
+          ".lua"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "kalua",
+        "scopeName": "source.lua",
+        "path": "./syntaxes/lua.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "kalua.checkFile",
+        "title": "KALUA: Check file",
+        "category": "KALUA"
+      },
+      {
+        "command": "kalua.runApp",
+        "title": "KALUA: Run app",
+        "category": "KALUA"
+      },
+      {
+        "command": "kalua.newApp",
+        "title": "KALUA: New app...",
+        "category": "KALUA"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "KALUA",
+      "properties": {
+        "kalua.binaryPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the KALUA binary used for the language server and CLI commands. Empty: auto-detect (KALUA binary next to the extension, then `KALUA` on PATH)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./client/tsconfig.json",
+    "watch": "tsc -watch -p ./client/tsconfig.json",
+    "package": "npm run compile && vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.4.0",
+    "@vscode/vsce": "^3.1.0"
+  }
+}

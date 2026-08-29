@@ -7,6 +7,7 @@ package checker
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/yuin/gopher-lua/ast"
@@ -15,22 +16,61 @@ import (
 	"kalua/internal/bindings"
 )
 
+// Issue is a structured diagnostic with a best-effort source position
+// (1-based line and column; zero means the position is unknown). Used by the
+// LSP server; Errors derives from Issues for the CLI.
+type Issue struct {
+	Message string
+	Line    int
+	Col     int
+}
+
 type Result struct {
 	Errors []string
+	Issues []Issue
 }
 
 func Check(src, name string) Result {
 	chunk, err := parse.Parse(strings.NewReader(src), name)
 	if err != nil {
-		return Result{Errors: []string{fmt.Sprintf("%s: %v", name, err)}}
+		return resultFromIssues(name, []Issue{issueFromParseError(err)})
 	}
 	var res Result
 	w := walker{src: src, name: name, known: bindings.Known(), res: &res}
 	w.walk(chunk)
 	if !w.hasMain {
-		res.Errors = append(res.Errors, fmt.Sprintf("%s: missing required function main()", name))
+		w.addIssue("missing required function main()", 0, "")
 	}
+	return resultFromIssues(name, res.Issues)
+}
+
+// issueFromParseError converts a gopher-lua parse error into an Issue with a
+// line/column when the parser reports one.
+func issueFromParseError(err error) Issue {
+	if pe, ok := err.(*parse.Error); ok {
+		line, col := pe.Pos.Line, pe.Pos.Column
+		if line < 1 {
+			line, col = 0, 0
+		}
+		return Issue{Message: err.Error(), Line: line, Col: col}
+	}
+	return Issue{Message: err.Error()}
+}
+
+// resultFromIssues converts issues to the legacy string Errors slice.
+func resultFromIssues(name string, issues []Issue) Result {
+	var res Result
+	res.Issues = issues
+	res.Errors = buildErrors(name, issues)
 	return res
+}
+
+func buildErrors(name string, issues []Issue) []string {
+	var out []string
+	for _, iss := range issues {
+		out = append(out, fmt.Sprintf("%s: %s", name, iss.Message))
+	}
+	return out
 }
 
 type walker struct {
@@ -39,6 +79,16 @@ type walker struct {
 	known   map[string]bool
 	res     *Result
 	hasMain bool
+}
+
+// addIssue records a structured diagnostic. line is 1-based (0 = unknown);
+// key is the dotted name used to locate the column on the line.
+func (w *walker) addIssue(msg string, line int, key string) {
+	col := 0
+	if line > 0 {
+		col = columnOf(w.src, line, key)
+	}
+	w.res.Issues = append(w.res.Issues, Issue{Message: msg, Line: line, Col: col})
 }
 
 func (w *walker) walk(stmts []ast.Stmt) {
@@ -202,8 +252,7 @@ func (w *walker) checkNestedAttrAccess(e *ast.AttrGetExpr) {
 				fullName += p
 			}
 			if !w.known[fullName] {
-				w.res.Errors = append(w.res.Errors,
-					fmt.Sprintf("%s: unknown k.%s (not implemented)", w.name, fullName))
+				w.addIssue(fmt.Sprintf("unknown k.%s (not implemented)", fullName), e.Line(), fullName)
 			}
 			return
 		}
@@ -228,8 +277,7 @@ func (w *walker) checkTableAccess(obj, key ast.Expr) {
 		return // dynamic key, can't check
 	}
 	if !w.known[name] {
-		w.res.Errors = append(w.res.Errors,
-			fmt.Sprintf("%s: unknown k.%s (not implemented)", w.name, name))
+		w.addIssue(fmt.Sprintf("unknown k.%s (not implemented)", name), ident.Line(), name)
 	}
 }
 
@@ -269,8 +317,39 @@ func (w *walker) checkNestedTableAccess(obj ast.Expr, path []string) {
 			fullName += p
 		}
 		if !w.known[fullName] {
-			w.res.Errors = append(w.res.Errors,
-				fmt.Sprintf("%s: unknown k.%s (not implemented)", w.name, fullName))
+			w.addIssue(fmt.Sprintf("unknown k.%s (not implemented)", fullName), ident.Line(), fullName)
 		}
 	}
+}
+
+// columnOf returns the 1-based column of the first occurrence of a k.<name>
+// expression on the given line (supporting dot and ["key"] access), or 0 when
+// the line or token cannot be located. Column is best effort; gopher-lua AST
+// nodes carry no column for expressions.
+func columnOf(src string, line int, name string) int {
+	if line < 1 || name == "" {
+		return 0
+	}
+	lines := strings.Split(src, "\n")
+	if line > len(lines) {
+		return 0
+	}
+	var sb strings.Builder
+	sb.WriteString(`\bk`)
+	for _, seg := range strings.Split(name, ".") {
+		sb.WriteString(`(?:\.`)
+		sb.WriteString(regexp.QuoteMeta(seg))
+		sb.WriteString(`|\[`)
+		sb.WriteString(regexp.QuoteMeta(`"` + seg + `"`))
+		sb.WriteString(`|\[`)
+		sb.WriteString(regexp.QuoteMeta(`'` + seg + `'`))
+		sb.WriteString(`)`)
+	}
+	re := regexp.MustCompile(sb.String())
+	loc := re.FindStringIndex(lines[line-1])
+	if loc == nil {
+		return 0
+	}
+	// Byte column is acceptable for diagnostics; LSP converts to UTF-16.
+	return loc[0] + 1
 }

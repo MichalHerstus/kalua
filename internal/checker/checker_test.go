@@ -45,3 +45,27 @@ func TestCheck(t *testing.T) {
 		}
 	}
 }
+
+func TestIssuePositions(t *testing.T) {
+	// Unknown k.* must carry the offending line and a good-effort column so
+	// the LSP can draw a squiggle under the token.
+	res := Check("function main()\n  k.bogus()\n  k.form.new(\"f\")\n  k.no_such_api()\nend", "test.lua")
+	var gotLine, gotCol int
+	for _, iss := range res.Issues {
+		if iss.Message == "unknown k.bogus (not implemented)" {
+			gotLine, gotCol = iss.Line, iss.Col
+		}
+	}
+	if gotLine != 2 {
+		t.Errorf("bogus issue line = %d, want 2", gotLine)
+	}
+	if gotCol != 3 {
+		t.Errorf("bogus issue col = %d, want 3", gotCol)
+	}
+
+	// Syntax errors expose the parser's line/column.
+	s := Check("function main()\n  local x = & 5\nend", "test.lua")
+	if len(s.Issues) == 0 || s.Issues[0].Line != 2 {
+		t.Fatalf("syntax issue has wrong position: %+v", s.Issues)
+	}
+}

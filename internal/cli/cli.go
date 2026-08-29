@@ -4,12 +4,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"kalua/internal/bindings"
 	"kalua/internal/checker"
 	"kalua/internal/host"
+	"kalua/internal/lsp"
 	"kalua/internal/web"
 )
 
@@ -28,6 +30,8 @@ func Run(args []string) int {
 		return checkCmd(args[1:])
 	case "new":
 		return newCmd(args[1:])
+	case "lsp":
+		return lspCmd()
 	case "version":
 		fmt.Println("KALUA dev (phase 2)")
 		return int(host.ExitOK)
@@ -47,6 +51,7 @@ Commands:
   run    <app.lua> [flags]   Run app as web app (opens browser)
   check  <app.lua>           Validate script (syntax, unknown k.*, main)
   new    <name>              Scaffold a minimal app.lua
+  lsp                        Language server over stdio (completion, hover, definitions)
   version                    Print version
 
 Run 'KALUA <command> -h' for command-specific flags.
@@ -171,6 +176,25 @@ func newCmd(args []string) int {
 		return int(host.ExitIOError)
 	}
 	fmt.Printf("Created %s\n", path)
+	return int(host.ExitOK)
+}
+
+// stdioConn adapts stdin/stdout into a single ReadWriteCloser for the LSP
+// stream (requests arrive on stdin, responses go out on stdout).
+type stdioConn struct {
+	in  io.Reader
+	out io.Writer
+}
+
+func (s stdioConn) Read(p []byte) (int, error)  { return s.in.Read(p) }
+func (s stdioConn) Write(p []byte) (int, error) { return s.out.Write(p) }
+func (stdioConn) Close() error                  { return nil }
+
+func lspCmd() int {
+	if err := lsp.Serve(stdioConn{in: os.Stdin, out: os.Stdout}, "dev"); err != nil {
+		fmt.Fprintf(os.Stderr, "lsp error: %v\n", err)
+		return int(host.ExitError)
+	}
 	return int(host.ExitOK)
 }
 
