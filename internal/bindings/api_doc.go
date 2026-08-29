@@ -29,11 +29,16 @@ type Info struct {
 // sync with registerKnown; ApiDocSyncTest verifies the correspondence.
 var apiDocs = map[string]Info{
 	// flow
-	"print":  {Name: "print", Group: "flow", Signature: "k.print(...)", Docs: "Prints values to the app log (tab-separated, like Lua print)."},
-	"sleep":  {Name: "sleep", Group: "flow", Signature: "k.sleep(ms)", Docs: "Suspends the script for ms milliseconds."},
-	"quit":   {Name: "quit", Group: "flow", Signature: "k.quit()", Docs: "Requests a clean termination of the app."},
-	"error":  {Name: "error", Group: "flow", Signature: "k.error(msg)", Docs: "Raises a deliberate Lua error."},
-	"msgbox": {Name: "msgbox", Group: "flow", Signature: "k.msgbox(text[, kind])", Docs: "Shows a message box; kind defaults to \"info\"."},
+	"print":         {Name: "print", Group: "flow", Signature: "k.print(...)", Docs: "Prints values to the app log (tab-separated, like Lua print)."},
+	"sleep":         {Name: "sleep", Group: "flow", Signature: "k.sleep(ms)", Docs: "Suspends the script for ms milliseconds."},
+	"quit":          {Name: "quit", Group: "flow", Signature: "k.quit()", Docs: "Requests a clean termination of the app."},
+	"error":         {Name: "error", Group: "flow", Signature: "k.error(msg)", Docs: "Raises a deliberate Lua error."},
+	"msgbox":        {Name: "msgbox", Group: "flow", Signature: "k.msgbox(text[, kind])", Docs: "Shows a message box; kind defaults to \"info\". Returns user's choice."},
+	"clipboard_set": {Name: "clipboard_set", Group: "flow", Signature: "k.clipboard_set(text)", Docs: "Writes text to the browser clipboard."},
+	"clipboard_get": {Name: "clipboard_get", Group: "flow", Signature: "k.clipboard_get()", Docs: "Reads text from the browser clipboard."},
+	"bell":          {Name: "bell", Group: "flow", Signature: "k.bell()", Docs: "Plays a system beep sound via WebAudio."},
+	"screen_size":   {Name: "screen_size", Group: "flow", Signature: "k.screen_size()", Docs: "Returns viewport dimensions as {width, height}."},
+	"http_request":  {Name: "http_request", Group: "flow", Signature: "k.http_request(optsTable)", Docs: "Makes an HTTP request. opts: {method, url, headers, body, timeout}. Returns {status, headers, body}."},
 
 	// forms
 	"form":           {Name: "form", Group: "forms", Signature: "k.form", Docs: "Form declarations: k.form.new/show/close/..."},
@@ -116,6 +121,16 @@ var apiDocs = map[string]Info{
 	"encrypt":  {Name: "encrypt", Group: "crypto", Signature: "k.encrypt(plaintext, key)", Docs: "AES-GCM encryption; returns base64(nonce || ciphertext)."},
 	"decrypt":  {Name: "decrypt", Group: "crypto", Signature: "k.decrypt(b64, key)", Docs: "Reverse of k.encrypt."},
 
+	// xml
+	"xml_parse":      {Name: "xml_parse", Group: "xml", Signature: "k.xml_parse(text)", Docs: "Parses XML text and returns a document handle."},
+	"xml_root":       {Name: "xml_root", Group: "xml", Signature: "k.xml_root(doc)", Docs: "Returns the root element name of a parsed document."},
+	"xml_child":      {Name: "xml_child", Group: "xml", Signature: "k.xml_child(doc, path)", Docs: "Returns child element at path (e.g., \"book/author\")."},
+	"xml_child_list": {Name: "xml_child_list", Group: "xml", Signature: "k.xml_child_list(doc, path)", Docs: "Returns a table of child elements at path."},
+	"xml_attr":       {Name: "xml_attr", Group: "xml", Signature: "k.xml_attr(doc, path, name)", Docs: "Returns attribute value at path."},
+	"xml_content":    {Name: "xml_content", Group: "xml", Signature: "k.xml_content(doc, path)", Docs: "Returns text content of element at path."},
+	"xml_attrs":      {Name: "xml_attrs", Group: "xml", Signature: "k.xml_attrs(doc, path)", Docs: "Returns all attributes of element at path as a table."},
+	"xml_name":       {Name: "xml_name", Group: "xml", Signature: "k.xml_name(doc, path)", Docs: "Returns the name of the element at path."},
+
 	// server (serve mode)
 	"shared":       {Name: "shared", Group: "server", Signature: "k.shared", Docs: "Shared state across workers: k.shared.set/get/del/keys/incr."},
 	"shared.set":   {Name: "shared.set", Group: "server", Signature: "k.shared.set(key, value)", Docs: "Stores a string value in shared state."},
@@ -153,7 +168,7 @@ var Globals = []string{"ARGS", "CTRL", "main"}
 
 // namespaceNames are registry entries that are pure namespaces with no
 // implementation of their own; the sync test exempts them from Info.
-var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true, "shared": true, "ws": true, "tcp": true}
+var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true, "shared": true, "ws": true, "tcp": true, "xml": true}
 
 // Docs returns a copy of the k.* documentation map (name → Info).
 func Docs() map[string]Info {

@@ -74,7 +74,7 @@ type Session struct {
 func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*Session, error) {
 	L := vm.New()
 	app := vm.NewApp(L)
-	env := bindings.Setup(L, app, opts)
+	env := bindings.Setup(L, app, opts, nil, logger) // session set after creation
 
 	// Load and compile the script
 	chunkFn, err := vm.LoadFile(L, scriptPath)
@@ -112,6 +112,9 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 		cancel: cancel,
 		timers: make(map[string]*time.Timer),
 	}
+
+	// Set session on env for msgbox, clipboard, etc.
+	env.Sess = s
 
 	// Start the actor goroutine
 	s.wg.Add(1)
@@ -322,6 +325,60 @@ func (s *Session) RunAsync(co *lua.LState, cancel func(), fn func() (interface{}
 	}(opID)
 }
 
+// ShowMsgbox shows a message box in the browser and suspends the coroutine until user responds.
+// Returns the user's choice ("ok", "yes", "no", "cancel", etc.) or empty string on error.
+func (s *Session) ShowMsgbox(co *lua.LState, cancel func(), text, kind string) string {
+	msgboxID := fmt.Sprintf("msgbox_%d", time.Now().UnixNano())
+
+	// Store the suspended coroutine
+	s.asyncMu.Lock()
+	s.asyncOps[msgboxID] = &asyncOp{co: co, cancel: cancel}
+	s.asyncMu.Unlock()
+
+	// Send msgbox to browser
+	s.SendOutbox(common.OutboxMsg{
+		Type: "msgbox",
+		ID:   msgboxID,
+		Text: text,
+		Kind: kind,
+	})
+
+	// The coroutine will be resumed when HandleMsgboxChoice is called
+	// We need to yield here - the actual resume happens via inbox
+	return ""
+}
+
+// HandleMsgboxChoice resumes the coroutine waiting for a msgbox response.
+func (s *Session) HandleMsgboxChoice(msgboxID, choice string) {
+	s.asyncMu.Lock()
+	op, exists := s.asyncOps[msgboxID]
+	if exists {
+		delete(s.asyncOps, msgboxID)
+	}
+	s.asyncMu.Unlock()
+
+	if !exists {
+		return
+	}
+
+	// Resume the coroutine with the choice
+	st, err, _ := s.L.Resume(op.co, nil, lua.LString(choice))
+	if st == lua.ResumeError {
+		if s.env != nil && s.env.Logger != nil {
+			s.env.Logger.Errorf("msgbox resume error: %v", err)
+		}
+		return
+	}
+
+	// Clean up the stored op now that the coroutine is resumed.
+	if op.cancel != nil {
+		op.cancel()
+	}
+
+	// Flush outbox after handler
+	s.flushOutbox()
+}
+
 // flushOutbox drains the outbox and sends to the browser (handled by caller).
 func (s *Session) flushOutbox() {
 	// The caller (WS handler) reads from s.Outbox()
@@ -430,6 +487,7 @@ func (s *Session) teardown(logger Logger) {
 
 // Logger interface for session logging.
 type Logger interface {
+	Printf(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
 	Warnf(format string, args ...interface{})
 }

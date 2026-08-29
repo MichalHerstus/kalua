@@ -28,12 +28,6 @@ type TCPHub interface {
 	Close(id string)
 }
 
-// Logger interface for logging.
-type Logger interface {
-	Printf(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
-}
-
 // SetupServe configures the Lua state for serve mode (headless API).
 // This registers k.shared_*, k.ws_*, k.tcp_* bindings and disables UI bindings.
 func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, wsHub WSHub, tcpHub TCPHub, logger Logger) {

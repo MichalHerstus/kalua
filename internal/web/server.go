@@ -236,9 +236,7 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 	case "msgbox_choice":
 		id := getString(msg, "id")
 		choice := getString(msg, "choice")
-		// TODO: resume suspended coroutine for msgbox
-		_ = id
-		_ = choice
+		sess.HandleMsgboxChoice(id, choice)
 	case "client_info":
 		// TODO: handle client info (screen size, locale)
 	case "ping":

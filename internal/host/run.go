@@ -79,7 +79,7 @@ func Run(cfg RunConfig) ExitCode {
 		Args:        cfg.Args,
 		AllowFS:     cfg.AllowFS,
 		MaxFileSize: cfg.MaxFileSize,
-	})
+	}, nil, log)
 
 	// 6. Execute the chunk to define main() in globals
 	if err := L.CallByParam(lua.P{Fn: chunkFn, NRet: 0, Protect: true}); err != nil {

@@ -124,3 +124,14 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - UI bindings (`k.form.*`, `k.ctrl.*`, `k.msgbox`, `k.status_*`) raise runtime error in serve mode
 - `--workers N` flag for worker count; `--host`, `--port` for binding
 - ARGS table seeded from `--arg` flags
+
+## Implemented Features (Phase 7 - Complete T1 Run Mode)
+
+- `k.msgbox(text[, kind])` — modal message box with user choice returned to script
+- `k.clipboard_set(text)` / `k.clipboard_get()` — browser clipboard access
+- `k.bell()` — play system beep via WebAudio
+- `k.screen_size()` — returns viewport `{width, height}` from client_info
+- `k.http_request(opts)` — async HTTP client: `{method,url,headers,body,timeout}` → `{status,headers,body}`
+- `k.xml_parse(text)` + `xml_*` — XML parsing: `xml_root`, `xml_child`, `xml_child_list`, `xml_attr`, `xml_content`, `xml_attrs`, `xml_name`
+- Session-based coroutine suspension for async operations (msgbox, http_request)
+- Web server handles `msgbox_choice`, `client_info`, `clipboard_get` messages

@@ -12,6 +12,8 @@ type SessionInterface interface {
 	TopForm() string
 	SendOutbox(msg OutboxMsg)
 	RunAsync(co *lua.LState, cancel func(), fn func() (interface{}, error), conv func(*lua.LState, interface{}) lua.LValue)
+	ShowMsgbox(co *lua.LState, cancel func(), text, kind string) string
+	HandleMsgboxChoice(msgboxID, choice string)
 }
 
 // DefaultConv converts an async result to a Lua value on the caller's state,

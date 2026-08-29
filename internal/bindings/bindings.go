@@ -14,6 +14,7 @@ import (
 	"github.com/yuin/gopher-lua"
 
 	"kalua/internal/coerce"
+	"kalua/internal/common"
 	"kalua/internal/vm"
 )
 
@@ -57,6 +58,18 @@ type Env struct {
 
 	// kNULL is the K.NULL sentinel table representing JSON null.
 	kNULL *lua.LTable
+
+	// Sess is the session this env belongs to (for msgbox, clipboard, etc.)
+	Sess common.SessionInterface
+
+	// Logger for error logging
+	Logger Logger
+}
+
+// Logger interface for logging.
+type Logger interface {
+	Printf(format string, args ...interface{})
+	Errorf(format string, args ...interface{})
 }
 
 // registerKnown tracks name→group across all envs. register() writes here so
@@ -68,6 +81,11 @@ var registerKnown = map[string]string{
 	"quit":                      "flow",
 	"error":                     "flow",
 	"msgbox":                    "flow",
+	"clipboard_set":             "flow",
+	"clipboard_get":             "flow",
+	"bell":                      "flow",
+	"screen_size":               "flow",
+	"http_request":              "flow",
 	"form":                      "forms", // namespace
 	"form.new":                  "forms",
 	"form.show":                 "forms",
@@ -135,6 +153,15 @@ var registerKnown = map[string]string{
 	"checksum":                  "crypto",
 	"encrypt":                   "crypto",
 	"decrypt":                   "crypto",
+	// xml bindings
+	"xml_parse":      "xml",
+	"xml_root":       "xml",
+	"xml_child":      "xml",
+	"xml_child_list": "xml",
+	"xml_attr":       "xml",
+	"xml_content":    "xml",
+	"xml_attrs":      "xml",
+	"xml_name":       "xml",
 	// serve mode bindings
 	"shared":       "server", // namespace
 	"shared.set":   "server",
@@ -203,8 +230,10 @@ func Known() map[string]bool {
 // Setup wires the k.* namespace, the K.* helpers and ARGS into a sandboxed
 // state, then installs every implemented binding. opts.Args seeds the ARGS
 // global table (in order, starting at 1). It must be called once per LState.
-func Setup(L *lua.LState, app *vm.App, opts Options) *Env {
-	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize}
+// sess is the session this env belongs to (for msgbox, clipboard, etc.); can be nil.
+// logger is used for error logging; can be nil.
+func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterface, logger Logger) *Env {
+	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize, Sess: sess, Logger: logger}
 	if e.maxFileSize <= 0 {
 		e.maxFileSize = DefaultMaxFileSize
 	}
@@ -276,6 +305,7 @@ func Setup(L *lua.LState, app *vm.App, opts Options) *Env {
 	registerFiles(e)
 	registerJSON(e)
 	registerCrypto(e)
+	registerXML(e)
 
 	argsT := L.NewTable()
 	for i, a := range opts.Args {
