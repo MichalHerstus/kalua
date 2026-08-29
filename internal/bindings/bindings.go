@@ -135,6 +135,20 @@ var registerKnown = map[string]string{
 	"checksum":                  "crypto",
 	"encrypt":                   "crypto",
 	"decrypt":                   "crypto",
+	// serve mode bindings
+	"shared":       "server", // namespace
+	"shared.set":   "server",
+	"shared.get":   "server",
+	"shared.del":   "server",
+	"shared.keys":  "server",
+	"shared.incr":  "server",
+	"ws":           "server", // namespace
+	"ws.broadcast": "server",
+	"ws.send":      "server",
+	"ws.close":     "server",
+	"tcp":          "server", // namespace
+	"tcp.send":     "server",
+	"tcp.close":    "server",
 }
 
 // register puts a k.* binding into the env's k namespace.

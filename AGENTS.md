@@ -17,6 +17,7 @@ go test ./internal/host
 
 # CLI usage
 ./KALUA run <app.lua> [--port 0] [--no-browser] [--db NAME=DSN] [--arg K=V]
+./KALUA serve <app.lua> [--port 8080] [--host 127.0.0.1] [--workers 4] [--mode http|ws|tcp] [--db NAME=DSN] [--arg K=V]
 ./KALUA check <app.lua>     # static validation (syntax, unknown k.*, main)
 ./KALUA new <name>          # scaffold minimal app.lua
 ./KALUA lsp                 # language server over stdio (LSP, Content-Length frames)
@@ -41,7 +42,7 @@ myapp.lua ──► KALUA run myapp.lua
 ```
 
 - **Entry point**: Lua script must define `function main()`
-- **Run modes**: `run` = interactive web app (UI bindings live), `serve` = headless API (planned)
+- **Run modes**: `run` = interactive web app (UI bindings live), `serve` = headless API (HTTP/WS/TCP with worker pool)
 - **Sandbox**: gopher-lua with `SkipOpenLibs`, custom `k.*` API only
 
 ## Package Layout
@@ -51,12 +52,13 @@ cmd/KALUA/           # CLI entry point (main.go → cli.Run)
 internal/cli/        # Command parsing, flags, usage
 internal/host/       # App lifecycle, RunConfig, exit codes, logging
 internal/vm/         # LState setup, sandbox whitelist, script loader, App runner
-internal/bindings/   # k.* API registration (flow, forms, controls, db, files)
+internal/bindings/   # k.* API registration (flow, forms, controls, db, files, server)
 internal/coerce/     # K.eq/ne/add value semantics
 internal/checker/    # Static analysis (syntax, unknown k.*, main presence)
 internal/lsp/        # LSP server (stdio): completion, hover, diagnostics, definition
 internal/session/    # Per-tab actor: inbox/outbox, form stack, timers
 internal/web/        # HTTP server, WebSocket bridge, embedded assets
+internal/server/     # Serve mode: worker pool, HTTP/WS/TCP servers, shared state
 internal/common/     # Shared types (OutboxMsg, SessionInterface) to avoid import cycles
 extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-config)
 ```
@@ -109,3 +111,16 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - Completion for `k.*` (namespaces form/ctrl/table, member functions), `K.*` helpers, globals
 - Hover markdown from `internal/bindings` api_doc; go-to-definition via generated API reference stub
 - `extensions/vscode-kalua`: language id `kalua` registered for `*.lua`, vendored Lua TextMate grammar, TS client via `vscode-languageclient` (`TransportKind.stdio`), commands `KALUA: Check file / Run app / New app`, setting `kalua.binaryPath` (default auto-detect repo binary then PATH); package with `vsce`
+
+## Implemented Features (Phase 6 - Serve Mode)
+
+- `KALUA serve` subcommand: headless API server with worker pool
+- Worker pool: multiple Lua VMs sharing state via `k.shared.*`
+- HTTP server with `handle_http(req)` callback returning (status, headers, body)
+- WebSocket server with `handle_ws(conn)` callback; `k.ws.broadcast/send/close`
+- TCP server with `handle_tcp(conn)` callback; `k.tcp.send/close`
+- Shared state: `k.shared.set/get/del/keys/incr` (thread-safe across workers)
+- Mode flag: `--mode http,ws,tcp` (comma-separated)
+- UI bindings (`k.form.*`, `k.ctrl.*`, `k.msgbox`, `k.status_*`) raise runtime error in serve mode
+- `--workers N` flag for worker count; `--host`, `--port` for binding
+- ARGS table seeded from `--arg` flags

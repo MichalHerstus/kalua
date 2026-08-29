@@ -1,0 +1,388 @@
+package server
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"kalua/internal/bindings"
+	"kalua/internal/host"
+)
+
+// Config holds the server configuration.
+type Config struct {
+	Host        string
+	Port        int
+	Workers     int
+	Mode        string // "http", "ws", "tcp", or combination
+	ScriptPath  string
+	DBs         []string
+	Args        []string
+	AllowFS     []string
+	MaxFileSize int64
+	Verbose     bool
+	Logger      *host.Logger
+}
+
+// Server is the KALUA serve mode server with worker pool.
+type Server struct {
+	cfg           Config
+	shared        *SharedState
+	wsHub         *WSHub
+	tcpHub        *TCPHub
+	workers       []*Worker
+	workerCh      chan *Worker
+	nextWorkerIdx uint64 // atomic for round-robin
+	httpServer    *http.Server
+	tcpListener   net.Listener
+	wg            sync.WaitGroup
+	stopCh        chan struct{}
+}
+
+// NewServer creates a new serve mode server.
+func NewServer(cfg Config) *Server {
+	if cfg.Logger == nil {
+		cfg.Logger = host.NewLogger(cfg.Verbose)
+	}
+	if cfg.Workers <= 0 {
+		cfg.Workers = 1
+	}
+	if cfg.Mode == "" {
+		cfg.Mode = "http"
+	}
+
+	shared := NewSharedState()
+	workerCh := make(chan *Worker, cfg.Workers)
+	wsHub := NewWSHub(workerCh)
+	tcpHub := NewTCPHub(workerCh)
+
+	return &Server{
+		cfg:      cfg,
+		shared:   shared,
+		wsHub:    wsHub,
+		tcpHub:   tcpHub,
+		workerCh: workerCh,
+		stopCh:   make(chan struct{}),
+	}
+}
+
+// Run starts the server and blocks until context is cancelled.
+func (s *Server) Run(ctx context.Context) error {
+	// Start workers
+	if err := s.startWorkers(ctx); err != nil {
+		return err
+	}
+
+	// Start HTTP server if mode includes http
+	if s.modeHas("http") {
+		if err := s.startHTTP(ctx); err != nil {
+			return err
+		}
+	}
+
+	// Start WebSocket server if mode includes ws
+	if s.modeHas("ws") {
+		s.startWS(ctx)
+	}
+
+	// Start TCP server if mode includes tcp
+	if s.modeHas("tcp") {
+		if err := s.startTCP(ctx); err != nil {
+			return err
+		}
+	}
+
+	s.cfg.Logger.Printf("KALUA serve mode listening on %s:%d (workers=%d, mode=%s)",
+		s.cfg.Host, s.cfg.Port, s.cfg.Workers, s.cfg.Mode)
+
+	// Wait for context cancellation
+	<-ctx.Done()
+	s.shutdown()
+	return nil
+}
+
+func (s *Server) modeHas(m string) bool {
+	// Check if mode contains the substring (e.g., "http,ws" contains "http")
+	for i := 0; i <= len(s.cfg.Mode)-len(m); i++ {
+		if s.cfg.Mode[i:i+len(m)] == m {
+			// Check boundaries
+			if (i == 0 || s.cfg.Mode[i-1] == ',') &&
+				(i+len(m) == len(s.cfg.Mode) || s.cfg.Mode[i+len(m)] == ',') {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Server) startWorkers(ctx context.Context) error {
+	opts := bindings.Options{
+		Args:        s.cfg.Args,
+		AllowFS:     s.cfg.AllowFS,
+		MaxFileSize: s.cfg.MaxFileSize,
+	}
+
+	for i := 0; i < s.cfg.Workers; i++ {
+		w, err := NewWorker(i+1, s.cfg.ScriptPath, opts, s.shared, s.wsHub, s.tcpHub, s.cfg.Logger)
+		if err != nil {
+			// Clean up already started workers
+			for _, w := range s.workers {
+				w.Close()
+			}
+			return fmt.Errorf("failed to start worker %d: %w", i+1, err)
+		}
+		s.workers = append(s.workers, w)
+		s.workerCh <- w
+	}
+	return nil
+}
+
+func (s *Server) startHTTP(ctx context.Context) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleHTTP)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	// WebSocket upgrade endpoint
+	mux.HandleFunc("/ws", s.handleWSUpgrade)
+
+	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
+	s.httpServer = &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.cfg.Logger.Errorf("HTTP server error: %v", err)
+		}
+	}()
+
+	// Shutdown on context cancel
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.httpServer.Shutdown(shutdownCtx)
+	}()
+
+	return nil
+}
+
+func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	// Get next worker (round-robin)
+	worker := s.nextWorker()
+	if worker == nil {
+		http.Error(w, "no available workers", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Read request body
+	body := ""
+	if r.Body != nil {
+		buf := make([]byte, r.ContentLength+1)
+		n, _ := r.Body.Read(buf)
+		body = string(buf[:n])
+	}
+
+	// Build headers map
+	headers := make(map[string]string)
+	for k, v := range r.Header {
+		if len(v) > 0 {
+			headers[k] = v[0]
+		}
+	}
+
+	req := HTTPRequest{
+		Method:  r.Method,
+		Path:    r.URL.Path,
+		Query:   r.URL.RawQuery,
+		Headers: headers,
+		Body:    body,
+	}
+
+	resp, err := worker.CallHTTP(r.Context(), req)
+	if err != nil {
+		s.cfg.Logger.Errorf("handle_http error: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for k, v := range resp.Headers {
+		w.Header().Set(k, v)
+	}
+	w.WriteHeader(resp.Status)
+	w.Write([]byte(resp.Body))
+}
+
+func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
+	// Upgrade to WebSocket
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		OriginPatterns: []string{"*"},
+	})
+	if err != nil {
+		s.cfg.Logger.Errorf("websocket accept: %v", err)
+		return
+	}
+
+	connID := fmt.Sprintf("ws-%d", time.Now().UnixNano())
+	closeFn := func() { c.CloseNow() }
+
+	ws := s.wsHub.Register(connID, c, closeFn)
+	defer func() {
+		s.wsHub.Unregister(connID)
+		c.CloseNow()
+	}()
+
+	// Get worker for this connection
+	worker := s.nextWorker()
+	if worker != nil {
+		worker.CallWS(connID, ws)
+	}
+
+	// Start outbound message pump
+	outboundDone := make(chan struct{})
+	go func() {
+		for msg := range ws.sendCh {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := c.Write(ctx, websocket.MessageText, msg); err != nil {
+				s.cfg.Logger.Printf("ws write: %v", err)
+				cancel()
+				return
+			}
+			cancel()
+		}
+		close(outboundDone)
+	}()
+
+	// Read inbound messages
+	for {
+		_, data, err := c.Read(r.Context())
+		if err != nil {
+			s.cfg.Logger.Printf("ws read: %v", err)
+			break
+		}
+		// Could dispatch to Lua handler here if needed
+		_ = data
+	}
+
+	<-outboundDone
+}
+
+func (s *Server) startWS(ctx context.Context) {
+	// WebSocket is handled via HTTP upgrade on same port
+	// This is just for logging
+	s.cfg.Logger.Printf("WebSocket endpoint available at ws://%s:%d/ws", s.cfg.Host, s.cfg.Port)
+}
+
+func (s *Server) startTCP(ctx context.Context) error {
+	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port+1) // TCP on port+1
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	s.tcpListener = listener
+
+	s.cfg.Logger.Printf("TCP server listening on %s", addr)
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					s.cfg.Logger.Errorf("tcp accept: %v", err)
+					continue
+				}
+			}
+
+			connID := fmt.Sprintf("tcp-%d", time.Now().UnixNano())
+			closeFn := func() { conn.Close() }
+
+			tcpConn := s.tcpHub.Register(connID, conn, closeFn)
+			defer func() {
+				s.tcpHub.Unregister(connID)
+				conn.Close()
+			}()
+
+			// Get worker for this connection
+			worker := s.nextWorker()
+			if worker != nil {
+				worker.CallTCP(connID, tcpConn)
+			}
+
+			// Read loop
+			buf := make([]byte, 4096)
+			for {
+				n, err := conn.Read(buf)
+				if err != nil {
+					s.cfg.Logger.Printf("tcp read: %v", err)
+					break
+				}
+				// Could dispatch to Lua handler here if needed
+				_ = buf[:n]
+			}
+		}
+	}()
+
+	go func() {
+		<-ctx.Done()
+		listener.Close()
+	}()
+
+	return nil
+}
+
+func (s *Server) nextWorker() *Worker {
+	// Round-robin worker selection
+	n := atomic.AddUint64(&s.nextWorkerIdx, 1)
+	idx := int(n) % len(s.workers)
+	return s.workers[idx]
+}
+
+func (s *Server) shutdown() {
+	close(s.stopCh)
+	if s.httpServer != nil {
+		s.httpServer.Close()
+	}
+	if s.tcpListener != nil {
+		s.tcpListener.Close()
+	}
+	for _, w := range s.workers {
+		w.Close()
+	}
+	s.wg.Wait()
+}
+
+// TLSConfig holds TLS configuration for HTTPS/WSS.
+type TLSConfig struct {
+	CertFile string
+	KeyFile  string
+}
+
+// WithTLS configures TLS for the server.
+func (s *Server) WithTLS(cfg TLSConfig) error {
+	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+	if err != nil {
+		return err
+	}
+	if s.httpServer != nil {
+		s.httpServer.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	}
+	return nil
+}

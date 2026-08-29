@@ -12,6 +12,7 @@ import (
 	"kalua/internal/checker"
 	"kalua/internal/host"
 	"kalua/internal/lsp"
+	"kalua/internal/server"
 	"kalua/internal/web"
 )
 
@@ -32,6 +33,8 @@ func Run(args []string) int {
 		return newCmd(args[1:])
 	case "lsp":
 		return lspCmd()
+	case "serve":
+		return serveCmd(args[1:])
 	case "version":
 		fmt.Println("KALUA dev (phase 2)")
 		return int(host.ExitOK)
@@ -49,9 +52,10 @@ Usage: KALUA <command> [args...]
 
 Commands:
   run    <app.lua> [flags]   Run app as web app (opens browser)
+  serve  <app.lua> [flags]   Run app as headless API server
   check  <app.lua>           Validate script (syntax, unknown k.*, main)
   new    <name>              Scaffold a minimal app.lua
-  lsp                        Language server over stdio (completion, hover, definitions)
+  lsp    Language server over stdio (completion, hover, definitions)
   version                    Print version
 
 Run 'KALUA <command> -h' for command-specific flags.
@@ -193,6 +197,78 @@ func (stdioConn) Close() error                  { return nil }
 func lspCmd() int {
 	if err := lsp.Serve(stdioConn{in: os.Stdin, out: os.Stdout}, "dev"); err != nil {
 		fmt.Fprintf(os.Stderr, "lsp error: %v\n", err)
+		return int(host.ExitError)
+	}
+	return int(host.ExitOK)
+}
+
+func serveCmd(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "serve: requires a script argument")
+		return int(host.ExitUsage)
+	}
+	// Handle -h/--help for serve command
+	if args[0] == "-h" || args[0] == "--help" {
+		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+		fs.SetOutput(os.Stdout)
+		fs.String("host", "127.0.0.1", "Host to bind to")
+		fs.Int("port", 8080, "HTTP port")
+		fs.Int("workers", 4, "Number of worker processes")
+		fs.String("mode", "http", "Server mode: http, ws, tcp, or comma-separated combination")
+		fs.Bool("v", false, "Verbose logging")
+		fs.Var(&multiFlag{}, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
+		fs.Var(&multiFlag{}, "d", "Shorthand for --db")
+		fs.Var(&multiFlag{}, "arg", "Seed ARGS table: K=V (repeatable)")
+		fs.Var(&multiFlag{}, "a", "Shorthand for --arg")
+		fs.Var(&multiFlag{}, "allow-fs", "Allow filesystem access outside cwd (repeatable)")
+		fs.Var(&multiFlag{}, "f", "Shorthand for --allow-fs")
+		fs.PrintDefaults()
+		return int(host.ExitOK)
+	}
+	script := args[0]
+	flagArgs := args[1:]
+
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	var (
+		hostFlag    = fs.String("host", "127.0.0.1", "Host to bind to")
+		port        = fs.Int("port", 8080, "HTTP port")
+		workers     = fs.Int("workers", 4, "Number of worker processes")
+		mode        = fs.String("mode", "http", "Server mode: http, ws, tcp, or comma-separated combination")
+		verbose     = fs.Bool("v", false, "Verbose logging")
+		dbFlag      = multiFlag{}
+		argFlag     = multiFlag{}
+		allowFSFlag = multiFlag{}
+	)
+	fs.Var(&dbFlag, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
+	fs.Var(&dbFlag, "d", "Shorthand for --db")
+	fs.Var(&argFlag, "arg", "Seed ARGS table: K=V (repeatable)")
+	fs.Var(&argFlag, "a", "Shorthand for --arg")
+	fs.Var(&allowFSFlag, "allow-fs", "Allow filesystem access outside cwd (repeatable)")
+	fs.Var(&allowFSFlag, "f", "Shorthand for --allow-fs")
+
+	if err := fs.Parse(flagArgs); err != nil {
+		return int(host.ExitUsage)
+	}
+
+	ctx := context.Background()
+	cfg := server.Config{
+		Host:        *hostFlag,
+		Port:        *port,
+		Workers:     *workers,
+		Mode:        *mode,
+		ScriptPath:  script,
+		DBs:         dbFlag.values,
+		Args:        argFlag.values,
+		AllowFS:     allowFSFlag.values,
+		MaxFileSize: 0,
+		Verbose:     *verbose,
+	}
+
+	srv := server.NewServer(cfg)
+	if err := srv.Run(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		return int(host.ExitError)
 	}
 	return int(host.ExitOK)

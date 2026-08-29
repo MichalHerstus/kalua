@@ -115,6 +115,21 @@ var apiDocs = map[string]Info{
 	"checksum": {Name: "checksum", Group: "crypto", Signature: "k.checksum(alg, data[, key[, salt[, iterations[, keylen]]]])", Docs: "Hex hash for alg: crc32, md5, sha1, sha256, hmac-sha256 (requires key), pbkdf2 (requires salt)."},
 	"encrypt":  {Name: "encrypt", Group: "crypto", Signature: "k.encrypt(plaintext, key)", Docs: "AES-GCM encryption; returns base64(nonce || ciphertext)."},
 	"decrypt":  {Name: "decrypt", Group: "crypto", Signature: "k.decrypt(b64, key)", Docs: "Reverse of k.encrypt."},
+
+	// server (serve mode)
+	"shared":       {Name: "shared", Group: "server", Signature: "k.shared", Docs: "Shared state across workers: k.shared.set/get/del/keys/incr."},
+	"shared.set":   {Name: "shared.set", Group: "server", Signature: "k.shared.set(key, value)", Docs: "Stores a string value in shared state."},
+	"shared.get":   {Name: "shared.get", Group: "server", Signature: "k.shared.get(key)", Docs: "Retrieves a value from shared state; empty string if missing."},
+	"shared.del":   {Name: "shared.del", Group: "server", Signature: "k.shared.del(key)", Docs: "Deletes a key from shared state."},
+	"shared.keys":  {Name: "shared.keys", Group: "server", Signature: "k.shared.keys([pattern])", Docs: "Returns all keys matching pattern (prefix, * = all)."},
+	"shared.incr":  {Name: "shared.incr", Group: "server", Signature: "k.shared.incr(key[, delta])", Docs: "Increments a numeric key by delta (default 1); returns new value."},
+	"ws":           {Name: "ws", Group: "server", Signature: "k.ws", Docs: "WebSocket operations: k.ws.broadcast/send/close."},
+	"ws.broadcast": {Name: "ws.broadcast", Group: "server", Signature: "k.ws.broadcast(message)", Docs: "Broadcasts a text message to all connected WebSocket clients."},
+	"ws.send":      {Name: "ws.send", Group: "server", Signature: "k.ws.send(client_id, message)", Docs: "Sends a text message to a specific WebSocket client."},
+	"ws.close":     {Name: "ws.close", Group: "server", Signature: "k.ws.close(client_id)", Docs: "Closes a WebSocket connection."},
+	"tcp":          {Name: "tcp", Group: "server", Signature: "k.tcp", Docs: "TCP operations: k.tcp.send/close."},
+	"tcp.send":     {Name: "tcp.send", Group: "server", Signature: "k.tcp.send(client_id, data)", Docs: "Sends data to a specific TCP client."},
+	"tcp.close":    {Name: "tcp.close", Group: "server", Signature: "k.tcp.close(client_id)", Docs: "Closes a TCP connection."},
 }
 
 // KSets documents the K.* helpers and constants. This is static tooling data;
@@ -138,7 +153,7 @@ var Globals = []string{"ARGS", "CTRL", "main"}
 
 // namespaceNames are registry entries that are pure namespaces with no
 // implementation of their own; the sync test exempts them from Info.
-var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true}
+var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true, "shared": true, "ws": true, "tcp": true}
 
 // Docs returns a copy of the k.* documentation map (name → Info).
 func Docs() map[string]Info {
