@@ -11,5 +11,11 @@ type SessionInterface interface {
 	PopForm() string
 	TopForm() string
 	SendOutbox(msg OutboxMsg)
-	RunAsync(co *lua.LState, cancel func(), fn func() (interface{}, error))
+	RunAsync(co *lua.LState, cancel func(), fn func() (interface{}, error), conv func(*lua.LState, interface{}) lua.LValue)
+}
+
+// DefaultConv converts an async result to a Lua value on the caller's state,
+// falling back to GoValueToLua.
+func DefaultConv(L *lua.LState, v interface{}) lua.LValue {
+	return GoValueToLua(L, v)
 }

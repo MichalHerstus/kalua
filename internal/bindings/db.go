@@ -354,7 +354,7 @@ func executeDBAsync(e *Env, L *lua.LState, handle *DBHandle, sqlStr string, para
 		// the handler coroutine; the session resumes us with the result.
 		sess.RunAsync(L, func() {}, func() (interface{}, error) {
 			return executeDBQuery(handle, sqlStr, params, isExec, isQuery, isInsert)
-		})
+		}, nil)
 
 		// Yield the current coroutine - it will be resumed by the session when done
 		return L.Yield(lua.LNil)

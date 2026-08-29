@@ -29,8 +29,9 @@ const (
 
 // asyncOp represents a suspended coroutine waiting for an async operation
 type asyncOp struct {
-	co     *lua.LState // coroutine to resume
-	cancel func()      // cleanup function
+	co     *lua.LState                               // coroutine to resume
+	cancel func()                                    // cleanup function
+	conv   func(*lua.LState, interface{}) lua.LValue // result converter (nil = default)
 }
 
 // inboxMsg is a typed message delivered to the session actor's inbox.
@@ -70,10 +71,10 @@ type Session struct {
 }
 
 // New creates and starts a new session actor.
-func New(id string, scriptPath string, args []string, logger Logger) (*Session, error) {
+func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*Session, error) {
 	L := vm.New()
 	app := vm.NewApp(L)
-	env := bindings.Setup(L, app, args)
+	env := bindings.Setup(L, app, opts)
 
 	// Load and compile the script
 	chunkFn, err := vm.LoadFile(L, scriptPath)
@@ -257,12 +258,15 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 	}
 
 	// Resume the coroutine with the result
+	conv := common.DefaultConv
+	if op.conv != nil {
+		conv = op.conv
+	}
 	var resumeVal lua.LValue
 	if err != nil {
 		resumeVal = lua.LString(err.(string))
 	} else if result != nil {
-		// Convert result to Lua value
-		resumeVal = common.GoValueToLua(s.L, result)
+		resumeVal = conv(s.L, result)
 	} else {
 		resumeVal = lua.LNil
 	}
@@ -284,13 +288,14 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 }
 
 // RunAsync executes a function in a worker goroutine and resumes the given coroutine when done.
-// The coroutine should be in a yielded state (waiting for the result).
-func (s *Session) RunAsync(co *lua.LState, cancel func(), fn func() (interface{}, error)) {
+// The coroutine should be in a yielded state (waiting for the result). conv converts the
+// result to a Lua value on the session's main thread; nil means common.DefaultConv.
+func (s *Session) RunAsync(co *lua.LState, cancel func(), fn func() (interface{}, error), conv func(*lua.LState, interface{}) lua.LValue) {
 	opID := fmt.Sprintf("async_%d", time.Now().UnixNano())
 
 	// Store the suspended coroutine
 	s.asyncMu.Lock()
-	s.asyncOps[opID] = &asyncOp{co: co, cancel: cancel}
+	s.asyncOps[opID] = &asyncOp{co: co, cancel: cancel, conv: conv}
 	s.asyncMu.Unlock()
 
 	// Run in worker goroutine

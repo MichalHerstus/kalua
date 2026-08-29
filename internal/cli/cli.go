@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"kalua/internal/bindings"
 	"kalua/internal/checker"
 	"kalua/internal/host"
 	"kalua/internal/web"
@@ -97,7 +98,8 @@ func runCmd(args []string) int {
 	}
 
 	ctx := context.Background()
-	server := web.NewServer("127.0.0.1", *port, *sessionLimit, host.NewLogger(*verbose))
+	server := web.NewServer("127.0.0.1", *port, *sessionLimit,
+		bindings.Options{AllowFS: allowFSFlag.values}, host.NewLogger(*verbose))
 
 	// TODO: open browser if not --no-browser
 

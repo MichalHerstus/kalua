@@ -8,11 +8,33 @@
 package bindings
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/yuin/gopher-lua"
 
 	"kalua/internal/coerce"
 	"kalua/internal/vm"
 )
+
+// Options carries host configuration a binding may depend on. It is captured
+// by Setup and read-only afterwards.
+type Options struct {
+	// Args seeds the ARGS global table.
+	Args []string
+
+	// AllowFS lists extra filesystem roots (absolute paths) scripts may touch
+	// besides the working directory. Paths are resolved at Setup time.
+	AllowFS []string
+
+	// MaxFileSize bounds how many bytes k.file_load / k.json_load may read.
+	// Zero means the default of 16 MiB.
+	MaxFileSize int64
+}
+
+// DefaultMaxFileSize bounds k.file_load/k.json_load reads unless Options
+// overrides it.
+const DefaultMaxFileSize int64 = 16 << 20
 
 // Env carries the host context every binding acts on. Bindings receive the
 // coroutine LState as their LGFunction first argument; Env surfaces the app
@@ -26,6 +48,15 @@ type Env struct {
 
 	// known is this env's name→group registry of implemented k.* bindings.
 	known map[string]string
+
+	// workdir is the sandbox's home directory; relative file paths resolve
+	// against it. allowFS holds the absolute roots scripts may write to.
+	workdir     string
+	allowFS     []string
+	maxFileSize int64
+
+	// kNULL is the K.NULL sentinel table representing JSON null.
+	kNULL *lua.LTable
 }
 
 // registerKnown tracks name→group across all envs. register() writes here so
@@ -78,6 +109,32 @@ var registerKnown = map[string]string{
 	"tx_commit":                 "database",
 	"tx_rollback":               "database",
 	"rows":                      "database",
+	"file_open":                 "files",
+	"file_read":                 "files",
+	"file_read_line":            "files",
+	"file_write":                "files",
+	"file_close":                "files",
+	"file_load":                 "files",
+	"file_save":                 "files",
+	"file_copy":                 "files",
+	"file_move":                 "files",
+	"file_delete":               "files",
+	"file_exists":               "files",
+	"file_mkdir":                "files",
+	"file_list":                 "files",
+	"file_info":                 "files",
+	"json_parse":                "json",
+	"json_string":               "json",
+	"json_load":                 "json",
+	"json_save":                 "json",
+	"json_get":                  "json",
+	"json_array_item":           "json",
+	"json_count":                "json",
+	"json_names":                "json",
+	"is_null":                   "json",
+	"checksum":                  "crypto",
+	"encrypt":                   "crypto",
+	"decrypt":                   "crypto",
 }
 
 // register puts a k.* binding into the env's k namespace.
@@ -130,17 +187,40 @@ func Known() map[string]bool {
 }
 
 // Setup wires the k.* namespace, the K.* helpers and ARGS into a sandboxed
-// state, then installs every implemented binding. args seeds the ARGS global
-// table (in order, starting at 1). It must be called once per LState.
-func Setup(L *lua.LState, app *vm.App, args []string) *Env {
-	e := &Env{L: L, App: app, known: map[string]string{}}
+// state, then installs every implemented binding. opts.Args seeds the ARGS
+// global table (in order, starting at 1). It must be called once per LState.
+func Setup(L *lua.LState, app *vm.App, opts Options) *Env {
+	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize}
+	if e.maxFileSize <= 0 {
+		e.maxFileSize = DefaultMaxFileSize
+	}
+	if wd, err := os.Getwd(); err == nil {
+		e.workdir = wd
+	}
+	for _, root := range opts.AllowFS {
+		abs, err := filepathAbs(root)
+		if err != nil {
+			continue
+		}
+		if resolved, err := evalSymlinksBestEffort(abs); err == nil {
+			e.allowFS = append(e.allowFS, resolved)
+		} else {
+			e.allowFS = append(e.allowFS, abs)
+		}
+	}
 
 	k := L.NewTable()
 	L.SetGlobal("k", k)
 	e.k = k
 
+	// K.NULL sentinel: the only value k.json_parse/k.json_load produce for a
+	// JSON null, and k.is_null's identity check.
+	e.kNULL = L.NewTable()
+
 	K := L.NewTable()
 	registerHelpers(e, K)
+	K.RawSetString("NULL", e.kNULL)
+	K.RawSetString("is_null", L.NewFunction(e.isNull))
 	L.SetGlobal("K", K)
 
 	// CTRL(name) - accessor function for controls
@@ -179,14 +259,25 @@ func Setup(L *lua.LState, app *vm.App, args []string) *Env {
 	registerForms(e)
 	registerControls(e)
 	registerDB(e)
+	registerFiles(e)
+	registerJSON(e)
+	registerCrypto(e)
 
 	argsT := L.NewTable()
-	for i, a := range args {
+	for i, a := range opts.Args {
 		argsT.RawSetInt(i+1, lua.LString(a))
 	}
 	L.SetGlobal("ARGS", argsT)
 
 	return e
+}
+
+func filepathAbs(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
 }
 
 // lvalue converts a Go value (as produced by coerce helpers) into a Lua value.
@@ -223,4 +314,11 @@ func v(lv lua.LValue) any {
 	default:
 		return lv.String()
 	}
+}
+
+// isNull reports whether the argument is the K.NULL sentinel: the value a JSON
+// null parses to. Returns false for plain nil.
+func (e *Env) isNull(L *lua.LState) int {
+	L.Push(lua.LBool(L.Get(1) == e.kNULL))
+	return 1
 }

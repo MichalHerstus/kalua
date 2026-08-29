@@ -14,13 +14,14 @@ import (
 
 // RunConfig holds the parameters for a run invocation.
 type RunConfig struct {
-	ScriptPath string
-	Args       []string // seeds ARGS global
-	DBs        []string // --db NAME=DSN (parsed elsewhere)
-	AllowFS    []string // --allow-fs paths (Phase 2+)
-	Verbose    bool
-	Logger     *Logger
-	Out        io.Writer // for k.print output
+	ScriptPath  string
+	Args        []string // seeds ARGS global
+	DBs         []string // --db NAME=DSN (parsed elsewhere)
+	AllowFS     []string // --allow-fs paths
+	MaxFileSize int64    // cap for k.file_load/k.json_load (0 = default 16 MiB)
+	Verbose     bool
+	Logger      *Logger
+	Out         io.Writer // for k.print output
 }
 
 // ExitCode maps errors to process exit codes per §4.
@@ -74,7 +75,11 @@ func Run(cfg RunConfig) ExitCode {
 
 	// 5. Bindings + ARGS (must be before running chunk so k.* exists)
 	app := vm.NewApp(L)
-	bindings.Setup(L, app, cfg.Args)
+	bindings.Setup(L, app, bindings.Options{
+		Args:        cfg.Args,
+		AllowFS:     cfg.AllowFS,
+		MaxFileSize: cfg.MaxFileSize,
+	})
 
 	// 6. Execute the chunk to define main() in globals
 	if err := L.CallByParam(lua.P{Fn: chunkFn, NRet: 0, Protect: true}); err != nil {

@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/yuin/gopher-lua"
 
+	"kalua/internal/bindings"
 	"kalua/internal/common"
 	"kalua/internal/host"
 	"kalua/internal/session"
@@ -28,23 +29,26 @@ var templatesFS embed.FS
 
 // Server is the KALUA web server for run mode.
 type Server struct {
-	host           string
-	port           int
-	sessionLimit   int
-	logger         *host.Logger
-	defaultScript  string
+	host          string
+	port          int
+	sessionLimit  int
+	logger        *host.Logger
+	defaultScript string
+	opts          bindings.Options
 
 	sessionsMu sync.Mutex
 	sessions   map[string]*session.Session
 }
 
-// NewServer creates a new web server.
-func NewServer(host string, port, sessionLimit int, logger *host.Logger) *Server {
+// NewServer creates a new web server. opts carries per-session binding
+// options (AllowFS roots, MaxFileSize cap).
+func NewServer(host string, port, sessionLimit int, opts bindings.Options, logger *host.Logger) *Server {
 	return &Server{
 		host:         host,
 		port:         port,
 		sessionLimit: sessionLimit,
 		logger:       logger,
+		opts:         opts,
 		sessions:     make(map[string]*session.Session),
 	}
 }
@@ -148,7 +152,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create session
-	sess, err := session.New(sessionID, scriptPath, nil, s.logger)
+	sess, err := session.New(sessionID, scriptPath, s.opts, s.logger)
 	if err != nil {
 		s.logger.Errorf("session create: %v", err)
 		c.Close(websocket.StatusInternalError, err.Error())
