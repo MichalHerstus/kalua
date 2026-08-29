@@ -1,0 +1,402 @@
+/**
+ * KALUA default styles
+ */
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #1a1a2e;
+    background: #f5f5f5;
+    margin: 0;
+    padding: 16px;
+}
+
+#app {
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+/* Stage - where forms are rendered */
+#stage {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    padding: 24px;
+    min-height: 300px;
+}
+
+/* Form */
+.kalua-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.kalua-form[layout="grid"] {
+    display: grid;
+    gap: 16px;
+}
+
+.kalua-form-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+/* Controls */
+.kalua-control {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.kalua-control[layout="horizontal"] {
+    flex-direction: row;
+    align-items: center;
+}
+
+.kalua-label {
+    font-weight: 500;
+    color: #333;
+}
+
+.kalua-label:has(+ .kalua-required)::after {
+    content: ' *';
+    color: #d32f2f;
+}
+
+/* Inputs */
+.kalua-input,
+.kalua-select,
+.kalua-textarea {
+    padding: 8px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 14px;
+    font-family: inherit;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.kalua-input:focus,
+.kalua-select:focus,
+.kalua-textarea:focus {
+    outline: none;
+    border-color: #1976d2;
+    box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.15);
+}
+
+.kalua-input:disabled,
+.kalua-select:disabled,
+.kalua-textarea:disabled {
+    background: #f5f5f5;
+    color: #999;
+    cursor: not-allowed;
+}
+
+.kalua-input[type="checkbox"],
+.kalua-input[type="radio"] {
+    width: 18px;
+    height: 18px;
+    accent-color: #1976d2;
+}
+
+.kalua-textarea {
+    min-height: 80px;
+    resize: vertical;
+}
+
+/* Buttons */
+.kalua-button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.2s, transform 0.1s;
+}
+
+.kalua-button:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.3);
+}
+
+.kalua-button:active {
+    transform: scale(0.98);
+}
+
+.kalua-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.kalua-button-primary {
+    background: #1976d2;
+    color: white;
+}
+
+.kalua-button-primary:hover {
+    background: #1565c0;
+}
+
+.kalua-button-secondary {
+    background: #e0e0e0;
+    color: #333;
+}
+
+.kalua-button-secondary:hover {
+    background: #d5d5d5;
+}
+
+.kalua-button-danger {
+    background: #d32f2f;
+    color: white;
+}
+
+.kalua-button-danger:hover {
+    background: #c62828;
+}
+
+/* Combo / Select */
+.kalua-select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 40px;
+}
+
+/* List */
+.kalua-list {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: white;
+}
+
+.kalua-list option {
+    padding: 8px 12px;
+}
+
+.kalua-list option:checked {
+    background: #e3f2fd;
+    color: #1976d2;
+}
+
+/* Table (Grid) */
+.kalua-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.kalua-table th,
+.kalua-table td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.kalua-table th {
+    font-weight: 600;
+    background: #fafafa;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.kalua-table tr:hover {
+    background: #fafafa;
+}
+
+.kalua-table tr.selected {
+    background: #e3f2fd;
+}
+
+.kalua-table input,
+.kalua-table select {
+    width: 100%;
+    padding: 4px 8px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    font-size: 13px;
+}
+
+.kalua-table input:focus,
+.kalua-table select:focus {
+    border-color: #1976d2;
+    outline: none;
+}
+
+/* Checkbox / Radio groups */
+.kalua-checkbox-group,
+.kalua-radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.kalua-checkbox-item,
+.kalua-radio-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+/* Msgbox (Modal) */
+.msgbox-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 16px;
+    animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.msgbox {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    min-width: 320px;
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow: auto;
+    animation: slideUp 0.2s ease;
+}
+
+@keyframes slideUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.msgbox-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid #e0e0e0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.msgbox-icon {
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+}
+
+.msgbox-title {
+    font-weight: 600;
+    font-size: 16px;
+}
+
+.msgbox-content {
+    padding: 20px;
+}
+
+.msgbox-actions {
+    padding: 16px 20px;
+    border-top: 1px solid #e0e0e0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+/* Msgbox variants */
+.msgbox-info .msgbox-icon { color: #1976d2; }
+.msgbox-warn .msgbox-icon { color: #f57c00; }
+.msgbox-error .msgbox-icon { color: #d32f2f; }
+.msgbox-confirm .msgbox-icon { color: #1976d2; }
+
+/* Status bar */
+#status-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #333;
+    color: white;
+    padding: 8px 16px;
+    font-size: 13px;
+    z-index: 100;
+    transform: translateY(100%);
+    transition: transform 0.3s ease;
+}
+
+#status-bar:not(.hidden) {
+    transform: translateY(0);
+}
+
+/* Error banner */
+.error-banner {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    background: #fff3e0;
+    border: 1px solid #ffcc80;
+    border-radius: 8px;
+    padding: 16px 20px;
+    max-width: 400px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+    z-index: 1000;
+    animation: slideInRight 0.3s ease;
+}
+
+@keyframes slideInRight {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+.error-banner strong {
+    color: #e65100;
+}
+
+.error-banner pre {
+    margin: 8px 0 0;
+    padding: 8px;
+    background: #fff8e1;
+    border-radius: 4px;
+    font-size: 11px;
+    overflow: auto;
+    max-height: 200px;
+}
+
+/* Quit message */
+.quit-message {
+    text-align: center;
+    padding: 48px 24px;
+    color: #666;
+}
+
+/* Hidden utility */
+.hidden {
+    display: none !important;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    body {
+        padding: 8px;
+    }
+    #stage {
+        padding: 16px;
+        border-radius: 0;
+    }
+    .msgbox {
+        min-width: auto;
+        margin: 16px;
+    }
+}

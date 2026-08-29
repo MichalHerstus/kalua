@@ -1,0 +1,11 @@
+# Build output
+KALUA
+*.exe
+
+# SQLite test databases
+*.db
+*.sqlite
+*.sqlite3
+
+# macOS
+.DS_Store
