@@ -57,6 +57,9 @@ type App struct {
 
 	// sess is the session this app belongs to (for Form stack, etc.)
 	sess common.SessionInterface
+
+	// suspendedForm is set when main coroutine yields on form.show
+	suspendedForm string
 }
 
 // NewApp binds the scheduler to an existing sandboxed state.
@@ -95,6 +98,8 @@ func (a *App) ScheduleSleep(L *lua.LState, Delay time.Duration) int {
 
 // Run executes fn (the app's main) inside a coroutine and pumps it until it
 // finishes, yields to an unknown pending op, or k.quit() is requested.
+// Returns nil on normal completion, ErrSuspended if suspended on form.show,
+// or an error on failure.
 func (a *App) Run(fn *lua.LFunction) error {
 	co, cancel := a.L.NewThread()
 	a.cancel = cancel
@@ -131,11 +136,37 @@ func (a *App) Run(fn *lua.LFunction) error {
 				time.Sleep(op.Delay)
 			}
 		case PendingFormShow:
-			// Form show is handled by the session actor - we just wait for the
-			// session to Resume us when the Form closes
-			// The actual waiting happens in the session actor
+			// Main coroutine suspended on form.show - return special status
+			// so the session actor can continue processing inbox messages.
+			// The session will call ResumeMain when the form is closed.
+			a.suspendedForm = op.Form
+			return ErrSuspended
 		case PendingNone:
 			return fmt.Errorf("internal: coroutine yielded without a pending op")
 		}
 	}
+}
+
+// ErrSuspended is returned by App.Run when the main coroutine suspends on form.show.
+var ErrSuspended = fmt.Errorf("suspended on form show")
+
+// SuspendedForm returns the name of the form the main coroutine is suspended on,
+// or empty string if not suspended.
+func (a *App) SuspendedForm() string {
+	return a.suspendedForm
+}
+
+// ResumeMain resumes the main coroutine after a form.show suspension.
+// Should be called by the session when the form is closed.
+func (a *App) ResumeMain() error {
+	if a.suspendedForm == "" {
+		return nil // not suspended
+	}
+	a.suspendedForm = ""
+
+	// The main coroutine is the one we created in Run (co).
+	// We need to resume it. But we don't have direct access to co here.
+	// The session will call L.Resume on the stored coroutine.
+	// This method just clears the suspended state.
+	return nil
 }

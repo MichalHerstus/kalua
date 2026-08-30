@@ -19,6 +19,8 @@ type SessionInterface interface {
 	ClientInfo() (w, h int, locale string)
 	RequestClipboardGet(co *lua.LState, cancel func())
 	PostClipboardResp(clipID, value string)
+	StoreFormCoro(name string, co *lua.LState)
+	ResumeFormCoro(name string) bool
 }
 
 // DefaultConv converts an async result to a Lua value on the caller's state,

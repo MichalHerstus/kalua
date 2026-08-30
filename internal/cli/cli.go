@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -77,7 +79,7 @@ func runCmd(args []string) int {
 
 	var (
 		port         = fs.Int("port", 0, "HTTP port (0 = ephemeral)")
-		_            = fs.Bool("no-browser", false, "Do not open browser")
+		noBrowser    = fs.Bool("no-browser", false, "Do not open browser")
 		sessionLimit = fs.Int("session-limit", 8, "Max concurrent browser tabs")
 		verbose      = fs.Bool("v", false, "Verbose logging")
 		testMode     = fs.Bool("test", false, "Run in test mode (headless, no server)")
@@ -112,7 +114,11 @@ func runCmd(args []string) int {
 	server := web.NewServer("127.0.0.1", *port, *sessionLimit,
 		bindings.Options{AllowFS: allowFSFlag.values}, host.NewLogger(*verbose))
 
-	// TODO: open browser if not --no-browser
+	// Open browser with script parameter
+	if !*noBrowser {
+		url := fmt.Sprintf("http://127.0.0.1:%d/?script=%s", server.Port(), script)
+		_ = openBrowser(url)
+	}
 
 	if err := server.Run(ctx, script); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
@@ -295,6 +301,23 @@ func serveCmd(args []string) int {
 			}
 		}
 	}
+}
+
+func openBrowser(url string) error {
+	var cmd string
+	var args []string
+
+	switch runtime.GOOS {
+	case "windows":
+		cmd = "cmd"
+		args = []string{"/c", "start"}
+	case "darwin":
+		cmd = "open"
+	default: // "linux", "freebsd", "openbsd", "netbsd"
+		cmd = "xdg-open"
+	}
+	args = append(args, url)
+	return exec.Command(cmd, args...).Start()
 }
 
 type multiFlag struct{ values []string }

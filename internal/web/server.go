@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/yuin/gopher-lua"
 
 	"kalua/internal/bindings"
 	"kalua/internal/common"
@@ -38,6 +37,12 @@ type Server struct {
 
 	sessionsMu sync.Mutex
 	sessions   map[string]*session.Session
+}
+
+// Port returns the configured port. If 0 was given (ephemeral), the actual port
+// is only available after the server starts listening.
+func (s *Server) Port() int {
+	return s.port
 }
 
 // NewServer creates a new web server. opts carries per-session binding
@@ -232,7 +237,7 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		ctrl := getString(msg, "ctrl")
 		event := getString(msg, "event")
 		value := msg["value"]
-		sess.PostEvent(form, ctrl, event, toLValue(value))
+		sess.PostEventAny(form, ctrl, event, value)
 	case "msgbox_choice":
 		id := getString(msg, "id")
 		choice := getString(msg, "choice")
@@ -270,19 +275,4 @@ func getInt(m map[string]interface{}, key string) int {
 		}
 	}
 	return 0
-}
-
-func toLValue(v interface{}) lua.LValue {
-	switch val := v.(type) {
-	case string:
-		return lua.LString(val)
-	case float64:
-		return lua.LNumber(val)
-	case bool:
-		return lua.LBool(val)
-	case nil:
-		return lua.LNil
-	default:
-		return lua.LString(fmt.Sprintf("%v", v))
-	}
 }

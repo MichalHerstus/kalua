@@ -35,6 +35,8 @@ func registerForms(e *Env) {
 		sess := e.App.Session()
 		if sess != nil {
 			sess.PushForm(name)
+			// Store the suspended coroutine so it can be resumed when form closes
+			sess.StoreFormCoro(name, L)
 		}
 
 		// Render form and send to browser
@@ -59,6 +61,9 @@ func registerForms(e *Env) {
 				name = sess.TopForm()
 			}
 			sess.PopForm()
+
+			// Resume the suspended coroutine for this form
+			sess.ResumeFormCoro(name)
 		}
 
 		sendOutbox(e, common.OutboxMsg{
@@ -77,6 +82,8 @@ func registerForms(e *Env) {
 		if sess != nil {
 			for sess.TopForm() != name && sess.TopForm() != "" {
 				closed := sess.PopForm()
+				// Resume the suspended coroutine for each closed form
+				sess.ResumeFormCoro(closed)
 				sendOutbox(e, common.OutboxMsg{
 					Type: "close_form",
 					Form: closed,
@@ -555,18 +562,63 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		return
 	}
 
+	// Track control order
+	order := tbl.RawGetString("order")
+	if order == lua.LNil {
+		order = L.NewTable()
+		tbl.RawSetString("order", order)
+	}
+	orderTbl, ok := order.(*lua.LTable)
+	if !ok {
+		return
+	}
+	orderTbl.RawSetInt(orderTbl.Len()+1, lua.LString(name))
+
 	ctrlTbl := L.NewTable()
 	ctrlTbl.RawSetString("name", lua.LString(name))
 	ctrlTbl.RawSetString("type", lua.LString(ctrlType))
 	ctrlTbl.RawSetString("form", lua.LString(formName))
-	ctrlTbl.RawSetString("label", lua.LString(opts.RawGetString("label").String()))
+
+	// Label control uses "text" option, others use "label"
+	if ctrlType == "label" {
+		ctrlTbl.RawSetString("label", lua.LString(opts.RawGetString("text").String()))
+	} else {
+		ctrlTbl.RawSetString("label", lua.LString(opts.RawGetString("label").String()))
+	}
+
 	ctrlTbl.RawSetString("value", opts.RawGetString("value"))
 	ctrlTbl.RawSetString("enabled", opts.RawGetString("enabled"))
 	ctrlTbl.RawSetString("visible", opts.RawGetString("visible"))
 	ctrlTbl.RawSetString("class", opts.RawGetString("class"))
-	ctrlTbl.RawSetString("onclick", opts.RawGetString("onclick"))
 	ctrlTbl.RawSetString("items", opts.RawGetString("items"))
 	ctrlTbl.RawSetString("hidden_value", opts.RawGetString("hidden_value"))
+
+	// For button with onclick, register as click handler
+	if ctrlType == "button" {
+		onclick := opts.RawGetString("onclick")
+		if onclick != lua.LNil {
+			if lfn, ok := onclick.(*lua.LFunction); ok {
+				// Register handler for click event
+				handlers := tbl.RawGetString("handlers")
+				if handlers == lua.LNil {
+					handlers = L.NewTable()
+					tbl.RawSetString("handlers", handlers)
+				}
+				handlersTbl, ok := handlers.(*lua.LTable)
+				if ok {
+					ctrlHandlers := handlersTbl.RawGetString(name)
+					if ctrlHandlers == lua.LNil {
+						ctrlHandlers = L.NewTable()
+						handlersTbl.RawSetString(name, ctrlHandlers)
+					}
+					ctrlHandlersTbl, ok := ctrlHandlers.(*lua.LTable)
+					if ok {
+						ctrlHandlersTbl.RawSetString("click", lfn)
+					}
+				}
+			}
+		}
+	}
 
 	controlsTbl.RawSetString(name, ctrlTbl)
 }
@@ -585,6 +637,7 @@ func renderForm(L *lua.LState, formName string) string {
 	title := tbl.RawGetString("title").String()
 	layout := tbl.RawGetString("layout").String()
 	controls := tbl.RawGetString("controls")
+	order := tbl.RawGetString("order")
 
 	var html string
 	html += `<div id="f:` + formName + `" class="kalua-form"`
@@ -598,11 +651,25 @@ func renderForm(L *lua.LState, formName string) string {
 	}
 
 	if controlsTbl, ok := controls.(*lua.LTable); ok {
-		controlsTbl.ForEach(func(k, v lua.LValue) {
-			if ctrl, ok := v.(*lua.LTable); ok {
-				html += renderControl(ctrl)
-			}
-		})
+		// Iterate in order if available
+		if orderTbl, ok := order.(*lua.LTable); ok {
+			orderTbl.ForEach(func(k, v lua.LValue) {
+				name := v.String()
+				ctrl := controlsTbl.RawGetString(name)
+				if ctrl != lua.LNil {
+					if ctrlTbl, ok := ctrl.(*lua.LTable); ok {
+						html += renderControl(ctrlTbl)
+					}
+				}
+			})
+		} else {
+			// Fallback to unordered iteration
+			controlsTbl.ForEach(func(k, v lua.LValue) {
+				if ctrl, ok := v.(*lua.LTable); ok {
+					html += renderControl(ctrl)
+				}
+			})
+		}
 	}
 
 	html += `</div>`
@@ -623,7 +690,8 @@ func renderControl(ctrl *lua.LTable) string {
 		return `<label class="kalua-label" id="` + id + `">` + label + `</label>`
 	case "textbox":
 		enabled := ""
-		if ctrl.RawGetString("enabled") == lua.LNil || ctrl.RawGetString("enabled").String() == "false" {
+		enabledVal := ctrl.RawGetString("enabled")
+		if enabledVal != lua.LNil && enabledVal.String() == "false" {
 			enabled = ` disabled`
 		}
 		visible := ""
@@ -640,19 +708,15 @@ func renderControl(ctrl *lua.LTable) string {
 			btnClass = v.String()
 		}
 		enabled := ""
-		if ctrl.RawGetString("enabled") == lua.LNil || ctrl.RawGetString("enabled").String() == "false" {
+		enabledVal := ctrl.RawGetString("enabled")
+		if enabledVal != lua.LNil && enabledVal.String() == "false" {
 			enabled = ` disabled`
 		}
 		visible := ""
 		if ctrl.RawGetString("visible") != lua.LNil && ctrl.RawGetString("visible").String() == "false" {
 			visible = ` style="display:none"`
 		}
-		onclick := ctrl.RawGetString("onclick")
-		var onclickAttr string
-		if onclick != lua.LNil {
-			onclickAttr = ` onclick="` + onclick.String() + `"`
-		}
-		return `<button type="button" class="` + btnClass + `" id="` + id + `" name="` + name + `" data-k-form="` + formName + `" data-k-ctrl="` + name + `" ` + onclickAttr + enabled + visible + `>` + label + `</button>`
+		return `<button type="button" class="` + btnClass + `" id="` + id + `" name="` + name + `" data-k-form="` + formName + `" data-k-ctrl="` + name + `" ` + enabled + visible + `>` + label + `</button>`
 	case "combo", "list":
 		items := ctrl.RawGetString("items")
 		var options string
@@ -666,7 +730,8 @@ func renderControl(ctrl *lua.LTable) string {
 			size = ` size="5"`
 		}
 		enabled := ""
-		if ctrl.RawGetString("enabled") == lua.LNil || ctrl.RawGetString("enabled").String() == "false" {
+		enabledVal := ctrl.RawGetString("enabled")
+		if enabledVal != lua.LNil && enabledVal.String() == "false" {
 			enabled = ` disabled`
 		}
 		visible := ""
@@ -683,7 +748,8 @@ func renderControl(ctrl *lua.LTable) string {
 			checked = ` checked`
 		}
 		enabled := ""
-		if ctrl.RawGetString("enabled") == lua.LNil || ctrl.RawGetString("enabled").String() == "false" {
+		enabledVal := ctrl.RawGetString("enabled")
+		if enabledVal != lua.LNil && enabledVal.String() == "false" {
 			enabled = ` disabled`
 		}
 		visible := ""
@@ -706,7 +772,8 @@ func renderControl(ctrl *lua.LTable) string {
 			checked = ` checked`
 		}
 		enabled := ""
-		if ctrl.RawGetString("enabled") == lua.LNil || ctrl.RawGetString("enabled").String() == "false" {
+		enabledVal := ctrl.RawGetString("enabled")
+		if enabledVal != lua.LNil && enabledVal.String() == "false" {
 			enabled = ` disabled`
 		}
 		visible := ""
@@ -757,7 +824,8 @@ func renderControl(ctrl *lua.LTable) string {
 		}
 
 		enabled := ""
-		if ctrl.RawGetString("enabled") == lua.LNil || ctrl.RawGetString("enabled").String() == "false" {
+		enabledVal := ctrl.RawGetString("enabled")
+		if enabledVal != lua.LNil && enabledVal.String() == "false" {
 			enabled = ` disabled`
 		}
 		visible := ""

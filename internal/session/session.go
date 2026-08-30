@@ -5,7 +5,10 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"html"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,14 +23,14 @@ import (
 type inboxMsgType int
 
 const (
-	inboxNone      inboxMsgType = iota
-	inboxWSEvent                // event from browser (click, input, etc.)
-	inboxTimer                  // timer fired
-	inboxAsyncDone              // blocking operation completed (DB, HTTP, etc.)
-	inboxMsgboxChoice           // user answered a k.msgbox
-	inboxClipboardResp          // browser clipboard_get value
-	inboxQuery                  // external read of Lua state (tests)
-	inboxClose                  // session teardown
+	inboxNone          inboxMsgType = iota
+	inboxWSEvent                    // event from browser (click, input, etc.)
+	inboxTimer                      // timer fired
+	inboxAsyncDone                  // blocking operation completed (DB, HTTP, etc.)
+	inboxMsgboxChoice               // user answered a k.msgbox
+	inboxClipboardResp              // browser clipboard_get value
+	inboxQuery                      // external read of Lua state (tests)
+	inboxClose                      // session teardown
 )
 
 // asyncOp represents a suspended coroutine waiting for an async operation
@@ -44,6 +47,7 @@ type inboxMsg struct {
 	ctrl  string      // control name
 	event string      // event name (click, input, etc.)
 	value lua.LValue  // event value
+	raw   interface{} // JSON-decoded event value (converted on the actor goroutine)
 	timer string      // timer ID
 	data  interface{} // generic payload for async completions
 
@@ -74,6 +78,10 @@ type Session struct {
 	// Form stack for modal Show Form semantics (D52).
 	// Top of slice is the visible form.
 	formStack []string
+
+	// Form show coroutines - suspended coroutines waiting for form close
+	formCoros  map[string]*lua.LState
+	formCoroMu sync.Mutex
 
 	// Timers managed by this session
 	timers map[string]*time.Timer
@@ -131,6 +139,8 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 		cancel: cancel,
 		done:   make(chan struct{}),
 		timers: make(map[string]*time.Timer),
+		// Form show coroutines
+		formCoros: make(map[string]*lua.LState),
 		// Async operations - suspended coroutines waiting for completion
 		asyncOps: make(map[string]*asyncOp),
 	}
@@ -153,16 +163,22 @@ func (s *Session) run(ctx context.Context, mainFn *lua.LFunction, logger Logger)
 	defer s.wg.Done()
 
 	// Start main() in a coroutine
-	if err := s.app.Run(mainFn); err != nil {
-		// Error during startup
-		logger.Errorf("main error: %v", err)
-		s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error()}
+	err := s.app.Run(mainFn)
+	if err != nil {
+		if err == vm.ErrSuspended {
+			// Main suspended on form.show - enter actor loop to process events
+			// The main coroutine will be resumed when the form is closed
+		} else {
+			// Error during startup
+			logger.Errorf("main error: %v", err)
+			s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error()}
+			s.outbox <- common.OutboxMsg{Type: "quit"}
+			return
+		}
+	} else {
+		// Main completed normally - send quit but continue actor loop for timers/async
 		s.outbox <- common.OutboxMsg{Type: "quit"}
-		return
 	}
-
-	// Main completed normally
-	s.outbox <- common.OutboxMsg{Type: "quit"}
 
 	// Actor loop: drain inbox until closed
 	for {
@@ -203,6 +219,18 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 
 // handleWSEvent dispatches a browser event to the appropriate Lua handler.
 func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
+	// Convert a raw JSON-decoded value to a Lua value on the actor goroutine.
+	// This keeps all LState access serialized (s.L is not goroutine-safe).
+	value := msg.value
+	if msg.raw != nil {
+		value = s.toLuaValue(msg.raw)
+	}
+
+	// Update control value in form definition from browser event
+	if value != lua.LNil {
+		s.updateControlValue(msg.form, msg.ctrl, value)
+	}
+
 	// Look up the handler in the form's event table
 	formTbl := s.L.GetGlobal(msg.form)
 	if formTbl == lua.LNil {
@@ -245,7 +273,7 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 	// Run the handler in a coroutine
 	co, cancel := s.L.NewThread()
 
-	st, err, _ := s.L.Resume(co, fn, msg.value)
+	st, err, _ := s.L.Resume(co, fn, value)
 	if st == lua.ResumeError {
 		// cancel() may be nil (NewThread returns nil when the state has no
 		// context) and may panic if called on a finished coroutine; guard both.
@@ -416,13 +444,46 @@ func (s *Session) ShowMsgbox(co *lua.LState, cancel func(), text, kind string) s
 	s.SendOutbox(common.OutboxMsg{
 		Type: "msgbox",
 		ID:   msgboxID,
-		Text: text,
 		Kind: kind,
+		HTML: renderMsgboxHTML(msgboxID, text, kind),
 	})
 
 	// The coroutine will be resumed when HandleMsgboxChoice is called
 	// We need to yield here - the actual resume happens via inbox
 	return ""
+}
+
+// renderMsgboxHTML builds the msgbox body: escaped text plus the buttons
+// appropriate for the kind. Each button carries data-k-msgbox-id and
+// data-k-choice so the JS client can answer with msgbox_choice.
+func renderMsgboxHTML(id, text, kind string) string {
+	choices := []string{"ok"}
+	switch kind {
+	case "ok-cancel":
+		choices = []string{"ok", "cancel"}
+	case "yes-no":
+		choices = []string{"yes", "no"}
+	case "info", "warn", "error", "":
+		choices = []string{"ok"}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(`<p class="msgbox-text">`)
+	sb.WriteString(html.EscapeString(text))
+	sb.WriteString(`</p>`)
+	sb.WriteString(`<div class="msgbox-buttons">`)
+	for _, choice := range choices {
+		label := strings.ToUpper(choice)
+		sb.WriteString(`<button type="button" class="kalua-button" data-k-msgbox-id="`)
+		sb.WriteString(html.EscapeString(id))
+		sb.WriteString(`" data-k-choice="`)
+		sb.WriteString(html.EscapeString(choice))
+		sb.WriteString(`">`)
+		sb.WriteString(html.EscapeString(label))
+		sb.WriteString(`</button>`)
+	}
+	sb.WriteString(`</div>`)
+	return sb.String()
 }
 
 // HandleMsgboxChoice is called from the web bridge goroutine when the browser
@@ -524,9 +585,20 @@ func (s *Session) Inbox() chan<- inboxMsg {
 }
 
 // PostEvent posts a browser event to the session inbox.
-// PostEvent posts a browser event to the session inbox.
 func (s *Session) PostEvent(form, ctrl, event string, value lua.LValue) {
 	s.inbox <- inboxMsg{typ: inboxWSEvent, form: form, ctrl: ctrl, event: event, value: value}
+}
+
+// PostEventAny posts a browser event carrying an arbitrary JSON-decoded value
+// (map[string]interface{}, []interface{}, string, bool, float64, nil). The
+// value is converted to a Lua value inside the actor goroutine to keep all
+// LState access serialized.
+func (s *Session) PostEventAny(form, ctrl, event string, value interface{}) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxWSEvent, form: form, ctrl: ctrl, event: event, raw: value}:
+	case <-s.done:
+		// session closed; drop
+	}
 }
 
 // GetGlobal reads a Lua global on the actor goroutine and returns its value.
@@ -596,6 +668,124 @@ func (s *Session) TopForm() string {
 		return ""
 	}
 	return s.formStack[len(s.formStack)-1]
+}
+
+// toLuaValue converts a JSON-decoded Go value (from a browser WS message) into
+// a Lua value, creating tables recursively. Must run on the actor goroutine so
+// s.L is only touched serially.
+func (s *Session) toLuaValue(v interface{}) lua.LValue {
+	switch val := v.(type) {
+	case string:
+		return lua.LString(val)
+	case float64:
+		return lua.LNumber(val)
+	case bool:
+		return lua.LBool(val)
+	case nil:
+		return lua.LNil
+	case map[string]interface{}:
+		tbl := s.L.NewTable()
+		for k, item := range val {
+			tbl.RawSetString(k, s.toLuaValue(item))
+		}
+		return tbl
+	case []interface{}:
+		tbl := s.L.NewTable()
+		for i, item := range val {
+			tbl.RawSetInt(i+1, s.toLuaValue(item))
+		}
+		return tbl
+	case json.Number:
+		if n, err := val.Int64(); err == nil {
+			return lua.LNumber(n)
+		}
+		if f, err := val.Float64(); err == nil {
+			return lua.LNumber(f)
+		}
+		return lua.LString(val.String())
+	default:
+		return lua.LString(fmt.Sprintf("%v", v))
+	}
+}
+
+// updateControlValue updates a control's value in the form definition.
+func (s *Session) updateControlValue(formName, ctrlName string, value lua.LValue) {
+	// If value is a table with multiple control values, update all of them
+	if valueTbl, ok := value.(*lua.LTable); ok {
+		valueTbl.ForEach(func(k, v lua.LValue) {
+			name := k.String()
+			s.updateSingleControlValue(formName, name, v)
+		})
+		return
+	}
+
+	s.updateSingleControlValue(formName, ctrlName, value)
+}
+
+func (s *Session) updateSingleControlValue(formName, ctrlName string, value lua.LValue) {
+	formTbl := s.L.GetGlobal(formName)
+	if formTbl == lua.LNil {
+		return
+	}
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return
+	}
+
+	controls := tbl.RawGetString("controls")
+	if controls == lua.LNil {
+		return
+	}
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return
+	}
+
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	if ctrl == lua.LNil {
+		return
+	}
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return
+	}
+
+	ctrlTbl.RawSetString("value", value)
+}
+
+// StoreFormCoro stores the suspended coroutine for a form show operation.
+func (s *Session) StoreFormCoro(name string, co *lua.LState) {
+	s.formCoroMu.Lock()
+	s.formCoros[name] = co
+	s.formCoroMu.Unlock()
+}
+
+// ResumeFormCoro resumes the suspended coroutine for a form show operation.
+func (s *Session) ResumeFormCoro(name string) bool {
+	s.formCoroMu.Lock()
+	co, exists := s.formCoros[name]
+	if exists {
+		delete(s.formCoros, name)
+	}
+	s.formCoroMu.Unlock()
+
+	if !exists {
+		return false
+	}
+
+	// Resume the coroutine with nil (form.show returns nil)
+	st, err, _ := s.L.Resume(co, nil, lua.LNil)
+	if st == lua.ResumeError {
+		if s.env != nil && s.env.Logger != nil {
+			s.env.Logger.Errorf("form show resume error: %v", err)
+		}
+		return false
+	}
+
+	// Clear the suspended form state in the App
+	s.app.ResumeMain()
+
+	return true
 }
 
 // SetClientInfo stores the browser viewport size and locale reported via the

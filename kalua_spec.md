@@ -564,6 +564,7 @@ KALUA serve  <app.lua> [--port 8080] [--workers N] [--mode http|ws|tcp] [--verbo
 KALUA check  <app.lua>                  # reports syntax/global misuse
 KALUA new    <name>                     # scaffolds a minimal app.lua
 KALUA lsp                               # language server over stdio (LSP, Content-Length frames)
+KALUA repl   [repl.lua] [--port 0] [--no-browser] [--verbose]    # interactive browser REPL
 KALUA version
 ```
 
@@ -579,6 +580,12 @@ KALUA version
 - `new` writes a minimal runnable `{name}.lua` scaffold (`function main()` + `k.print`).
 - `lsp` serves Language Server protocol on stdio (UTF-8 positions): diagnostics,
   completion, hover and go-to-definition; consumed by `extensions/vscode-kalua`.
+- `repl` starts an interactive browser-based REPL with Monaco Editor. A persistent
+  session actor holds a single LState across code evaluations. `repl.lua` (in CWD) is
+  loaded if present; otherwise a minimal scaffold is created. `k.print` output is
+  captured and displayed in the REPL console. Ctrl+Enter executes; Shift+Enter inserts
+  newline. Multi-line input is auto-detected via incomplete-compile check. `--no-browser`
+  suppresses auto-open.
 - if —verbose, full log to terminal (functions, arguments, variables values etc.). Otherwise just error messages.
 - `--db` pre-registers named connections usable by `k.connect_db("#NAME")`. Alternatively connections can be stored in .ENV file in KALUA folder.
 - `--arg` seeds `ARGS` table for headless/scriptable use.
@@ -629,6 +636,10 @@ Status legend: ✅ implemented · ⏳ pending.
    window, params, net_ok/locale/ping, FTP, SMTP/POP3, SOAP web-service (k.webservice_run).
    Remaining: file picker (`k.pick_file`, browser-integrated).
 10. ✅ **Server mode (T2)** — WebSocket listener (`handle_ws`, `k.ws_*`), TCP listener (`handle_tcp`, `k.tcp_*`).
+11. ⏳ **REPL mode** — `KALUA repl [repl.lua] [--port 0] [--no-browser] [--verbose]` opens an interactive browser-based REPL with Monaco Editor. A persistent session actor holds a single LState across evaluations; `k.print` output is captured and returned with each eval result. `repl.lua` scaffolds minimal env if missing. WebSocket protocol: `repl_eval` (code) → `repl_result` {output, result, error}. Multi-line supported via incomplete-detection on compile. Assets embedded via `go:embed` (Monaco min bundle).
+    - **UI bindings (subset, like serve mode)**: `k.msgbox`, `k.status_show/close`, `k.clipboard_get/set`, `k.bell`, `k.screen_size`, `k.net_ok`, `k.locale`, `k.ping` work; `k.form.*` and `k.ctrl.*` raise runtime error.
+    - **Frontend**: split view (Monaco editor top, output console bottom); Ctrl+Enter executes, Shift+Enter newlines; color-coded output (print/result/error); modal for msgbox; status bar for status_show.
+    - **Build**: `make assets-monaco` downloads Monaco min bundle to `internal/web/assets/monaco/`; embedded via `go:embed`.
 
 > Note: implementation order differed from this list — the LSP/editor phase (5) and server mode (8/10)
 > shipped before the database (4) and data/comms (5) groups were fully completed. See §10 for the
@@ -659,7 +670,7 @@ Status legend: ✅ implemented · ⏳ pending.
 ## 10. Status
 
 Spec complete (this document, web-UI revision 2026-08-28). Phases 1–8 and 10
-implemented; see §8 for the per-phase status.
+implemented; phase 11 (REPL) planned; see §8 for the per-phase status.
 
 **Full T1 run + serve surface implemented as of 2026-08-30:**
 
@@ -692,7 +703,15 @@ flag enforces the cap via a plain 503 (the friendlier "already running" page is 
 and browser auto-open on `run` is not implemented (use the printed URL manually; `--no-browser`
 is accepted and always effective).
 
-Next step: file picker (phase 9 remainder) — browser-integrated `k.pick_file`.
+**Planned (Phase 11):** REPL mode — `KALUA repl` with Monaco Editor, persistent session actor,
+captured `k.print` output, multi-line support via incomplete-compile detection.
+UI bindings subset (like serve mode): `msgbox`, `status_*`, `clipboard_*`, `bell`, `screen_size`,
+`net_ok`, `locale`, `ping`; forms/controls disabled. Split-view frontend (editor + output console),
+modal for msgbox, status bar for status_show. Assets embedded via `go:embed` (Monaco min bundle).
+
+Next steps:
+1. File picker (phase 9 remainder) — browser-integrated `k.pick_file`.
+2. REPL mode (phase 11) — `KALUA repl` with Monaco Editor.
 
 ---
 

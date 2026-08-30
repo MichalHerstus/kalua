@@ -287,12 +287,42 @@
 
     // Event handlers (delegated)
     function handleClick(e) {
+        // Msgbox buttons answer the modal (no form/ctrl context).
+        const msgboxBtn = e.target.closest('[data-k-msgbox-id][data-k-choice]');
+        if (msgboxBtn) {
+            const id = msgboxBtn.dataset.kMsgboxId;
+            const choice = msgboxBtn.dataset.kChoice;
+            send({ type: 'msgbox_choice', id: id, choice: choice });
+            closeMsgbox(id);
+            return;
+        }
+
         const target = e.target.closest('[data-k-form][data-k-ctrl]');
         if (!target) return;
 
         const form = target.dataset.kForm;
         const ctrl = target.dataset.kCtrl;
-        sendEvent(form, ctrl, 'click', getControlValue(target));
+
+        // For button clicks, also collect all form control values
+        let value = getControlValue(target);
+        if (target.tagName === 'BUTTON') {
+            value = collectFormValues(form);
+        }
+
+        sendEvent(form, ctrl, 'click', value);
+    }
+
+    function collectFormValues(form) {
+        const formEl = document.getElementById('f:' + form);
+        if (!formEl) return null;
+
+        const values = {};
+        const inputs = formEl.querySelectorAll('input[data-k-form][data-k-ctrl], select[data-k-form][data-k-ctrl], textarea[data-k-form][data-k-ctrl]');
+        inputs.forEach(function(input) {
+            const ctrlName = input.dataset.kCtrl;
+            values[ctrlName] = getControlValue(input);
+        });
+        return values;
     }
 
     function handleInput(e) {

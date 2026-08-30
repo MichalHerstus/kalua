@@ -307,6 +307,17 @@ body {
     padding: 20px;
 }
 
+.msgbox-text {
+    margin: 0 0 16px;
+    line-height: 1.5;
+}
+
+.msgbox-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
 .msgbox-actions {
     padding: 16px 20px;
     border-top: 1px solid #e0e0e0;
