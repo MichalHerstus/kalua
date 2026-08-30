@@ -163,6 +163,115 @@ var KSets = []Info{
 	{Name: "K.is_null", Signature: "K.is_null(value)", Docs: "Reports whether value is K.NULL.", Group: "helpers"},
 }
 
+// ExprFuncs documents the §5.9 expression functions installed as flat globals
+// (not under k.*) so expressions read like Kalipso. This is static tooling
+// data; the globals are installed by registerExprFuncs in Setup.
+var ExprFuncs = []Info{
+	// string
+	{Name: "left", Group: "string", Signature: "left(s, n)", Docs: "Returns the first n characters of s."},
+	{Name: "right", Group: "string", Signature: "right(s, n)", Docs: "Returns the last n characters of s."},
+	{Name: "middle", Group: "string", Signature: "middle(s, start, count)", Docs: "Returns count characters of s starting at 1-based start."},
+	{Name: "length", Group: "string", Signature: "length(s)", Docs: "Returns the byte length of s (Lua # semantics)."},
+	{Name: "replace", Group: "string", Signature: "replace(s, old, new)", Docs: "Replaces all occurrences of old in s with new."},
+	{Name: "trim", Group: "string", Signature: "trim(s)", Docs: "Removes leading/trailing whitespace from s."},
+	{Name: "upper", Group: "string", Signature: "upper(s)", Docs: "Converts s to uppercase."},
+	{Name: "lower", Group: "string", Signature: "lower(s)", Docs: "Converts s to lowercase."},
+	{Name: "find", Group: "string", Signature: "find(s, needle[, start])", Docs: "Returns the 1-based position of needle in s (0 if absent)."},
+	{Name: "string_count", Group: "string", Signature: "string_count(s, needle)", Docs: "Counts non-overlapping occurrences of needle in s."},
+	{Name: "complete", Group: "string", Signature: "complete(s, length[, pad])", Docs: "Pads s on the right to length with pad (default space)."},
+	{Name: "ascii", Group: "string", Signature: "ascii(ch)", Docs: "Returns the numeric code of the first byte of ch."},
+	{Name: "charact", Group: "string", Signature: "charact(code)", Docs: "Returns the byte corresponding to code."},
+	{Name: "base64_encode", Group: "string", Signature: "base64_encode(s)", Docs: "Encodes s as base64."},
+	{Name: "base64_decode", Group: "string", Signature: "base64_decode(s)", Docs: "Decodes base64 into a string."},
+	{Name: "urlencode", Group: "string", Signature: "urlencode(s)", Docs: "URL-encodes s (query style, spaces become +)."},
+	{Name: "urldecode", Group: "string", Signature: "urldecode(s)", Docs: "Decodes a URL-encoded string."},
+	{Name: "encode", Group: "string", Signature: "encode(s)", Docs: "Alias of urlencode."},
+	{Name: "decode", Group: "string", Signature: "decode(s)", Docs: "Alias of urldecode."},
+	{Name: "full_encode", Group: "string", Signature: "full_encode(s)", Docs: "Percent-encodes every non-unreserved byte."},
+	{Name: "jsonencode", Group: "string", Signature: "jsonencode(value)", Docs: "Encodes a value as compact JSON (same as k.json_string)."},
+	{Name: "jsondecode", Group: "string", Signature: "jsondecode(text)", Docs: "Parses JSON text (same as k.json_parse)."},
+	{Name: "xmlencode", Group: "string", Signature: "xmlencode(s)", Docs: "Escapes XML special characters."},
+	{Name: "xmldecode", Group: "string", Signature: "xmldecode(s)", Docs: "Unescapes XML entities."},
+	{Name: "guid", Group: "string", Signature: "guid()", Docs: "Generates a random RFC 4122 version-4 UUID."},
+	{Name: "extract_string", Group: "string", Signature: "extract_string(s, start, end)", Docs: "Returns s from 1-based start to end inclusive."},
+	{Name: "set_string", Group: "string", Signature: "set_string(s, start, count, new)", Docs: "Replaces count characters of s at start with new."},
+	{Name: "file_extract_part", Group: "string", Signature: "file_extract_part(path, part)", Docs: "Extracts path/name/ext from a file path."},
+	{Name: "mltext", Group: "string", Signature: "mltext(...)", Docs: "Joins arguments with newlines (multi-line text)."},
+
+	// numeric
+	{Name: "abs", Group: "numeric", Signature: "abs(x)", Docs: "Absolute value of x."},
+	{Name: "round", Group: "numeric", Signature: "round(x[, decimals])", Docs: "Rounds x to decimals (default 0) with half-away-from-zero."},
+	{Name: "floor", Group: "numeric", Signature: "floor(x)", Docs: "Largest integer <= x."},
+	{Name: "ceiling", Group: "numeric", Signature: "ceiling(x)", Docs: "Smallest integer >= x."},
+	{Name: "power", Group: "numeric", Signature: "power(x, y)", Docs: "x raised to the power y."},
+	{Name: "nth_root", Group: "numeric", Signature: "nth_root(x, n)", Docs: "The n-th root of x."},
+	{Name: "sqrt", Group: "numeric", Signature: "sqrt(x)", Docs: "Square root of x."},
+	{Name: "exp", Group: "numeric", Signature: "exp(x)", Docs: "e raised to x."},
+	{Name: "log", Group: "numeric", Signature: "log(x)", Docs: "Natural logarithm of x."},
+	{Name: "log10", Group: "numeric", Signature: "log10(x)", Docs: "Base-10 logarithm of x."},
+	{Name: "sin", Group: "numeric", Signature: "sin(x)", Docs: "Sine of x (radians)."},
+	{Name: "cos", Group: "numeric", Signature: "cos(x)", Docs: "Cosine of x (radians)."},
+	{Name: "tan", Group: "numeric", Signature: "tan(x)", Docs: "Tangent of x (radians)."},
+	{Name: "asin", Group: "numeric", Signature: "asin(x)", Docs: "Arcsine in radians."},
+	{Name: "acos", Group: "numeric", Signature: "acos(x)", Docs: "Arccosine in radians."},
+	{Name: "atan", Group: "numeric", Signature: "atan(x)", Docs: "Arctangent in radians."},
+	{Name: "deg2rad", Group: "numeric", Signature: "deg2rad(x)", Docs: "Converts degrees to radians."},
+	{Name: "rad2deg", Group: "numeric", Signature: "rad2deg(x)", Docs: "Converts radians to degrees."},
+	{Name: "bitwise_and", Group: "numeric", Signature: "bitwise_and(a, b)", Docs: "Bitwise AND of the integer parts of a and b."},
+	{Name: "bitwise_or", Group: "numeric", Signature: "bitwise_or(a, b)", Docs: "Bitwise OR of the integer parts of a and b."},
+	{Name: "bitwise_xor", Group: "numeric", Signature: "bitwise_xor(a, b)", Docs: "Bitwise XOR of the integer parts of a and b."},
+	{Name: "random", Group: "numeric", Signature: "random() / random(max) / random(min, max)", Docs: "Random float in [0,1), integer in [1,max], or in [min,max)."},
+	{Name: "int_part", Group: "numeric", Signature: "int_part(x)", Docs: "Integer part of x (truncated)."},
+	{Name: "dec_part", Group: "numeric", Signature: "dec_part(x)", Docs: "Fractional part of x."},
+	{Name: "mask_number", Group: "numeric", Signature: "mask_number(x, mask)", Docs: "Formats x using a mask (#, 0, comma grouping, decimal)."},
+	{Name: "val", Group: "numeric", Signature: "val(x)", Docs: "Numeric value of x; 0 when not numeric."},
+	{Name: "sum", Group: "numeric", Signature: "sum(table)", Docs: "Sum of the numeric values in a table."},
+	{Name: "extractstringd", Group: "numeric", Signature: "extractstringd(s)", Docs: "Digits of s as a number."},
+
+	// conditional
+	{Name: "lookup", Group: "conditional", Signature: "lookup(key, k1, v1, ...)", Docs: "Returns the value whose key equals key; \"\" when absent."},
+	{Name: "yesno", Group: "conditional", Signature: "yesno(cond, a, b)", Docs: "Returns a when cond is Kalipso-truthy, else b."},
+	{Name: "iif", Group: "conditional", Signature: "iif(cond, a, b)", Docs: "Inline if; returns a when cond is truthy, else b."},
+
+	// datetime
+	{Name: "sys_date", Group: "datetime", Signature: "sys_date()", Docs: "Today's date as \"YYYY-MM-DD\"."},
+	{Name: "sys_time", Group: "datetime", Signature: "sys_time()", Docs: "Current time as \"HH:MM:SS\"."},
+	{Name: "day", Group: "datetime", Signature: "day(date)", Docs: "Day of month of a date string."},
+	{Name: "month", Group: "datetime", Signature: "month(date)", Docs: "Month (1-12) of a date string."},
+	{Name: "year", Group: "datetime", Signature: "year(date)", Docs: "Year of a date string."},
+	{Name: "hour", Group: "datetime", Signature: "hour(time)", Docs: "Hour of a date/time string."},
+	{Name: "minute", Group: "datetime", Signature: "minute(time)", Docs: "Minute of a date/time string."},
+	{Name: "second", Group: "datetime", Signature: "second(time)", Docs: "Second of a date/time string."},
+	{Name: "add_days", Group: "datetime", Signature: "add_days(date, n)", Docs: "Date n days later as \"YYYY-MM-DD\"."},
+	{Name: "subtract_days", Group: "datetime", Signature: "subtract_days(date, n)", Docs: "Date n days earlier as \"YYYY-MM-DD\"."},
+	{Name: "date_diff", Group: "datetime", Signature: "date_diff(d2, d1)", Docs: "Whole days between two date strings (d2 minus d1)."},
+	{Name: "datetime_add", Group: "datetime", Signature: "datetime_add(dt, days[, hours[, minutes[, seconds]]])", Docs: "Adds a duration to a datetime string."},
+	{Name: "datetime_sub", Group: "datetime", Signature: "datetime_sub(dt, days[, hours[, minutes[, seconds]]])", Docs: "Subtracts a duration from a datetime string."},
+	{Name: "datetime_diff", Group: "datetime", Signature: "datetime_diff(dt2, dt1)", Docs: "Seconds between two datetime strings."},
+	{Name: "date_to_string", Group: "datetime", Signature: "date_to_string(date[, format])", Docs: "Formats a date using %Y %m %d etc.; default \"YYYY-MM-DD\"."},
+	{Name: "time_to_string", Group: "datetime", Signature: "time_to_string(time[, format])", Docs: "Formats a time using %H %M %S etc.; default \"HH:MM:SS\"."},
+	{Name: "week_day", Group: "datetime", Signature: "week_day(date)", Docs: "Day of week as 1-7 (Sunday=1)."},
+	{Name: "week_number", Group: "datetime", Signature: "week_number(date)", Docs: "ISO week number of a date."},
+	{Name: "tick_count", Group: "datetime", Signature: "tick_count()", Docs: "Unix milliseconds since the epoch."},
+	{Name: "julian", Group: "datetime", Signature: "julian(date)", Docs: "Julian day number of a date."},
+	{Name: "utc_to_local", Group: "datetime", Signature: "utc_to_local(dt)", Docs: "Converts a UTC datetime string to local wall-clock."},
+	{Name: "local_to_utc", Group: "datetime", Signature: "local_to_utc(dt)", Docs: "Converts a local datetime string to UTC."},
+
+	// conversion
+	{Name: "tostr", Group: "conversion", Signature: "tostr(x)", Docs: "Kalipso string form of x."},
+	{Name: "tonum", Group: "conversion", Signature: "tonum(x)", Docs: "Kalipso number of x; 0 when not numeric."},
+	{Name: "todate", Group: "conversion", Signature: "todate(s)", Docs: "Normalizes s to \"YYYY-MM-DD\"."},
+	{Name: "strtodate", Group: "conversion", Signature: "strtodate(s[, format])", Docs: "Parses s (optionally with %-tokens) and emits \"YYYY-MM-DD\"."},
+	{Name: "boolstr", Group: "conversion", Signature: "boolstr(v)", Docs: "{\"true\",\"false\"} for the Kalipso truthiness of v."},
+}
+
+// ExprInfo returns a copy of the expression-function documentation.
+func ExprInfo() []Info {
+	out := make([]Info, len(ExprFuncs))
+	copy(out, ExprFuncs)
+	return out
+}
+
 // Globals lists the script-visible globals beyond the k/K namespaces.
 var Globals = []string{"ARGS", "CTRL", "main"}
 

@@ -257,6 +257,96 @@ local v = K.`
 	}
 }
 
+// TestExprCompletion exercises bare-identifier completion for §5.9 expression
+// functions (upper, round, iif, ...) and script globals.
+func TestExprCompletion(t *testing.T) {
+	debounceDelay = 5 * time.Millisecond
+	fake := &fakeClient{diags: make(chan protocol.PublishDiagnosticsParams, 8)}
+	server, done := startLSP(t, fake)
+	defer done()
+
+	ctx := context.Background()
+	u := uri.URI("file:///tmp/app.lua")
+	if _, err := server.Initialize(ctx, &protocol.InitializeParams{}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	doc := `-- demo
+local v = ma`
+	if err := server.DidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: u, LanguageID: protocol.LanguageKindLua, Version: 1, Text: doc},
+	}); err != nil {
+		t.Fatalf("didOpen: %v", err)
+	}
+	waitDiagnostics(t, fake)
+
+	res, err := server.Completion(ctx, &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: u},
+			Position:     protocol.Position{Line: 1, Character: 14},
+		},
+	})
+	if err != nil {
+		t.Fatalf("completion: %v", err)
+	}
+	labels := completionLabels(t, res)
+	var foundMask, foundMain bool
+	for _, l := range labels {
+		if l == "mask_number" {
+			foundMask = true
+		}
+		if l == "main" {
+			foundMain = true
+		}
+	}
+	if !foundMask {
+		t.Errorf("completion missing mask_number (labels: %v)", labels)
+	}
+	if !foundMain {
+		t.Errorf("completion missing main global (labels: %v)", labels)
+	}
+}
+
+// TestExprHover checks hover resolves a bare expression-function identifier.
+func TestExprHover(t *testing.T) {
+	debounceDelay = 5 * time.Millisecond
+	fake := &fakeClient{diags: make(chan protocol.PublishDiagnosticsParams, 8)}
+	server, done := startLSP(t, fake)
+	defer done()
+
+	ctx := context.Background()
+	u := uri.URI("file:///tmp/app.lua")
+	if _, err := server.Initialize(ctx, &protocol.InitializeParams{}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if err := server.DidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: u, LanguageID: protocol.LanguageKindLua, Version: 1, Text: "local x = upper(\"a\")\n"},
+	}); err != nil {
+		t.Fatalf("didOpen: %v", err)
+	}
+	waitDiagnostics(t, fake)
+
+	hover, err := server.Hover(ctx, &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: u},
+			Position:     protocol.Position{Line: 0, Character: 11}, // inside "upper"
+		},
+	})
+	if err != nil {
+		t.Fatalf("hover: %v", err)
+	}
+	if hover == nil {
+		t.Fatal("hover on upper returned nil")
+	}
+	md, ok := hover.Contents.(*protocol.MarkupContent)
+	if !ok {
+		t.Fatalf("hover contents type = %T, want *MarkupContent", hover.Contents)
+	}
+	if !strings.Contains(md.Value, "upper") {
+		t.Errorf("hover markdown = %q, want mention of upper", md.Value)
+	}
+}
+
 // TestWireOrdering pins the LSP ordering guarantee: a completion sent back to
 // back (no synchronization) after didOpen must already see the new document.
 // The server dispatches messages serially in arrival order, so the didOpen

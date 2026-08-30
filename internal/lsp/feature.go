@@ -78,9 +78,20 @@ var sortedKSets = func() []bindings.Info {
 	return out
 }()
 
+// sortedExprs is the §5.9 expression-function documentation sorted by name.
+var sortedExprs = func() []bindings.Info {
+	out := bindings.ExprInfo()
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}()
+
 // completionPrefix matches the trailing "k.<rest>" or "K.<rest>" token before
 // the cursor. Group 1 is the namespace letter; group 2 is what follows the dot.
 var completionPrefix = regexp.MustCompile(`\b([kK])(?:\.([a-zA-Z0-9_.]*))?$`)
+
+// bareIdentPrefix matches a trailing bare Lua identifier (name only), used to
+// offer the §5.9 expression-function globals when the cursor is inside one.
+var bareIdentPrefix = regexp.MustCompile(`\b([a-zA-Z_][a-zA-Z0-9_]*)$`)
 
 // Completion computes completion items at an absolute byte offset.
 func Completion(text string, cursor int) []protocol.CompletionItem {
@@ -91,7 +102,7 @@ func Completion(text string, cursor int) []protocol.CompletionItem {
 	prefix := strings.TrimRight(text[:cursor], " \t\r\n")
 	loc := completionPrefix.FindStringSubmatchIndex(prefix)
 	if loc == nil || loc[0] < 0 {
-		return nil
+		return completeBareIdent(text, prefix, cursor)
 	}
 	start := loc[0]
 	kind := "k"
@@ -107,6 +118,53 @@ func Completion(text string, cursor int) []protocol.CompletionItem {
 		return completeK(text, after, start, cursor)
 	}
 	return completeKapi(text, after, start, cursor)
+}
+
+// completeBareIdent offers expression-function globals and the script globals
+// (ARGS/CTRL/main) when the typed prefix is a plain identifier, e.g. "up" →
+// upper/upcase-related only; "wig" → nothing. Bare identifiers that also name
+// a k.* group (form/ctrl/...) are resolved through the member scope instead.
+func completeBareIdent(text, prefix string, cursor int) []protocol.CompletionItem {
+	loc := bareIdentPrefix.FindStringSubmatchIndex(prefix)
+	if loc == nil || loc[0] < 0 {
+		return nil
+	}
+	start := loc[0]
+	after := prefix[loc[2]:loc[3]]
+	if len(after) < 1 {
+		return nil
+	}
+	// The user is typing inside a dotted access (obj.<name>) which is a k./K.
+	// reference handled above (they require the k/K prefix); suppress bare
+	// expression completion so "x." doesn't suggest expression functions.
+	if start > 0 && prefix[start-1] == '.' {
+		return nil
+	}
+
+	var items []protocol.CompletionItem
+	for _, info := range sortedExprs {
+		if !strings.HasPrefix(info.Name, after) {
+			continue
+		}
+		item := protocol.CompletionItem{
+			Label:            info.Name,
+			Kind:             protocol.CompletionItemKindFunction,
+			Detail:           protocol.NewOptional(info.Signature),
+			Documentation:    &protocol.MarkupContent{Kind: protocol.MarkupKindMarkdown, Value: markdown(info)},
+			SortText:         protocol.NewOptional(info.Name),
+			InsertTextFormat: protocol.InsertTextFormatPlainText,
+			TextEdit:         textEditAt(text, start, cursor, info.Name),
+		}
+		items = append(items, item)
+	}
+	// script globals
+	for _, g := range bindings.GlobalsList() {
+		if !strings.HasPrefix(g, after) {
+			continue
+		}
+		items = append(items, globalItem(text, g, start, cursor))
+	}
+	return items
 }
 
 func completeK(text, after string, start, cursor int) []protocol.CompletionItem {
@@ -237,8 +295,14 @@ func textEditAt(text string, start, cursor int, newText string) *protocol.TextEd
 // "k.form.new", "k.print", "K.eq".
 var nameToken = regexp.MustCompile(`[kK]\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*`)
 
+// bareToken matches a plain Lua identifier at the cursor (used for §5.9
+// expression-function globals).
+var bareToken = regexp.MustCompile(`[a-zA-Z_][a-zA-Z0-9_]*`)
+
 // match returns the tooling Info and byte range of the k.* / K.* token whose
-// span contains cursor (longest wins), or nil when the cursor is not on one.
+// span contains cursor (longest wins), falling back to a bare expression
+// function identifier (upper, round, iif, ...). Returns nil when the cursor is
+// not on a known token.
 func match(text string, cursor int) (*bindings.Info, int, int) {
 	best := ""
 	bs, be := 0, 0
@@ -249,9 +313,29 @@ func match(text string, cursor int) (*bindings.Info, int, int) {
 		}
 	}
 	if best == "" {
-		return nil, 0, 0
+		return matchBare(text, cursor)
 	}
 	info := lookup(best)
+	if info == nil {
+		return nil, 0, 0
+	}
+	return info, bs, be
+}
+
+// matchBare locates a bare expression-function identifier at the cursor.
+func matchBare(text string, cursor int) (*bindings.Info, int, int) {
+	best := ""
+	bs, be := 0, 0
+	for _, loc := range bareToken.FindAllStringIndex(text, -1) {
+		start, end := loc[0], loc[1]
+		if cursor >= start && cursor <= end && end-start > be-bs {
+			best, bs, be = text[start:end], start, end
+		}
+	}
+	if best == "" {
+		return nil, 0, 0
+	}
+	info := lookupExpr(best)
 	if info == nil {
 		return nil, 0, 0
 	}
@@ -270,6 +354,16 @@ func lookup(token string) *bindings.Info {
 	}
 	if info, ok := bindings.Docs()[strings.TrimPrefix(token, "k.")]; ok {
 		return &info
+	}
+	return nil
+}
+
+// lookupExpr resolves a bare identifier to an expression-function doc.
+func lookupExpr(name string) *bindings.Info {
+	for i := range sortedExprs {
+		if sortedExprs[i].Name == name {
+			return &sortedExprs[i]
+		}
 	}
 	return nil
 }
@@ -317,6 +411,9 @@ func (s *Server) ensureReference() {
 			emit(info.Name, info.Signature)
 		}
 		for _, info := range sortedKSets {
+			emit(info.Name, info.Signature)
+		}
+		for _, info := range sortedExprs {
 			emit(info.Name, info.Signature)
 		}
 

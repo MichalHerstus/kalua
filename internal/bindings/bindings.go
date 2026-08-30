@@ -237,20 +237,8 @@ func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterfac
 	if e.maxFileSize <= 0 {
 		e.maxFileSize = DefaultMaxFileSize
 	}
-	if wd, err := os.Getwd(); err == nil {
-		e.workdir = wd
-	}
-	for _, root := range opts.AllowFS {
-		abs, err := filepathAbs(root)
-		if err != nil {
-			continue
-		}
-		if resolved, err := evalSymlinksBestEffort(abs); err == nil {
-			e.allowFS = append(e.allowFS, resolved)
-		} else {
-			e.allowFS = append(e.allowFS, abs)
-		}
-	}
+	e.workdir = workdirOf(opts)
+	e.allowFS = allowFSOf(opts)
 
 	k := L.NewTable()
 	L.SetGlobal("k", k)
@@ -306,6 +294,7 @@ func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterfac
 	registerJSON(e)
 	registerCrypto(e)
 	registerXML(e)
+	registerExprFuncs(e)
 
 	argsT := L.NewTable()
 	for i, a := range opts.Args {
@@ -322,6 +311,29 @@ func filepathAbs(p string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(abs), nil
+}
+
+// workdirOf resolves the sandbox home directory from the process working dir.
+func workdirOf(opts Options) string {
+	wd, _ := os.Getwd()
+	return wd
+}
+
+// allowFSOf resolves the AllowFS roots to absolute, symlink-resolved paths.
+func allowFSOf(opts Options) []string {
+	var out []string
+	for _, root := range opts.AllowFS {
+		abs, err := filepathAbs(root)
+		if err != nil {
+			continue
+		}
+		if resolved, err := evalSymlinksBestEffort(abs); err == nil {
+			out = append(out, resolved)
+		} else {
+			out = append(out, abs)
+		}
+	}
+	return out
 }
 
 // lvalue converts a Go value (as produced by coerce helpers) into a Lua value.

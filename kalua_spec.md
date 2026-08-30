@@ -492,6 +492,11 @@ Filesystem access is confined to the working directory unless `--allow-fs PATH` 
 Exposed as flat globals (not under `k.`) so expressions read like Kalipso. Types: strings
 are `YYYY-MM-DD[ HH:MM[:SS]]`.
 
+> Implemented in `internal/bindings/funcs.go`, installed by both `bindings.Setup` (run mode)
+> and `bindings.SetupServe` (serve mode). Documented in `api_doc.go` (`ExprFuncs`); LSP offers
+> completion/hover/go-to-definition for the bare-identifier path. Semantics are pinned by
+> `internal/bindings/funcs_test.go` and `internal/host/exprfuncs_test.go`.
+
 **String:** `left right middle length replace trim upper lower find string_count complete
 ascii charact base64_encode base64_decode urlencode urldecode jsonencode jsondecode
 xmlencode xmldecode guid extract_string file_extract_part full_encode decode encode set_string mltext`
@@ -545,24 +550,31 @@ NFC, Sensors, RFID Tag Found…) have no KALUA counterpart.
 ## 6. CLI specification
 
 ```
-KALUA run    <app.lua> [--port 8080|0] [--no-browser] [--session-limit N] [--verbose] [--db NAME=DSN]... [--arg K=V]...
-KALUA serve  <app.lua> [--port 8080] [--workers N] [--mode http|ws|tcp] [--verbose] [--db NAME=DSN]... [--arg K=V]...
+KALUA run    <app.lua> [--port 8080|0] [--no-browser] [--session-limit N] [--test] [--verbose] [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]...
+KALUA serve  <app.lua> [--port 8080] [--workers N] [--mode http|ws|tcp] [--verbose] [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]...
 KALUA check  <app.lua>                  # reports syntax/global misuse
+KALUA new    <name>                     # scaffolds a minimal app.lua
+KALUA lsp                               # language server over stdio (LSP, Content-Length frames)
 KALUA version
 ```
 
 - `run` serves the app as a web app and opens the default browser. `--port 0` (default)
   picks a free ephemeral port; `--port N` binds a fixed port; `--no-browser` suppresses the
-  auto-open (also used by tests). `--session-limit` caps concurrent tabs (default 8);
-  extra tabs get a friendly "app already running in this browser" page.
+  auto-open (also used by tests). `--session-limit` caps concurrent tabs (default 8).
+  `--test` runs headless without any HTTP server (used by the test suite).
 - `serve` starts a headless HTTP/WebSocket/TCP API server (`handle_http`/`handle_ws`/
   `handle_tcp` entry points); `SIGTERM`/`SIGINT` graceful shutdown; `SIGHUP` hot reload.
   Forms/UI bindings are errors here (D18).
 - `check` catches syntax errors and unknown `k.*` references at load time.
+- `new` writes a minimal runnable `{name}.lua` scaffold (`function main()` + `k.print`).
+- `lsp` serves Language Server protocol on stdio (UTF-8 positions): diagnostics,
+  completion, hover and go-to-definition; consumed by `extensions/vscode-kalua`.
 - if —verbose, full log to terminal (functions, arguments, variables values etc.). Otherwise just error messages.
 - `--db` pre-registers named connections usable by `k.connect_db("#NAME")`. Alternatively connections can be stored in .ENV file in KALUA folder.
 - `--arg` seeds `ARGS` table for headless/scriptable use.
-- all flags will have also short variant (-r, -c, -d, -a; run: -p for port, -n for no-browser, -l for session-limit)
+- `--allow-fs PATH` extends the filesystem sandbox beyond the working directory
+  (repeatable; enforced by `bindings.Env.resolvePath`).
+- all flags will have also short variant (-r, -c, -d, -a; run: -p for port, -n for no-browser, -l for session-limit; -f for allow-fs)
 
 ## 7. Testing strategy
 
@@ -584,24 +596,32 @@ KALUA version
 
 ## 8. Build-out phases
 
-1. **Host skeleton** — CLI, sandboxed VM, loader, `k.print/sleep/quit/error`, error handling, exit codes.
-2. **Web core** — `net/http` server, WS session bridge, templ shell + form renderer,
+Status legend: ✅ implemented · ⏳ pending.
+
+1. ✅ **Host skeleton** — CLI, sandboxed VM, loader, `k.print/sleep/quit/error`, error handling, exit codes.
+2. ✅ **Web core** — `net/http` server, WS session bridge, templ shell + form renderer,
    textbox + button, two-form demo proving suspend/resume over WS; session actor + inbox/outbox (§2.2).
-3. **Controls full set** — remaining 8 controls, events, properties, focus/key tracking,
+3. ✅ **Controls full set** — remaining 8 controls, events, properties, focus/key tracking,
    `CTRL()` accessor; vanilla JS client (`app.js`) event delegation, modal, status bar, clipboard/bell/screen-size.
-4. **Database group (T1)** — connect_db + select/sql/insert/update/delete/transactions over
-   the async pattern; testcontainers-style DB tests.
-5. **Data & comms groups (T1)** — files, JSON/XML getters + `k.json_load/save` (§5.10),
-   HTTP request, checksum/encrypt, date/time functions, timers.
-6. **Expression-function library** — §5.9 globals + operator docs + coercion golden tests.
-7. **CLI polish** — `new` templates, `check` diagnostics, `--db/--arg/--allow-fs`,
-   `--no-browser/--session-limit`, packaging (single static binary, embedded assets, cgo-free drivers where possible).
-8. **Server mode (T1)** — `serve` command, worker pool, HTTP listener, `k.shared_*`,
+4. ✅ **Database group (T1)** — connect_db + select/sql/insert/update/delete/transactions over
+   the async pattern; sqlite driver wired; postgres/mysql/mssql via DSN scheme.
+5. ✅ **Data & comms groups (T1)** — files, JSON/XML getters + `k.json_load/save` (§5.10),
+   HTTP request, checksum/encrypt, xpath-style XML getters.
+6. ✅ **Expression-function library** — §5.9 globals (`internal/bindings/funcs.go`) + operator docs +
+   coercion golden tests; LSP completion/hover/definition for the bare-identifier path;
+   serve-mode workers install the same surface.
+7. ✅ **CLI polish** — `new` templates, `check` diagnostics, `--db/--arg/--allow-fs`,
+   `--no-browser/--session-limit`, `lsp` subcommand, extended testing.
+8. ✅ **Server mode (T1)** — `serve` command, worker pool, HTTP listener, `k.shared_*`,
    `init`/`handle_http`/`shutdown` lifecycle, graceful shutdown, hot reload (SIGHUP).
-9. **Tier 2 wave** — FTP/sockets/ping/web-service, SMTP/POP3, SQLite,
+9. ⏳ **Tier 2 wave** — FTP/sockets/ping/web-service, SMTP/POP3, SQLite,
    asymmetric crypto, clipboard/status-window/file-picker, remaining §5.10 formats
    (XML save, YAML, CSV, INI).
-10. **Server mode (T2)** — WebSocket listener (`handle_ws`, `k.ws_*`), TCP listener (`handle_tcp`, `k.tcp_*`).
+10. ✅ **Server mode (T2)** — WebSocket listener (`handle_ws`, `k.ws_*`), TCP listener (`handle_tcp`, `k.tcp_*`).
+
+> Note: implementation order differed from this list — the LSP/editor phase (5) and server mode (8/10)
+> shipped before the database (4) and data/comms (5) groups were fully completed. See §10 for the
+> current status of each area.
 
 ## 9. Risks / mitigations
 
@@ -627,8 +647,41 @@ KALUA version
 
 ## 10. Status
 
-Spec complete (this document, web-UI revision 2026-08-28). Nothing implemented yet.
-Next step: Phase 1 skeleton.
+Spec complete (this document, web-UI revision 2026-08-28). Phases 1–8 and 10
+implemented; see §8 for the per-phase status.
+
+**Full T1 run + serve surface implemented as of 2026-08-30:**
+
+- Run mode (§2.2): session actor per tab, inbox/outbox, suspend/resume for
+  `form.show`/`msgbox`/`http_request`/DB/files, teardown.
+- Forms & controls (§3): all 8 controls, control properties, `CTRL()` accessor,
+  `k.table.*` row ops; vanilla-JS client with event delegation, status bar,
+  clipboard, bell, screen-size. (Templ rendering, the shell, and embedded
+  assets live in `internal/web`.)
+- Database (§5.3): `k.connect_db`/`disconnect_db`, `k.sql`, `k.db_select/insert/
+  update/delete`, `k.tx_begin/commit/rollback`, `k.rows` — sqlite driver wired;
+  mysql/postgres/mssql by DSN scheme (drivers not yet imported).
+- Files (§5.5) + JSON (§5.10) + crypto (§5.1) + XML getters (§5.4): full T1 set,
+  all through the async pattern with an 16 MiB file-size cap.
+- Expression-function library (§5.9): all String / Numeric / Conditional /
+  Date-Time / Conversion globals, coercion-pinned; documented in
+  `internal/bindings/api_doc.go` and reachable from the LSP.
+- Serve mode (§2.4): worker pool, HTTP/WS/TCP listeners, `k.shared.*`,
+  `init`/`handle_http`/`handle_ws`/`handle_tcp`/`shutdown` lifecycle, graceful
+  shutdown; UI bindings raise runtime errors.
+- Tooling: `KALUA lsp` over stdio (diagnostics, completion, hover, definition)
+  + the `extensions/vscode-kalua` VS Code extension.
+
+**Not yet implemented (Tier 2, phase 9):** FTP/sockets/ping/web-service,
+SMTP/POP3, asymmetric crypto, status window, file picker, timers
+(`k.timer_start`/`k.timer_stop`), SQLite-connect tier-2
+native handler beside the already-imported driver, and the remaining §5.10
+formats (XML save, YAML, CSV, INI). The `--session-limit` flag enforces the cap
+via a plain 503 (the friendlier "already running" page is not yet wired), and
+browser auto-open on `run` is not implemented (use the printed URL
+manually; `--no-browser` is accepted and always effective).
+
+Next step: Tier 2 wave (phase 9).
 
 ---
 

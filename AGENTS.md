@@ -135,3 +135,15 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - `k.xml_parse(text)` + `xml_*` — XML parsing: `xml_root`, `xml_child`, `xml_child_list`, `xml_attr`, `xml_content`, `xml_attrs`, `xml_name`
 - Session-based coroutine suspension for async operations (msgbox, http_request)
 - Web server handles `msgbox_choice`, `client_info`, `clipboard_get` messages
+
+## Implemented Features (Phase 8 - Expression-Function Library)
+
+- §5.9 expression functions as flat globals (not under `k.*`) in `internal/bindings/funcs.go`, installed by `Setup` (run mode) and `SetupServe` (serve mode):
+  - String: `left right middle length replace trim upper lower find string_count complete ascii charact base64_encode/decode urlencode/urldecode encode/decode full_encode jsonencode/jsondecode xmlencode/xmldecode guid extract_string set_string file_extract_part mltext`
+  - Numeric: `abs round floor ceiling power nth_root sqrt exp log log10 sin cos tan asin acos atan deg2rad rad2deg bitwise_and/or/xor random int_part dec_part mask_number val sum extractstringd`
+  - Conditional: `lookup(key, k1, v1, ...)`, `yesno(cond, a, b)`, `iif(cond, a, b)` (Kalipso truthiness via `coerce`)
+  - Date/Time: `sys_date sys_time day month year hour minute second add_days subtract_days date_diff datetime_add/sub datetime_diff date_to_string time_to_string week_day week_number tick_count julian utc_to_local local_to_utc` (dates as `YYYY-MM-DD[ HH:MM[:SS]]`)
+  - Conversion: `tostr tonum todate strtodate boolstr`
+- Expression funcs documented in `api_doc.go` (`ExprFuncs`/`ExprInfo`); LSP completion (bare-identifier path), hover, and go-to-definition support them
+- Serve mode (`SetupServe`) now also installs the `K.*` helpers (§2.3) and expression functions, matching run mode's coerce/expression surface
+- Coercion-based semantics (half-away-from-zero round, Sunday=1 weekday) pinned by `internal/bindings/funcs_test.go` and `internal/host/exprfuncs_test.go`

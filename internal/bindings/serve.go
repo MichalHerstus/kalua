@@ -30,6 +30,8 @@ type TCPHub interface {
 
 // SetupServe configures the Lua state for serve mode (headless API).
 // This registers k.shared_*, k.ws_*, k.tcp_* bindings and disables UI bindings.
+// Expression-function globals (§5.9) and K.* helpers (§2.3) are installed too,
+// because serve and run modes share the coerce layer and expression surface.
 func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, wsHub WSHub, tcpHub TCPHub, logger Logger) {
 	// Create k table first
 	L.SetGlobal("k", L.NewTable())
@@ -72,6 +74,29 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 		argsTable.RawSetInt(i+1, lua.LString(arg))
 	}
 	L.SetGlobal("ARGS", argsTable)
+
+	// Build the Env so expression functions and helpers share the same
+	// kNULL/coerce surface as run mode.
+	e := &Env{
+		L:       L,
+		App:     app,
+		known:   map[string]string{},
+		Logger:  logger,
+		k:       k,
+		workdir: workdirOf(opts),
+		allowFS: allowFSOf(opts),
+	}
+	if e.maxFileSize <= 0 {
+		e.maxFileSize = DefaultMaxFileSize
+	}
+	e.kNULL = L.NewTable()
+	K := L.NewTable()
+	registerHelpers(e, K)
+	K.RawSetString("NULL", e.kNULL)
+	K.RawSetString("is_null", L.NewFunction(e.isNull))
+	L.SetGlobal("K", K)
+
+	registerExprFuncs(e)
 }
 
 // registerShared registers k.shared_* bindings.
