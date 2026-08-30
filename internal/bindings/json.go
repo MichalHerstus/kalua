@@ -186,6 +186,21 @@ func stringifyJSON(e *Env, v lua.LValue) (string, error) {
 	return sb.String(), nil
 }
 
+// JSONStringifyLua encodes a Lua value tree as compact JSON without a full Env.
+// kNULL is the K.NULL sentinel (pass lua.LNil when the state has none); it
+// encodes as null. Used by serve mode to serialize {json=...} responses.
+func JSONStringifyLua(L *lua.LState, v lua.LValue, kNULL lua.LValue) (string, error) {
+	e := &Env{L: L}
+	if tbl, ok := kNULL.(*lua.LTable); ok {
+		e.kNULL = tbl
+	}
+	var sb strings.Builder
+	if err := writeJSON(&sb, e, v, 0, map[*lua.LTable]bool{}); err != nil {
+		return "", err
+	}
+	return sb.String(), nil
+}
+
 func writeJSON(sb *strings.Builder, e *Env, v lua.LValue, depth int, seen map[*lua.LTable]bool) error {
 	if depth > maxJSONDepth {
 		return fmt.Errorf("nesting too deep")

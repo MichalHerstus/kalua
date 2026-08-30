@@ -160,3 +160,11 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - Comm tier-2 (phase 9 remainder): FTP `k.ftp_connect/set_cwd/get_file/put_file/file_exists/create_dir/delete/rename/list/disconnect` (minimal client, `internal/bindings/ftp.go`); SMTP `k.smtp_connect/send/disconnect` (`smtp.go`, `net/smtp`); POP3 `k.pop3_connect/stat/list/retr/dele/noop/quit` (`pop3.go`); SOAP `k.webservice_run(profile, params)` (`soap.go`)
 - Fixed a latent gopher-lua v1.1.2 bug: `cancel()` on a *finished* coroutine nil-panics; all session coroutine resumes now only cancel suspended/errored threads (`internal/session/session.go`); also wired `app.SetSession` so `sendOutbox` reaches the session outbox
 - New dependency: `gopkg.in/yaml.v3`
+
+## Implemented Features (Phase 9 remainder — serve/run correctness)
+
+- Serve `handle_http(req)` now supports the §2.5 response forms: nil→200 empty, plain string→200 text/plain, `{json=...}`→200 application/json, `{status=n}`→n empty, full `{status,headers,body}`; `req` gains `query` (single→string, repeated→list), `query_raw`, `remote_addr`, `tls` (`internal/server/worker.go`; new exported `bindings.JSONStringifyLua` in `json.go`)
+- Serve WS/TCP inbound dispatch: `handle_ws(msg)`/`handle_tcp(msg)` called in a fresh coroutine per event with `{type="open|text|binary|close", data, client_id}`; string return value echoed back to the connection; per-worker mutex serializes all handler entry so an `LState` is never touched concurrently (WS outbound pump + TCP pump drain the send channels, `internal/server/server.go`)
+- Serve lifecycle: optional `init(config)` runs once on the first worker at startup (error aborts), optional `shutdown()` runs once on a worker on `SIGTERM`/`SIGINT` (wired via `signal.NotifyContext` in `cmd`/`cli.go`); gopher-lua `Resume` values read from its 3rd return (not the main stack)
+- Serve `k.shared.*` JSON round-trip: `set` stores JSON, `get` decodes with legacy raw-string fallback (`registerShared(e, store)` in `serve.go`); `k.print` sinks through the host logger in run mode too (`internal/bindings/flow.go`)
+- Tests: `internal/server/worker_test.go` (HTTP response forms, WS/TCP cancel-panic + error logging), `internal/server/server_e2e_test.go` (real HTTP/WS/TCP sockets + init/shutdown lifecycle)

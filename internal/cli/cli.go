@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"kalua/internal/bindings"
 	"kalua/internal/checker"
@@ -252,7 +254,9 @@ func serveCmd(args []string) int {
 		return int(host.ExitUsage)
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	cfg := server.Config{
 		Host:        *hostFlag,
 		Port:        *port,

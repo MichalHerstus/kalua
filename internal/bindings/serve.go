@@ -124,7 +124,7 @@ func registerShared(e *Env, shared SharedStore) {
 	k := e.L.GetGlobal("k").(*lua.LTable)
 	sharedTbl := e.L.NewTable()
 
-	// k.shared_set(key, value) — any Lua value is stored as its JSON form
+	// k.shared.set(key, value) — any Lua value is stored as its JSON form
 	sharedTbl.RawSetString("set", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		text, err := stringifyJSON(e, L.Get(2))
@@ -136,7 +136,7 @@ func registerShared(e *Env, shared SharedStore) {
 		return 0
 	}))
 
-	// k.shared_get(key) -> value (JSON-decoded when the stored value is valid
+	// k.shared.get(key) -> value (JSON-decoded when the stored value is valid
 	// JSON; otherwise returned as a raw string, preserving legacy behavior)
 	sharedTbl.RawSetString("get", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
@@ -150,14 +150,14 @@ func registerShared(e *Env, shared SharedStore) {
 		return 1
 	}))
 
-	// k.shared_del(key)
+	// k.shared.del(key)
 sharedTbl.RawSetString("del", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		shared.Del(key)
 		return 0
 	}))
 
-	// k.shared_keys([pattern]) -> table of keys
+	// k.shared.keys([pattern]) -> table of keys
 sharedTbl.RawSetString("keys", e.L.NewFunction(func(L *lua.LState) int {
 		pattern := "*"
 		if L.GetTop() >= 1 {
@@ -172,7 +172,7 @@ sharedTbl.RawSetString("keys", e.L.NewFunction(func(L *lua.LState) int {
 		return 1
 	}))
 
-	// k.shared_incr(key, delta) -> new_value
+	// k.shared.incr(key, delta) -> new_value
 sharedTbl.RawSetString("incr", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		delta := int64(1)

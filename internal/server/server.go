@@ -104,8 +104,17 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Wait for context cancellation
 	<-ctx.Done()
+	s.runShutdownHandlers()
 	s.shutdown()
 	return nil
+}
+
+// runShutdownHandlers invokes the optional shutdown() callback once, on the
+// first worker, before workers are torn down (spec §2.2 shutdown).
+func (s *Server) runShutdownHandlers() {
+	if len(s.workers) > 0 {
+		s.workers[0].CallShutdown()
+	}
 }
 
 func (s *Server) modeHas(m string) bool {
@@ -140,6 +149,17 @@ func (s *Server) startWorkers(ctx context.Context) error {
 		}
 		s.workers = append(s.workers, w)
 		s.workerCh <- w
+	}
+
+	// Run the optional init(config) callback once, on the first worker. A
+	// handler error aborts startup (spec §2.2 init).
+	if len(s.workers) > 0 {
+		if err := s.workers[0].CallInit(s.cfg); err != nil {
+			for _, w := range s.workers {
+				w.Close()
+			}
+			return err
+		}
 	}
 	return nil
 }
@@ -205,11 +225,14 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := HTTPRequest{
-		Method:  r.Method,
-		Path:    r.URL.Path,
-		Query:   r.URL.RawQuery,
-		Headers: headers,
-		Body:    body,
+		Method:      r.Method,
+		Path:        r.URL.Path,
+		Query:       r.URL.RawQuery,
+		QueryValues: r.URL.Query(),
+		Headers:     headers,
+		Body:        body,
+		RemoteAddr:  r.RemoteAddr,
+		TLS:         r.TLS != nil,
 	}
 
 	resp, err := worker.CallHTTP(r.Context(), req)
@@ -248,35 +271,49 @@ func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
 	// Get worker for this connection
 	worker := s.nextWorker()
 	if worker != nil {
-		worker.CallWS(connID, ws)
+		worker.CallWS(WSMessage{Type: "open", ClientID: connID}, ws)
 	}
 
 	// Start outbound message pump
 	outboundDone := make(chan struct{})
+	pumpStop := make(chan struct{})
 	go func() {
-		for msg := range ws.sendCh {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := c.Write(ctx, websocket.MessageText, msg); err != nil {
-				s.cfg.Logger.Printf("ws write: %v", err)
+		defer close(outboundDone)
+		for {
+			select {
+			case msg := <-ws.sendCh:
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := c.Write(ctx, websocket.MessageText, msg); err != nil {
+					s.cfg.Logger.Printf("ws write: %v", err)
+					cancel()
+					return
+				}
 				cancel()
+			case <-pumpStop:
 				return
 			}
-			cancel()
 		}
-		close(outboundDone)
 	}()
 
-	// Read inbound messages
+	// Read inbound messages and dispatch to handle_ws(msg)
 	for {
-		_, data, err := c.Read(r.Context())
+		mtype, data, err := c.Read(r.Context())
 		if err != nil {
-			s.cfg.Logger.Printf("ws read: %v", err)
 			break
 		}
-		// Could dispatch to Lua handler here if needed
-		_ = data
+		typ := "text"
+		if mtype == websocket.MessageBinary {
+			typ = "binary"
+		}
+		if worker != nil {
+			worker.CallWS(WSMessage{Type: typ, Data: string(data), ClientID: connID}, ws)
+		}
 	}
 
+	close(pumpStop)
+	if worker != nil {
+		worker.CallWS(WSMessage{Type: "close", ClientID: connID}, ws)
+	}
 	<-outboundDone
 }
 
@@ -323,20 +360,44 @@ func (s *Server) startTCP(ctx context.Context) error {
 			// Get worker for this connection
 			worker := s.nextWorker()
 			if worker != nil {
-				worker.CallTCP(connID, tcpConn)
+				worker.CallTCP(TCPMessage{Type: "open", ClientID: connID}, tcpConn)
 			}
 
-			// Read loop
+			// Outbound pump: drain sendCh (k.tcp_send, handler return values) → conn
+			pumpStop := make(chan struct{})
+			pumpDone := make(chan struct{})
+			go func() {
+				defer close(pumpDone)
+				for {
+					select {
+					case msg := <-tcpConn.sendCh:
+						if _, err := conn.Write(msg); err != nil {
+							s.cfg.Logger.Printf("tcp write: %v", err)
+							return
+						}
+					case <-pumpStop:
+						return
+					}
+				}
+			}()
+
+			// Read loop: dispatch each chunk to handle_tcp(msg)
 			buf := make([]byte, 4096)
 			for {
 				n, err := conn.Read(buf)
 				if err != nil {
-					s.cfg.Logger.Printf("tcp read: %v", err)
 					break
 				}
-				// Could dispatch to Lua handler here if needed
-				_ = buf[:n]
+				if worker != nil {
+					worker.CallTCP(TCPMessage{Type: "text", Data: string(buf[:n]), ClientID: connID}, tcpConn)
+				}
 			}
+
+			close(pumpStop)
+			if worker != nil {
+				worker.CallTCP(TCPMessage{Type: "close", ClientID: connID}, tcpConn)
+			}
+			<-pumpDone
 		}
 	}()
 

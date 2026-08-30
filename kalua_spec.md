@@ -181,18 +181,19 @@ mixed-type expressions use the helpers. Bindings themselves always normalize thr
 ### 2.4 Server mode runtime model (D14, unchanged; UI bindings unavailable)
 
 **Concurrency model:**
-- **Worker pool**: `--workers N` goroutines (default: `GOMAXPROCS`), each with a pre-created `LState`
+- **Worker pool**: `--workers N` goroutines (default: 1 if unset), each with a pre-created `LState`
 - **Per-request isolation**: Each HTTP/WebSocket/TCP request runs in a fresh coroutine on a worker's `LState`
 - **No shared Lua state**: Workers do not share Lua globals; communication via Go-side shared store
+- **Per-worker serialization**: all handler invocations on a worker run under that worker's mutex, so an `LState` is never touched by two goroutines; concurrent HTTP requests to a busy worker are rejected with 503
 
-**Shared state (`k.shared_*`):**
+**Shared state (`k.shared.*`):**
 - Backed by Go `sync.Map` — lock-free reads, sharded writes
-- Values serialized as JSON (Lua primitives, tables → JSON; functions/threads → error)
+- Values serialized as JSON (Lua primitives, tables → JSON; functions/threads → error); `k.shared.get` JSON-decodes, falling back to the legacy raw string for values stored before this behavior
 - Persists across requests and worker restarts (until process exit)
 
 **Request lifecycle:**
 1. Listener accepts connection → dispatches to next available worker (round-robin)
-2. Worker: `pcall(handle_http, req)` (or `handle_ws`, `handle_tcp`)
+2. Worker: runs `handle_http(req)` (or `handle_ws(msg)`, `handle_tcp(msg)`) in a fresh coroutine
 3. On success: serialize return value → HTTP response / WS message / TCP write
 4. On error: log + return 500 / close connection
 5. Worker returns to pool; `LState` reused (instruction budget reset)
@@ -200,9 +201,9 @@ mixed-type expressions use the helpers. Bindings themselves always normalize thr
 **Entry points (script-defined):**
 ```lua
 -- server.lua
-function init(config)        -- optional: runs once at startup in dedicated LState
+function init(config)        -- optional: runs once at startup (first worker)
   k.connect_db("...")
-  k.shared_set("version", "1.0")
+  k.shared.set("version", "1.0")
 end
 
 function handle_http(req)    -- required for HTTP mode
@@ -213,19 +214,20 @@ function handle_ws(msg)      -- required for WebSocket mode
   k.ws_broadcast({type="text", data=msg.data})
 end
 
-function handle_tcp(data)    -- required for TCP mode
-  k.tcp_send(msg.client_id, "echo: " .. data)
+function handle_tcp(msg)     -- required for TCP mode (same shape as handle_ws)
+  k.tcp_send(msg.client_id, "echo: " .. msg.data)
 end
 
-function shutdown()          -- optional: runs on SIGTERM before exit
+function shutdown()          -- optional: runs once on SIGTERM/SIGINT before exit
   k.disconnect_db()
 end
 ```
 
 **HTTP `req` table:**
 ```lua
-{ method="GET", path="/api", query={...}, headers={...}, body="", remote_addr="1.2.3.4:5678", tls=false }
+{ method="GET", path="/api", query={...}, query_raw="a=1&b=2", headers={...}, body="", remote_addr="1.2.3.4:5678", tls=false }
 ```
+`query` maps each parsed query key to a single string, or a list table when the key repeats.
 
 **HTTP response (return value):**
 ```lua
@@ -235,16 +237,19 @@ end
 "plain text"           → 200, text/plain
 {json={...}}            → 200, application/json
 {status=404}            → 404, empty body
+-- nil                 → 200, empty body
 ```
 
-**WebSocket `msg` table:**
+**WebSocket `msg` table (also passed to `handle_tcp`):**
 ```lua
-{ type="text|binary|ping|pong|close", data="...", client_id="uuid" }
+{ type="open|text|binary|close", data="...", client_id="uuid" }
 ```
+A string return value from `handle_ws`/`handle_tcp` is echoed back to the originating
+connection as a text frame / TCP write.
 
 **Lifecycle & signals:**
-- `SIGTERM` / `SIGINT`: stop accepting, drain workers, call `shutdown()`, exit
-- `SIGHUP`: hot reload — recompile script, swap worker `LStates` atomically
+- `SIGTERM` / `SIGINT`: stop accepting, drain workers, call `shutdown()` once, exit
+- `SIGHUP`: hot reload — recompile script, swap worker `LStates` atomically (not yet implemented)
 
 **Interactions with the run-mode UI:** `serve` is headless (D18). UI/forms bindings
 (`k.form.*`, `k.ctrl.*`, `k.msgbox`, `k.status_*`) raise a runtime error in serve mode.
@@ -440,7 +445,7 @@ All DB calls run through the async worker pattern (§2.2) and accept bound param
 | FTP Connect/Set Current Dir/Get File/Put File/File Exists/Disconnect/Create Dir/Delete File-Folder/Rename File/List Files | `k.ftp_*` (10 functions, same verbs) | T2 |
 | Socket Connect/Write/Read/Close/Accept | `k.socket_*` | T2 |
 | Ping | `k.ping(host, timeout_ms)` | T2 |
-| *(KALUA server mode — §2.4)* | `k.shared_set(key, val)`, `k.shared_get(key)`, `k.shared_del(key)`, `k.shared_keys([pattern])`, `k.shared_incr(key, delta)` | T1 |
+| *(KALUA server mode — §2.4)* | `k.shared.set/get/del/keys/incr` | T1 |
 | *(KALUA server mode — §2.4)* | `k.ws_broadcast(msg)`, `k.ws_send(client_id, msg)` | T1 |
 | *(KALUA server mode — §2.4)* | `k.tcp_send(client_id, data)`, `k.tcp_close(client_id)` | T1 |
 | Monitor ×2, Synchronization ×6, MIS Communicator ×12, Push ×5, GSM ×4, GPRS ×3, Serial ×5, Bluetooth ×7, BLE ×11, Beacons ×6 | — (D9 hardware/remote infra) | — |
