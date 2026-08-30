@@ -9,3 +9,5 @@ KALUA
 
 # macOS
 .DS_Store
+# KALUA app params (test artifact)
+.kalua.params.json
