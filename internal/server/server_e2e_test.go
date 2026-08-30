@@ -242,3 +242,206 @@ end
 		t.Errorf("shutdown_called = %q, want yes", got)
 	}
 }
+
+func writeTestScript(t *testing.T, path, src string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func getBody(t *testing.T, url string) string {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("http get: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return string(b)
+}
+
+func TestServer_ReloadSwapsWorkers(t *testing.T) {
+	port := freePort(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "app.lua")
+	writeTestScript(t, script, `
+function main() end
+function handle_http(req)
+  return "v1"
+end
+`)
+
+	cfg := Config{
+		Host:       "127.0.0.1",
+		Port:       port,
+		Workers:    2,
+		Mode:       "http",
+		ScriptPath: script,
+		Logger:     host.NewLogger(false),
+	}
+	s := NewServer(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- s.Run(ctx) }()
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	waitUp(t, base)
+
+	if v := getBody(t, base+"/"); v != "v1" {
+		t.Fatalf("before reload = %q, want v1", v)
+	}
+
+	writeTestScript(t, script, `
+function main() end
+function handle_http(req)
+  return "v2"
+end
+`)
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// New code on every worker (round-robin across both).
+	for i := 0; i < 4; i++ {
+		if v := getBody(t, base+"/"); v != "v2" {
+			t.Fatalf("after reload iter %d = %q, want v2", i, v)
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
+func TestServer_ReloadErrorKeepsOldPool(t *testing.T) {
+	port := freePort(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "app.lua")
+	writeTestScript(t, script, `
+function main() end
+function handle_http(req)
+  return "stable"
+end
+`)
+
+	cfg := Config{
+		Host:       "127.0.0.1",
+		Port:       port,
+		Workers:    2,
+		Mode:       "http",
+		ScriptPath: script,
+		Logger:     host.NewLogger(false),
+	}
+	s := NewServer(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	waitUp(t, base)
+
+	// Break the script: a failed reload must leave the old pool serving.
+	writeTestScript(t, script, "function main( this syntax is broken")
+	if err := s.Reload(); err == nil {
+		t.Fatal("Reload succeeded on invalid script, want error")
+	}
+
+	for i := 0; i < 2; i++ {
+		if v := getBody(t, base+"/"); v != "stable" {
+			t.Fatalf("after failed reload iter %d = %q, want stable", i, v)
+		}
+	}
+	cancel()
+}
+
+func TestServer_ReloadKeepsOpenConnectionsOnOldWorker(t *testing.T) {
+	port := freePort(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "app.lua")
+	writeTestScript(t, script, `
+function main() end
+function handle_http(req) return "v1" end
+function handle_ws(msg)
+  if msg.type == "text" then return "echo:" .. msg.data end
+end
+`)
+
+	cfg := Config{
+		Host:       "127.0.0.1",
+		Port:       port,
+		Workers:    1,
+		Mode:       "http,ws",
+		ScriptPath: script,
+		Logger:     host.NewLogger(false),
+	}
+	s := NewServer(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	waitUp(t, base)
+
+	wsCtx, wsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer wsCancel()
+	ws, _, err := websocket.Dial(wsCtx, fmt.Sprintf("ws://127.0.0.1:%d/ws", port), nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "")
+
+	if err := ws.Write(wsCtx, websocket.MessageText, []byte("a")); err != nil {
+		t.Fatalf("ws write: %v", err)
+	}
+	if _, data, err := ws.Read(wsCtx); err != nil || string(data) != "echo:a" {
+		t.Fatalf("pre-reload echo = %q, err %v", data, err)
+	}
+
+	// Reload supersedes the worker serving the open connection. The open
+	// connection must still work (old worker kept alive by its lease).
+	writeTestScript(t, script, `
+function main() end
+function handle_http(req) return "v2" end
+function handle_ws(msg)
+  if msg.type == "text" then return "new:" .. msg.data end
+end
+`)
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	if err := ws.Write(wsCtx, websocket.MessageText, []byte("b")); err != nil {
+		t.Fatalf("ws write after reload: %v", err)
+	}
+	if _, data, err := ws.Read(wsCtx); err != nil || string(data) != "echo:b" {
+		t.Fatalf("post-reload open-conn echo = %q, err %v", data, err)
+	}
+	ws.Close(websocket.StatusNormalClosure, "")
+
+	// A new connection gets the new code.
+	ws2, _, err := websocket.Dial(wsCtx, fmt.Sprintf("ws://127.0.0.1:%d/ws", port), nil)
+	if err != nil {
+		t.Fatalf("ws dial 2: %v", err)
+	}
+	defer ws2.Close(websocket.StatusNormalClosure, "")
+	if err := ws2.Write(wsCtx, websocket.MessageText, []byte("c")); err != nil {
+		t.Fatalf("ws2 write: %v", err)
+	}
+	if _, data, err := ws2.Read(wsCtx); err != nil || string(data) != "new:c" {
+		t.Fatalf("new-conn echo = %q, err %v", data, err)
+	}
+	ws2.Close(websocket.StatusNormalClosure, "")
+
+	cancel()
+}

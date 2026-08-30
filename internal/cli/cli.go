@@ -271,11 +271,30 @@ func serveCmd(args []string) int {
 	}
 
 	srv := server.NewServer(cfg)
-	if err := srv.Run(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-		return int(host.ExitError)
+
+	// SIGHUP triggers a hot reload (recompile + atomic worker swap). The
+	// INT/TERM context above stops the server; HUP is consumed here.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- srv.Run(ctx) }()
+
+	for {
+		select {
+		case err := <-runDone:
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+				return int(host.ExitError)
+			}
+			return int(host.ExitOK)
+		case <-hup:
+			if err := srv.Reload(); err != nil {
+				fmt.Fprintf(os.Stderr, "reload error: %v\n", err)
+			}
+		}
 	}
-	return int(host.ExitOK)
 }
 
 type multiFlag struct{ values []string }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/yuin/gopher-lua"
 
@@ -23,6 +24,10 @@ type Worker struct {
 	mu       sync.Mutex
 	busy     bool
 	logger   Logger
+
+	refs     atomic.Int32 // active leases (HTTP handles, WS/TCP connections)
+	retired  atomic.Bool  // true once superseded by a hot reload
+	closeOnce sync.Once
 }
 
 // WorkerHandlers holds the Lua callback functions for serve mode.
@@ -422,9 +427,26 @@ func msgLuaTable(L *lua.LState, typ, data, clientID string) *lua.LTable {
 	return tbl
 }
 
-// Close closes the worker's Lua state.
+// Close closes the worker's Lua state. Safe to call multiple times.
 func (w *Worker) Close() {
-	w.L.Close()
+	w.closeOnce.Do(func() { w.L.Close() })
+}
+
+// retire marks the worker as superseded by a hot reload; its Lua state is
+// released once its last active lease ends.
+func (w *Worker) retire() {
+	w.retired.Store(true)
+	if w.refs.Load() == 0 {
+		w.Close()
+	}
+}
+
+// release drops one lease. A retired worker's Lua state is closed when the
+// final lease ends.
+func (w *Worker) release() {
+	if w.refs.Add(-1) == 0 && w.retired.Load() {
+		w.Close()
+	}
 }
 
 // Logger interface for worker logging.

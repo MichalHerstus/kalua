@@ -249,7 +249,10 @@ connection as a text frame / TCP write.
 
 **Lifecycle & signals:**
 - `SIGTERM` / `SIGINT`: stop accepting, drain workers, call `shutdown()` once, exit
-- `SIGHUP`: hot reload — recompile script, swap worker `LStates` atomically (not yet implemented)
+- `SIGHUP`: hot reload — recompile the script, rebuild the worker pool, and swap it
+  atomically. In-flight requests and open WS/TCP connections keep running on their
+  current (superseded) worker; superdeded workers are released once their last
+  lease ends. A reload failure leaves the current pool serving.
 
 **Interactions with the run-mode UI:** `serve` is headless (D18). UI/forms bindings
 (`k.form.*`, `k.ctrl.*`, `k.msgbox`, `k.status_*`) raise a runtime error in serve mode.
@@ -569,7 +572,8 @@ KALUA version
   auto-open (also used by tests). `--session-limit` caps concurrent tabs (default 8).
   `--test` runs headless without any HTTP server (used by the test suite).
 - `serve` starts a headless HTTP/WebSocket/TCP API server (`handle_http`/`handle_ws`/
-  `handle_tcp` entry points); `SIGTERM`/`SIGINT` graceful shutdown; `SIGHUP` hot reload.
+  `handle_tcp` entry points); `SIGTERM`/`SIGINT` graceful shutdown; `SIGHUP` hot reload
+  (atomic worker-pool swap, old workers drained by lease refcount).
   Forms/UI bindings are errors here (D18).
 - `check` catches syntax errors and unknown `k.*` references at load time.
 - `new` writes a minimal runnable `{name}.lua` scaffold (`function main()` + `k.print`).

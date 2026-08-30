@@ -38,8 +38,10 @@ type Server struct {
 	wsHub         *WSHub
 	tcpHub        *TCPHub
 	workers       []*Worker
+	workerMu      sync.RWMutex // guards s.workers and s.retired
+	retired       []*Worker    // superseded by hot reload, drained on shutdown
 	workerCh      chan *Worker
-	nextWorkerIdx uint64 // atomic for round-robin
+	nextWorkerIdx atomic.Uint64 // round-robin cursor
 	httpServer    *http.Server
 	tcpListener   net.Listener
 	wg            sync.WaitGroup
@@ -132,30 +134,20 @@ func (s *Server) modeHas(m string) bool {
 }
 
 func (s *Server) startWorkers(ctx context.Context) error {
-	opts := bindings.Options{
-		Args:        s.cfg.Args,
-		AllowFS:     s.cfg.AllowFS,
-		MaxFileSize: s.cfg.MaxFileSize,
+	workers, err := s.buildWorkers(s.cfg.Workers)
+	if err != nil {
+		return fmt.Errorf("failed to start worker: %w", err)
 	}
-
-	for i := 0; i < s.cfg.Workers; i++ {
-		w, err := NewWorker(i+1, s.cfg.ScriptPath, opts, s.shared, s.wsHub, s.tcpHub, s.cfg.Logger)
-		if err != nil {
-			// Clean up already started workers
-			for _, w := range s.workers {
-				w.Close()
-			}
-			return fmt.Errorf("failed to start worker %d: %w", i+1, err)
-		}
-		s.workers = append(s.workers, w)
+	s.workers = workers
+	for _, w := range workers {
 		s.workerCh <- w
 	}
 
 	// Run the optional init(config) callback once, on the first worker. A
 	// handler error aborts startup (spec §2.2 init).
-	if len(s.workers) > 0 {
-		if err := s.workers[0].CallInit(s.cfg); err != nil {
-			for _, w := range s.workers {
+	if len(workers) > 0 {
+		if err := workers[0].CallInit(s.cfg); err != nil {
+			for _, w := range workers {
 				w.Close()
 			}
 			return err
@@ -201,12 +193,13 @@ func (s *Server) startHTTP(ctx context.Context) error {
 }
 
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	// Get next worker (round-robin)
-	worker := s.nextWorker()
+	// Get next worker (round-robin), leased for this request
+	worker, release := s.leaseWorker()
 	if worker == nil {
 		http.Error(w, "no available workers", http.StatusServiceUnavailable)
 		return
 	}
+	defer release()
 
 	// Read request body
 	body := ""
@@ -268,9 +261,10 @@ func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
 		c.CloseNow()
 	}()
 
-	// Get worker for this connection
-	worker := s.nextWorker()
+	// Get worker for this connection, leased for its whole lifetime
+	worker, release := s.leaseWorker()
 	if worker != nil {
+		defer release()
 		worker.CallWS(WSMessage{Type: "open", ClientID: connID}, ws)
 	}
 
@@ -357,9 +351,10 @@ func (s *Server) startTCP(ctx context.Context) error {
 				conn.Close()
 			}()
 
-			// Get worker for this connection
-			worker := s.nextWorker()
+			// Get worker for this connection, leased for its whole lifetime
+			worker, release := s.leaseWorker()
 			if worker != nil {
+				defer release()
 				worker.CallTCP(TCPMessage{Type: "open", ClientID: connID}, tcpConn)
 			}
 
@@ -409,11 +404,66 @@ func (s *Server) startTCP(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) nextWorker() *Worker {
-	// Round-robin worker selection
-	n := atomic.AddUint64(&s.nextWorkerIdx, 1)
-	idx := int(n) % len(s.workers)
-	return s.workers[idx]
+// leaseWorker returns a worker for one unit of work (an HTTP request or a
+// WS/TCP connection) plus a release func that must be called when the work
+// ends. The lease guards against a hot-reload closing the worker underneath a
+// live handler or connection.
+func (s *Server) leaseWorker() (*Worker, func()) {
+	s.workerMu.RLock()
+	defer s.workerMu.RUnlock()
+	if len(s.workers) == 0 {
+		return nil, nil
+	}
+	n := s.nextWorkerIdx.Add(1)
+	w := s.workers[n%uint64(len(s.workers))]
+	w.refs.Add(1)
+	return w, w.release
+}
+
+// Reload recompiles the script and atomically swaps the worker pool (SIGHUP
+// hot reload). In-flight requests and open WS/TCP connections finish on their
+// current worker, which is released when its last lease ends. On any error the
+// existing pool is left untouched.
+func (s *Server) Reload() error {
+	s.cfg.Logger.Printf("reload: rebuilding %d workers from %s", s.cfg.Workers, s.cfg.ScriptPath)
+
+	newWorkers, err := s.buildWorkers(s.cfg.Workers)
+	if err != nil {
+		return fmt.Errorf("reload: %w", err)
+	}
+
+	s.workerMu.Lock()
+	old := s.workers
+	s.workers = newWorkers
+	s.nextWorkerIdx.Store(0)
+	for _, w := range old {
+		w.retire()
+	}
+	s.retired = append(s.retired, old...)
+	s.workerMu.Unlock()
+
+	s.cfg.Logger.Printf("reload: %d workers swapped", len(newWorkers))
+	return nil
+}
+
+func (s *Server) buildWorkers(count int) ([]*Worker, error) {
+	opts := bindings.Options{
+		Args:        s.cfg.Args,
+		AllowFS:     s.cfg.AllowFS,
+		MaxFileSize: s.cfg.MaxFileSize,
+	}
+	var workers []*Worker
+	for i := 0; i < count; i++ {
+		w, err := NewWorker(i+1, s.cfg.ScriptPath, opts, s.shared, s.wsHub, s.tcpHub, s.cfg.Logger)
+		if err != nil {
+			for _, w := range workers {
+				w.Close()
+			}
+			return nil, err
+		}
+		workers = append(workers, w)
+	}
+	return workers, nil
 }
 
 func (s *Server) shutdown() {
@@ -424,7 +474,16 @@ func (s *Server) shutdown() {
 	if s.tcpListener != nil {
 		s.tcpListener.Close()
 	}
-	for _, w := range s.workers {
+	// Close every current and retired worker. Retired workers may already
+	// have been closed by their last lease release; Close is idempotent.
+	s.workerMu.Lock()
+	all := make([]*Worker, 0, len(s.workers)+len(s.retired))
+	all = append(all, s.workers...)
+	all = append(all, s.retired...)
+	s.workers = nil
+	s.retired = nil
+	s.workerMu.Unlock()
+	for _, w := range all {
 		w.Close()
 	}
 	s.wg.Wait()
