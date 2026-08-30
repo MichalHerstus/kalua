@@ -145,6 +145,96 @@ var apiDocs = map[string]Info{
 	"tcp":          {Name: "tcp", Group: "server", Signature: "k.tcp", Docs: "TCP operations: k.tcp.send/close."},
 	"tcp.send":     {Name: "tcp.send", Group: "server", Signature: "k.tcp.send(client_id, data)", Docs: "Sends data to a specific TCP client."},
 	"tcp.close":    {Name: "tcp.close", Group: "server", Signature: "k.tcp.close(client_id)", Docs: "Closes a TCP connection."},
+
+	// tier-2 flow
+	"timer_start":  {Name: "timer_start", Group: "flow", Signature: "k.timer_start(id, ms[, repeats])", Docs: "Starts a session timer; fires a Lua function named id (repeats optional)."},
+	"timer_stop":   {Name: "timer_stop", Group: "flow", Signature: "k.timer_stop(id)", Docs: "Stops a running session timer."},
+	"status_show":  {Name: "status_show", Group: "flow", Signature: "k.status_show(text)", Docs: "Shows a busy/status bar with the given text."},
+	"status_close": {Name: "status_close", Group: "flow", Signature: "k.status_close()", Docs: "Hides the status bar."},
+	"param_set":    {Name: "param_set", Group: "flow", Signature: "k.param_set(key, value)", Docs: "Persists an app param (string) to an app-side file."},
+	"param_get":    {Name: "param_get", Group: "flow", Signature: "k.param_get(key)", Docs: "Reads a persisted app param (string; \"\" if unset)."},
+	"net_ok":       {Name: "net_ok", Group: "flow", Signature: "k.net_ok(timeout_ms)", Docs: "Reports internet reachability via a TCP dial."},
+	"locale":       {Name: "locale", Group: "flow", Signature: "k.locale()", Docs: "Returns the session locale (\"en-US\" default)."},
+	"ping":         {Name: "ping", Group: "flow", Signature: "k.ping(host, timeout_ms)", Docs: "TCP-based latency probe returning ms, or nil when unreachable."},
+
+	// tier-2 database
+	"connect_sqlite":    {Name: "connect_sqlite", Group: "database", Signature: "k.connect_sqlite(path)", Docs: "Opens a SQLite database file; returns a handle usable with k.sql/k.db_*."},
+	"disconnect_sqlite": {Name: "disconnect_sqlite", Group: "database", Signature: "k.disconnect_sqlite([handle])", Docs: "Closes a SQLite connection (or all)."},
+	"db_kill_table":     {Name: "db_kill_table", Group: "database", Signature: "k.db_kill_table(handle, table, where)", Docs: "Deletes rows matching the where table."},
+	"db_proc":           {Name: "db_proc", Group: "database", Signature: "k.db_proc(handle, name, ...params)", Docs: "Executes a stored procedure."},
+
+	// tier-2 comm
+	"socket_open":      {Name: "socket_open", Group: "comm", Signature: "k.socket_open(host, port[, timeout_ms])", Docs: "Opens a TCP client connection; returns a handle."},
+	"socket_write":     {Name: "socket_write", Group: "comm", Signature: "k.socket_write(handle, data)", Docs: "Writes data to an open socket; returns bytes written."},
+	"socket_read":      {Name: "socket_read", Group: "comm", Signature: "k.socket_read(handle[, count])", Docs: "Reads count bytes (or all until close) from a socket."},
+	"socket_read_line": {Name: "socket_read_line", Group: "comm", Signature: "k.socket_read_line(handle)", Docs: "Reads one line (trailing newline trimmed); nil at EOF."},
+	"socket_close":     {Name: "socket_close", Group: "comm", Signature: "k.socket_close(handle)", Docs: "Closes an open socket."},
+
+	// tier-2 FTP
+	"ftp_connect":    {Name: "ftp_connect", Group: "comm", Signature: "k.ftp_connect(host[, port, user, pw])", Docs: "Connects to an FTP server; returns a handle."},
+	"ftp_set_cwd":    {Name: "ftp_set_cwd", Group: "comm", Signature: "k.ftp_set_cwd(handle, path)", Docs: "Changes the remote working directory (CWD)."},
+	"ftp_get_file":   {Name: "ftp_get_file", Group: "comm", Signature: "k.ftp_get_file(handle, remote, local)", Docs: "Downloads remote to a local path (RETR)."},
+	"ftp_put_file":   {Name: "ftp_put_file", Group: "comm", Signature: "k.ftp_put_file(handle, local, remote)", Docs: "Uploads a local file to remote (STOR)."},
+	"ftp_file_exists": {Name: "ftp_file_exists", Group: "comm", Signature: "k.ftp_file_exists(handle, path)", Docs: "Reports whether a remote file exists (SIZE)."},
+	"ftp_create_dir": {Name: "ftp_create_dir", Group: "comm", Signature: "k.ftp_create_dir(handle, path)", Docs: "Creates a remote directory (MKD)."},
+	"ftp_delete":     {Name: "ftp_delete", Group: "comm", Signature: "k.ftp_delete(handle, path)", Docs: "Deletes a remote file (DELE)."},
+	"ftp_rename":     {Name: "ftp_rename", Group: "comm", Signature: "k.ftp_rename(handle, from, to)", Docs: "Renames a remote file or folder (RNFR/RNTO)."},
+	"ftp_list":       {Name: "ftp_list", Group: "comm", Signature: "k.ftp_list(handle[, path])", Docs: "Lists remote entry names (LIST)."},
+	"ftp_disconnect": {Name: "ftp_disconnect", Group: "comm", Signature: "k.ftp_disconnect(handle)", Docs: "Sends QUIT and closes the FTP connection."},
+
+	// tier-2 email (SMTP)
+	"smtp_connect":    {Name: "smtp_connect", Group: "email", Signature: "k.smtp_connect{host,port,user,pw,tls}", Docs: "Connects to an SMTP server; returns a handle."},
+	"smtp_send":       {Name: "smtp_send", Group: "email", Signature: "k.smtp_send(handle, {from,to,subject,body,attachments})", Docs: "Sends an email through the connected SMTP server."},
+	"smtp_disconnect": {Name: "smtp_disconnect", Group: "email", Signature: "k.smtp_disconnect([handle])", Docs: "Closes an SMTP connection (or all)."},
+
+	// tier-2 email (POP3)
+	"pop3_connect": {Name: "pop3_connect", Group: "email", Signature: "k.pop3_connect{host,port,user,pw,tls}", Docs: "Connects to a POP3 server; returns a handle."},
+	"pop3_stat":    {Name: "pop3_stat", Group: "email", Signature: "k.pop3_stat(handle)", Docs: "Returns {count,size} of the mailbox."},
+	"pop3_list":    {Name: "pop3_list", Group: "email", Signature: "k.pop3_list(handle)", Docs: "Returns a table of {id,size} message summaries."},
+	"pop3_retr":    {Name: "pop3_retr", Group: "email", Signature: "k.pop3_retr(handle, index)", Docs: "Retrieves a message by index."},
+	"pop3_dele":    {Name: "pop3_dele", Group: "email", Signature: "k.pop3_dele(handle, index)", Docs: "Marks a message for deletion."},
+	"pop3_noop":    {Name: "pop3_noop", Group: "email", Signature: "k.pop3_noop(handle)", Docs: "Keeps the POP3 connection alive."},
+	"pop3_quit":    {Name: "pop3_quit", Group: "email", Signature: "k.pop3_quit(handle)", Docs: "Sends QUIT and closes the POP3 connection."},
+
+	// tier-2 web service (SOAP)
+	"webservice_run": {Name: "webservice_run", Group: "comm", Signature: "k.webservice_run(profile, params)", Docs: "Calls a SOAP web service. profile: {url,action[,method,timeout_ms]}; params is the body table. Returns {status,headers,body}."},
+
+	// tier-2 crypto
+	"crypt_symmetric":  {Name: "crypt_symmetric", Group: "crypto", Signature: "k.crypt_symmetric(alg, key, data[, iv])", Docs: "AES-CBC symmetric encrypt/decrypt (alg aes-encrypt/aes-decrypt). Returns base64."},
+	"crypt_asymmetric": {Name: "crypt_asymmetric", Group: "crypto", Signature: "k.crypt_asymmetric(alg, key, data)", Docs: "RSA PKCS#1 v1.5 encrypt/decrypt with a PEM key."},
+	"sign":             {Name: "sign", Group: "crypto", Signature: "k.sign(data, key[, alg])", Docs: "RSA signature (default SHA-256); returns base64."},
+	"verify":           {Name: "verify", Group: "crypto", Signature: "k.verify(data, signature, key[, alg])", Docs: "Verifies an RSA signature; returns true/false."},
+
+	// tier-2 files (zip)
+	"zip_list":    {Name: "zip_list", Group: "files", Signature: "k.zip_list(zipPath)", Docs: "Lists the member names of a zip archive."},
+	"zip_add":     {Name: "zip_add", Group: "files", Signature: "k.zip_add(zipPath, entries)", Docs: "Writes a zip archive from {name=content} entries."},
+	"zip_extract": {Name: "zip_extract", Group: "files", Signature: "k.zip_extract(zipPath, dir)", Docs: "Extracts a zip archive into dir; returns file count."},
+
+	// tier-2 data formats
+	"csv_parse":      {Name: "csv_parse", Group: "formats", Signature: "k.csv_parse(text[, opts])", Docs: "Parses CSV (opts {header, sep, quote})."},
+	"csv_string":     {Name: "csv_string", Group: "formats", Signature: "k.csv_string(data[, opts])", Docs: "Serializes CSV from a table."},
+	"csv_load":       {Name: "csv_load", Group: "formats", Signature: "k.csv_load(path[, opts])", Docs: "Reads and parses a CSV file."},
+	"csv_save":       {Name: "csv_save", Group: "formats", Signature: "k.csv_save(path, data[, opts])", Docs: "Writes a CSV file atomically."},
+	"ini_parse":      {Name: "ini_parse", Group: "formats", Signature: "k.ini_parse(text)", Docs: "Parses INI into {section={key=value}, _root={...}}."},
+	"ini_string":     {Name: "ini_string", Group: "formats", Signature: "k.ini_string(data)", Docs: "Serializes INI from a table."},
+	"ini_load":       {Name: "ini_load", Group: "formats", Signature: "k.ini_load(path)", Docs: "Reads and parses an INI file."},
+	"ini_save":       {Name: "ini_save", Group: "formats", Signature: "k.ini_save(path, data)", Docs: "Writes an INI file atomically."},
+	"ini_read":       {Name: "ini_read", Group: "formats", Signature: "k.ini_read(path, section, key)", Docs: "Reads a single INI key (Kalipso parity)."},
+	"ini_write":      {Name: "ini_write", Group: "formats", Signature: "k.ini_write(path, section, key, value)", Docs: "Writes a single INI key (Kalipso parity)."},
+	"yaml_parse":     {Name: "yaml_parse", Group: "formats", Signature: "k.yaml_parse(text)", Docs: "Parses YAML; multi-document input yields a list of tables."},
+	"yaml_string":    {Name: "yaml_string", Group: "formats", Signature: "k.yaml_string(data)", Docs: "Serializes a value as YAML."},
+	"yaml_load":      {Name: "yaml_load", Group: "formats", Signature: "k.yaml_load(path)", Docs: "Reads and parses a YAML file."},
+	"yaml_save":      {Name: "yaml_save", Group: "formats", Signature: "k.yaml_save(path, data)", Docs: "Writes a YAML file atomically."},
+	"xml_load":       {Name: "xml_load", Group: "formats", Signature: "k.xml_load(path)", Docs: "Reads an XML file into the element-table shape {_name,_attrs,_children,_text}."},
+	"xml_save":       {Name: "xml_save", Group: "formats", Signature: "k.xml_save(path, table)", Docs: "Writes an element-table as XML."},
+
+	// tier-2 rows conversions
+	"json_to_rows": {Name: "json_to_rows", Group: "rows", Signature: "k.json_to_rows(value)", Docs: "Converts a JSON array of row-maps into {columns, rows}."},
+	"rows_to_json": {Name: "rows_to_json", Group: "rows", Signature: "k.rows_to_json(result)", Docs: "Extracts the rows array from a result set."},
+	"csv_to_rows":  {Name: "csv_to_rows", Group: "rows", Signature: "k.csv_to_rows(csvTable)", Docs: "Converts a parsed CSV table into {columns, rows}."},
+	"rows_to_csv":  {Name: "rows_to_csv", Group: "rows", Signature: "k.rows_to_csv(result[, opts])", Docs: "Serializes a result set as CSV."},
+	"xml_to_rows":  {Name: "xml_to_rows", Group: "rows", Signature: "k.xml_to_rows(document)", Docs: "Converts an XML element-table into {columns, rows}."},
+	"rows_to_xml":  {Name: "rows_to_xml", Group: "rows", Signature: "k.rows_to_xml(result[, rootName[, rowName]])", Docs: "Serializes a result set as XML."},
 }
 
 // KSets documents the K.* helpers and constants. This is static tooling data;

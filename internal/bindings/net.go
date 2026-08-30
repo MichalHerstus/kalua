@@ -59,9 +59,16 @@ func (e *Env) getParam(key string) string {
 	return e.loadParams()[key]
 }
 
-// locale returns the session/browser locale, defaulting to "en-US" until the
-// web session seeds it from client_info.
+// locale returns the session/browser locale. It prefers the client_info
+// locale stored on the session; falls back to "en-US" before the web session
+// reports one (serve mode has no browser, so it always sees the default).
 func (e *Env) locale() string {
+	if e.Sess != nil {
+		_, _, loc := e.Sess.ClientInfo()
+		if loc != "" {
+			return loc
+		}
+	}
 	return "en-US"
 }
 

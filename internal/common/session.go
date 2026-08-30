@@ -14,6 +14,11 @@ type SessionInterface interface {
 	RunAsync(co *lua.LState, cancel func(), fn func() (interface{}, error), conv func(*lua.LState, interface{}) lua.LValue)
 	ShowMsgbox(co *lua.LState, cancel func(), text, kind string) string
 	HandleMsgboxChoice(msgboxID, choice string)
+	StartTimer(id string, ms int, repeats bool)
+	StopTimer(id string)
+	ClientInfo() (w, h int, locale string)
+	RequestClipboardGet(co *lua.LState, cancel func())
+	PostClipboardResp(clipID, value string)
 }
 
 // DefaultConv converts an async result to a Lua value on the caller's state,

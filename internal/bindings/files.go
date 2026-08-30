@@ -2,6 +2,7 @@
 package bindings
 
 import (
+	"archive/zip"
 	"bufio"
 	"fmt"
 	"io"
@@ -284,6 +285,134 @@ func registerFiles(e *Env) {
 		L.Push(tbl)
 		return 1
 	})
+
+	// k.zip_list(zipPath) -> 1-based table of member names (ZIP, Tier 2 §5.5).
+	e.register("zip_list", "files", func(L *lua.LState) int {
+		path := L.CheckString(1)
+		return runBlocking(e, L, func() (interface{}, error) {
+			resolved, err := e.resolvePath(path)
+			if err != nil {
+				return nil, err
+			}
+			zr, err := zip.OpenReader(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("zip error: %v", err)
+			}
+			defer zr.Close()
+			names := make([]string, 0, len(zr.File))
+			for _, f := range zr.File {
+				names = append(names, f.Name)
+			}
+			sort.Strings(names)
+			return names, nil
+		}, nil)
+	})
+
+	// k.zip_add(zipPath, entries) where entries is { name=content(db) } (ZIP, Tier 2).
+	e.register("zip_add", "files", func(L *lua.LState) int {
+		path := L.CheckString(1)
+		entries := L.CheckTable(2)
+		return runBlocking(e, L, func() (interface{}, error) {
+			resolved, err := e.resolvePath(path)
+			if err != nil {
+				return nil, err
+			}
+			entries, err := snapshotZipEntries(L, entries)
+			if err != nil {
+				return nil, err
+			}
+			f, err := os.Create(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("zip error: cannot create %s: %v", path, err)
+			}
+			defer f.Close()
+			zw := zip.NewWriter(f)
+			named := make([]string, 0, len(entries))
+			for k := range entries {
+				named = append(named, k)
+			}
+			sort.Strings(named)
+			for _, name := range named {
+				w, err := zw.Create(name)
+				if err != nil {
+					return nil, fmt.Errorf("zip error: %v", err)
+				}
+				if _, err := w.Write(entries[name]); err != nil {
+					return nil, fmt.Errorf("zip error: %v", err)
+				}
+			}
+			if err := zw.Close(); err != nil {
+				return nil, fmt.Errorf("zip error: %v", err)
+			}
+			return nil, nil
+		}, nil)
+	})
+
+	// k.zip_extract(zipPath, dir) -> number of files extracted (ZIP, Tier 2).
+	e.register("zip_extract", "files", func(L *lua.LState) int {
+		path := L.CheckString(1)
+		dir := L.CheckString(2)
+		return runBlocking(e, L, func() (interface{}, error) {
+			resolved, err := e.resolvePath(path)
+			if err != nil {
+				return nil, err
+			}
+			dest, err := e.resolvePath(dir)
+			if err != nil {
+				return nil, err
+			}
+			zr, err := zip.OpenReader(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("zip error: %v", err)
+			}
+			defer zr.Close()
+			var count int
+			for _, zf := range zr.File {
+				target := filepath.Join(dest, zf.Name)
+				rel, err := filepath.Rel(dest, target)
+				if err != nil || strings.HasPrefix(rel, "..") {
+					return nil, fmt.Errorf("zip error: unsafe path %q", zf.Name)
+				}
+				if zf.FileInfo().IsDir() {
+					if err := os.MkdirAll(target, 0o755); err != nil {
+						return nil, fmt.Errorf("zip error: %v", err)
+					}
+					continue
+				}
+				if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+					return nil, fmt.Errorf("zip error: %v", err)
+				}
+				rc, err := zf.Open()
+				if err != nil {
+					return nil, fmt.Errorf("zip error: %v", err)
+				}
+				out, err := os.Create(target)
+				if err != nil {
+					rc.Close()
+					return nil, fmt.Errorf("zip error: %v", err)
+				}
+				if _, err := io.Copy(out, rc); err != nil {
+					rc.Close()
+					out.Close()
+					return nil, fmt.Errorf("zip error: %v", err)
+				}
+				rc.Close()
+				out.Close()
+				count++
+			}
+			return count, nil
+		}, nil)
+	})
+}
+
+// snapshotZipEntries copies the Lua entries table into a Go map on the caller
+// (never touch the Lua state from a worker goroutine).
+func snapshotZipEntries(L *lua.LState, entries *lua.LTable) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	entries.ForEach(func(k, v lua.LValue) {
+		out[k.String()] = []byte(v.String())
+	})
+	return out, nil
 }
 
 // lookupFileHandle resolves the handle id at stack index 1, raising on failure.

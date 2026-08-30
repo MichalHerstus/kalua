@@ -4,6 +4,7 @@ package bindings
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/yuin/gopher-lua"
@@ -344,6 +345,120 @@ func registerDB(e *Env) {
 		L.Push(iterFn)
 		return 1
 	})
+
+	// k.connect_sqlite(path) - connect to a SQLite database file (Tier 2, §5.3).
+	// Returns a handle usable with k.sql/k.db_select/...
+	e.register("connect_sqlite", "database", func(L *lua.LState) int {
+		path := L.CheckString(1)
+		driver, cleanDSN := parseSQLiteDSN(path)
+		if driver == "" {
+			L.RaiseError("connect_sqlite: invalid path %q", path)
+			return 0
+		}
+		db, err := sql.Open(driver, cleanDSN)
+		if err != nil {
+			L.RaiseError("connect_sqlite: %v", err)
+			return 0
+		}
+		if err := db.Ping(); err != nil {
+			db.Close()
+			L.RaiseError("connect_sqlite: %v", err)
+			return 0
+		}
+		handle := &DBHandle{db: db, driver: "sqlite"}
+		id := fmt.Sprintf("db_%p", handle)
+		dbHandlesMu.Lock()
+		dbHandles[id] = handle
+		dbHandlesMu.Unlock()
+		L.Push(lua.LString(id))
+		return 1
+	})
+
+	// k.disconnect_sqlite([handle]) - close a SQLite connection (or all).
+	e.register("disconnect_sqlite", "database", func(L *lua.LState) int {
+		return closeDB(e, L, L.OptString(1, ""))
+	})
+
+	// k.db_kill_table(table, where) - delete rows (alias of db_delete, Tier 2).
+	e.register("db_kill_table", "database", func(L *lua.LState) int {
+		handleID := L.CheckString(1)
+		table := L.CheckString(2)
+		where := L.OptTable(3, L.NewTable())
+
+		handle := getDBHandle(L, handleID)
+		if handle == nil {
+			L.RaiseError("database handle not found: %s", handleID)
+			return 0
+		}
+		whereClause, whereParams := buildWhereClause(L, where)
+		sqlStr := fmt.Sprintf("DELETE FROM %s%s", table, whereClause)
+		return executeDBAsync(e, L, handle, sqlStr, whereParams, true, false, false)
+	})
+
+	// k.db_proc(name, params...) - execute a stored procedure (Tier 2 §5.3).
+	// Runs "CALL name(...)" for mysql/sqlite-flavoured databases and
+	// "EXEC name args" for mssql; postgres procedures are invoked via SELECT.
+	e.register("db_proc", "database", func(L *lua.LState) int {
+		handleID := L.CheckString(1)
+		name := L.CheckString(2)
+		handle := getDBHandle(L, handleID)
+		if handle == nil {
+			L.RaiseError("database handle not found: %s", handleID)
+			return 0
+		}
+		var params []interface{}
+		for i := 3; i <= L.GetTop(); i++ {
+			params = append(params, luaValueToGo(L.Get(i)))
+		}
+		placeholders := make([]string, len(params))
+		for i := range params {
+			placeholders[i] = handle.Placeholder(i + 1)
+		}
+		var sqlStr string
+		switch handle.driver {
+		case "postgres":
+			sqlStr = "CALL " + name + "(" + join(placeholders, ", ") + ")"
+		case "sqlserver":
+			sqlStr = "EXEC " + name + " " + join(placeholders, ", ")
+		default: // mysql, sqlite
+			sqlStr = "CALL " + name + "(" + join(placeholders, ", ") + ")"
+		}
+		return executeDBAsync(e, L, handle, sqlStr, params, true, false, false)
+	})
+}
+
+// parseSQLiteDSN turns a bare path (or sqlite://-prefixed path) into
+// (driver, cleaned DSN) for connect_sqlite.
+func parseSQLiteDSN(p string) (string, string) {
+	if strings.HasPrefix(p, "sqlite://") {
+		return "sqlite", p[len("sqlite://"):]
+	}
+	return "sqlite", p
+}
+
+// closeDB closes one handle (or all when handleID is empty). Returns int for
+// the LGFunction stack.
+func closeDB(e *Env, L *lua.LState, handleID string) int {
+	dbHandlesMu.Lock()
+	if handleID == "" {
+		for _, h := range dbHandles {
+			h.Close()
+		}
+		dbHandles = make(map[string]*DBHandle)
+		dbHandlesMu.Unlock()
+		return 0
+	}
+	h, ok := dbHandles[handleID]
+	if ok {
+		delete(dbHandles, handleID)
+	}
+	dbHandlesMu.Unlock()
+	if !ok {
+		L.RaiseError("database handle not found: %s", handleID)
+		return 0
+	}
+	h.Close()
+	return 0
 }
 
 // executeDBAsync executes a database operation asynchronously using the session's worker pool

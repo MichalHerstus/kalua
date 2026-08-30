@@ -334,6 +334,12 @@ func convertJSONGo(L *lua.LState, e *Env, v interface{}) lua.LValue {
 			return lua.LNumber(f)
 		}
 		return lua.LString(string(t))
+	case int:
+		return lua.LNumber(float64(t))
+	case int64:
+		return lua.LNumber(float64(t))
+	case float32:
+		return lua.LNumber(float64(t))
 	case string:
 		return lua.LString(t)
 	case bool:

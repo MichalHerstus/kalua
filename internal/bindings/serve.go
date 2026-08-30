@@ -36,12 +36,11 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 	// Create k table first
 	L.SetGlobal("k", L.NewTable())
 
-	// Register serve-mode modules
-	registerShared(L, shared)
+	k := L.GetGlobal("k").(*lua.LTable)
+
+	// Register serve-mode WS/TCP modules (Env-independent)
 	registerWS(L, wsHub)
 	registerTCP(L, tcpHub)
-
-	k := L.GetGlobal("k").(*lua.LTable)
 
 	// k.print for logging
 	k.RawSetString("print", L.NewFunction(func(L *lua.LState) int {
@@ -97,38 +96,69 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 	L.SetGlobal("K", K)
 
 	registerExprFuncs(e)
+
+	// k.shared_* uses the Env for JSON value serialization.
+	registerShared(e, shared)
+
+	// Tier-2 self-contained bindings are shared between run and serve modes:
+	// data formats, result-set conversions, comm, crypto, and files (zip).
+	registerFormats(e)
+	registerRows(e)
+	registerComm(e)
+	registerSMTP(e)
+	registerPop3(e)
+	registerFTP(e)
+	registerSoap(e)
+	registerCrypto(e)
+	registerFiles(e)
+	registerDB(e)
+
+	// Session-dependent UI/timer bindings are removed; SetupUIError installs
+	// the error-raising stubs for form/ctrl/msgbox/status. Timers and net/param
+	// helpers stay available (net/param are pure file/net behavior).
 }
 
-// registerShared registers k.shared_* bindings.
-func registerShared(L *lua.LState, shared SharedStore) {
-	k := L.GetGlobal("k").(*lua.LTable)
-	sharedTbl := L.NewTable()
+// registerShared registers k.shared_* bindings. Values are stored as JSON so
+// numbers, booleans, tables, arrays, and K.NULL round-trip across workers.
+func registerShared(e *Env, shared SharedStore) {
+	k := e.L.GetGlobal("k").(*lua.LTable)
+	sharedTbl := e.L.NewTable()
 
-	// k.shared_set(key, value)
-	sharedTbl.RawSetString("set", L.NewFunction(func(L *lua.LState) int {
+	// k.shared_set(key, value) — any Lua value is stored as its JSON form
+	sharedTbl.RawSetString("set", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
-		value := L.CheckString(2)
-		shared.Set(key, value)
+		text, err := stringifyJSON(e, L.Get(2))
+		if err != nil {
+			L.RaiseError("shared error: %v", err)
+			return 0
+		}
+		shared.Set(key, text)
 		return 0
 	}))
 
-	// k.shared_get(key) -> value
-	sharedTbl.RawSetString("get", L.NewFunction(func(L *lua.LState) int {
+	// k.shared_get(key) -> value (JSON-decoded when the stored value is valid
+	// JSON; otherwise returned as a raw string, preserving legacy behavior)
+	sharedTbl.RawSetString("get", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		val := shared.Get(key)
-		L.Push(lua.LString(val))
+		v, err := parseJSON(L, e, []byte(val))
+		if err != nil {
+			L.Push(lua.LString(val))
+		} else {
+			L.Push(v)
+		}
 		return 1
 	}))
 
 	// k.shared_del(key)
-	sharedTbl.RawSetString("del", L.NewFunction(func(L *lua.LState) int {
+sharedTbl.RawSetString("del", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		shared.Del(key)
 		return 0
 	}))
 
 	// k.shared_keys([pattern]) -> table of keys
-	sharedTbl.RawSetString("keys", L.NewFunction(func(L *lua.LState) int {
+sharedTbl.RawSetString("keys", e.L.NewFunction(func(L *lua.LState) int {
 		pattern := "*"
 		if L.GetTop() >= 1 {
 			pattern = L.CheckString(1)
@@ -143,7 +173,7 @@ func registerShared(L *lua.LState, shared SharedStore) {
 	}))
 
 	// k.shared_incr(key, delta) -> new_value
-	sharedTbl.RawSetString("incr", L.NewFunction(func(L *lua.LState) int {
+sharedTbl.RawSetString("incr", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		delta := int64(1)
 		if L.GetTop() >= 2 {
@@ -258,11 +288,13 @@ func SetupUIError(L *lua.LState) {
 	// Disable k.msgbox
 	k.RawSetString("msgbox", L.NewFunction(errorFunc("k.msgbox")))
 
-	// Disable k.status_*
-	statusTbl := L.NewTable()
-	statusFuncs := []string{"set", "clear", "progress"}
+	// Disable k.status_show / k.status_close (and legacy k.status_*).
+	statusFuncs := []string{"show", "close", "set", "clear", "progress"}
 	for _, fn := range statusFuncs {
-		statusTbl.RawSetString(fn, L.NewFunction(errorFunc("k.status_"+fn)))
+		k.RawSetString("status_"+fn, L.NewFunction(errorFunc("k.status_"+fn)))
 	}
-	k.RawSetString("status", statusTbl)
+
+	// Disable k.timer_start / k.timer_stop (need a session actor).
+	k.RawSetString("timer_start", L.NewFunction(errorFunc("k.timer_start")))
+	k.RawSetString("timer_stop", L.NewFunction(errorFunc("k.timer_stop")))
 }

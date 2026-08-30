@@ -49,6 +49,7 @@ Ground truth for the action/function inventory: official Kalipso 5.0 docs
 | D16 | Render model | Server-side templ renders HTML fragments for every UI command; vanilla JS injects at a target selector | 2026-08-28 |
 | D17 | UI transport | WebSocket (`github.com/coder/websocket`) between browser and server | 2026-08-28 |
 | D18 | Run vs serve | `run` = interactive web app (UI bindings live); `serve` = headless API (D14), UI bindings are errors | 2026-08-28 |
+| D19 | AI-agent authoring | **Skills-first**: opencode-native `.opencode/skills/` markdown committed to the repo, driven by the existing `check`/`LSP`/`run --test` toolchain; **no MCP server** (marginal benefit — `bash` + LSP wiring cover check/run/diagnose). Revisit MCP only if cross-client authoring (Cursor, Claude Desktop) becomes a goal | 2026-08-30 |
 
 ---
 
@@ -614,9 +615,10 @@ Status legend: ✅ implemented · ⏳ pending.
    `--no-browser/--session-limit`, `lsp` subcommand, extended testing.
 8. ✅ **Server mode (T1)** — `serve` command, worker pool, HTTP listener, `k.shared_*`,
    `init`/`handle_http`/`shutdown` lifecycle, graceful shutdown, hot reload (SIGHUP).
-9. ⏳ **Tier 2 wave** — FTP/sockets/ping/web-service, SMTP/POP3, SQLite,
-   asymmetric crypto, clipboard/status-window/file-picker, remaining §5.10 formats
-   (XML save, YAML, CSV, INI).
+9. ✅/⏳ **Tier 2 wave (mostly)** — data formats (CSV/INI/YAML/XML load+save, result-set↔format
+   conversions), asymmetric + symmetric crypto, SQLite connect, ZIP, sockets, timers, status
+   window, params, net_ok/locale/ping, FTP, SMTP/POP3, SOAP web-service (k.webservice_run).
+   Remaining: file picker (`k.pick_file`, browser-integrated).
 10. ✅ **Server mode (T2)** — WebSocket listener (`handle_ws`, `k.ws_*`), TCP listener (`handle_tcp`, `k.tcp_*`).
 
 > Note: implementation order differed from this list — the LSP/editor phase (5) and server mode (8/10)
@@ -672,16 +674,16 @@ implemented; see §8 for the per-phase status.
 - Tooling: `KALUA lsp` over stdio (diagnostics, completion, hover, definition)
   + the `extensions/vscode-kalua` VS Code extension.
 
-**Not yet implemented (Tier 2, phase 9):** FTP/sockets/ping/web-service,
-SMTP/POP3, asymmetric crypto, status window, file picker, timers
-(`k.timer_start`/`k.timer_stop`), SQLite-connect tier-2
-native handler beside the already-imported driver, and the remaining §5.10
-formats (XML save, YAML, CSV, INI). The `--session-limit` flag enforces the cap
-via a plain 503 (the friendlier "already running" page is not yet wired), and
-browser auto-open on `run` is not implemented (use the printed URL
-manually; `--no-browser` is accepted and always effective).
+**Not yet implemented (Tier 2 remainder, phase 9):** file picker (`k.pick_file`,
+browser-integrated). Everything else in the Tier 2 wave is implemented: FTP (`k.ftp_*`), SMTP
+(`k.smtp_connect/send/disconnect`), POP3 (`k.pop3_*`), SOAP web-service (`k.webservice_run`),
+timers/status/params/net_ok/locale/ping, sockets, ZIP, SQLite connect, symmetric/asymmetric
+crypto, and the §5.10 CSV/INI/YAML/XML formats plus result-set conversions. The `--session-limit`
+flag enforces the cap via a plain 503 (the friendlier "already running" page is not yet wired),
+and browser auto-open on `run` is not implemented (use the printed URL manually; `--no-browser`
+is accepted and always effective).
 
-Next step: Tier 2 wave (phase 9).
+Next step: file picker (phase 9 remainder) — browser-integrated `k.pick_file`.
 
 ---
 
@@ -831,5 +833,115 @@ KALUA version
 - `--debug`: enable EmmyLua debugger (requires patched VM)
 - `--debug-port`: TCP port for debugger (default 9966)
 - `--debug-worker`: which worker to debug in server mode (1-based, default 1)
+
+---
+
+## 12. AI Agent Script Authoring (Skills) — Design Plan
+
+*(Decision D19, 2026-08-30. MCP explicitly out of scope; see D19 rationale. This section is the plan
+to land the mechanism; status in §12.7.)*
+
+### 12.1 Goal & non-goals
+
+Enable AI coding agents (opencode first) to author, review, and fix KALUA `.lua` apps from a
+natural-language prompt: scaffold, diagnose, and iterate using the documented `k.*` / `K.*` /
+expression-function surface and the existing `check` / `lsp` / `run --test` toolchain.
+
+- **In scope:** project-scoped skills (`.opencode/skills/`), a drift-free generated API reference,
+  opencode LSP wiring for live diagnostics, a serve-mode showcase app.
+- **Non-goals:** any MCP server (marginal benefit inside opencode — `bash` + LSP already give an
+  agent `check`/`run`/`serve`/`lsp`; revisit only if cross-client authoring becomes a goal), or
+  changes to the KALUA runtime itself.
+
+### 12.2 Files & layout
+
+```
+.opencode/
+  opencode.json                 ── register KALUA LSP for .lua
+  skills/
+    kalua-authoring/SKILL.md    ── workflow guide (main(), forms, golden loop, pitfalls)
+    kalua-api/SKILL.md          ── reference skill: frontmatter + pointer to api.md
+    kalua-api/api.md            ── GENERATED from api_doc.go (committed, drift-gated)
+cmd/kalua-apidoc/main.go        ── generator binary (separate from the KALUA CLI)
+internal/apiref/apiref.go       ── Render() over Docs()/KInfo()/ExprInfo()/GlobalsList()
+Makefile                        ── gen-api / check-api targets
+testdata/apps/api_demo.lua      ── serve-mode showcase app referenced by the authoring skill
+```
+
+### 12.3 `api.md` generator (drift prevention)
+
+- A small `cmd/kalua-apidoc` renders the entire tooling surface into markdown: every `k.*` binding
+  (`Docs()`, `internal/bindings/api_doc.go`), the `K.*` helpers (`KInfo()`), the §5.9 expression
+  functions (`ExprInfo()`), and the script globals (`GlobalsList()` / `ARGS`, `CTRL`, `main`).
+  Output written to `.opencode/skills/kalua-api/api.md`, grouped by registry group, one entry per
+  line: `` `k.name``` signature + docs.
+- The generated file is **committed**, so agents get the reference without reading Go source.
+- `make gen-api` regenerates; `make check-api` fails when the committed `api.md` drifts from
+  `api_doc.go` (pairs with the existing `TestApiDocSync` invariant so the agent-facing docs can
+  never silently diverge from the runtime).
+
+### 12.4 Skill contents
+
+**`kalua-authoring/SKILL.md`** — the workflow guide. Front-matter keywords front-loaded:
+"kalua", "kalipso", "k.form", "k.ctrl", "handle_http", "serve". Body covers:
+
+- App model: `function main()` for run mode; `init`/`handle_http`/`handle_ws`/`handle_tcp`/
+  `shutdown` for serve mode (§2.4); `ARGS`, `CTRL()`.
+- The golden authoring loop: write script → `./KALUA check app.lua` → `./KALUA run app.lua --test`
+  (headless) → `./KALUA run app.lua` (interactive, opens URL) / `./KALUA serve ...` for headless;
+  iterate on the CLI output.
+- Pitfalls & conventions: `snake_case` naming; §5.9 expression functions are **flat globals, not
+  `k.*`**; serve mode raises a runtime error on any UI binding (`k.form.*`, `k.ctrl.*`, `k.msgbox`,
+  `k.status_*`); Kalipso coercion (`0 = ""` true; use `K.tonum`/`K.tostr`/`K.truthy`); dates are
+  strings `YYYY-MM-DD[ HH:MM[:SS]]` with Sunday=1 weekday; 16 MiB file cap; sandboxed VM (no
+  `io`, `os.execute`, `require`).
+- Pointers to the `kalua-api` skill (`api.md`) and spec §5 for the full inventory.
+
+**`kalua-api/SKILL.md`** — the reference skill. Front matter + a short conventions header, then a
+relative pointer to its own `api.md` (generated reference). Kept small and stable so the reference
+body churns in `api.md`, not in the skill file.
+
+### 12.5 opencode integration
+
+`.opencode/opencode.json` registers the KALUA LSP so the agent gets live diagnostics, completion,
+and hover while authoring (mirrors the VS Code extension experience):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": {
+    "lua": { "command": ["./KALUA", "lsp"], "extensions": [".lua"] }
+  }
+}
+```
+
+Implementation notes to verify while landing:
+
+- Confirm opencode's language id for `.lua` files (`lua` vs the extension's custom `kalua`) and use
+  the matching key; the `command` array + `extensions` shape above matches the opencode config
+  schema.
+- Optionally add a `permission.bash` rule allowing the golden-loop commands
+  (`./KALUA check|run|serve ...`) so the loop runs without prompting.
+
+Project-scoped skills live under `.opencode/skills/` and are auto-discovered by opencode; no
+`skills.paths` entry is required unless the folder moves.
+
+### 12.6 Acceptance
+
+1. A sample app authored purely from a natural-language prompt passes `./KALUA check` and
+   `./KALUA run --test`, and renders interactively via `./KALUA run`.
+2. The serve-mode showcase (`api_demo.lua`) starts under `./KALUA serve --mode http` and answers a
+   request, exercising expression functions + `k.shared.*`.
+3. `make check-api` is green and the generated `api.md` matches `api_doc.go`.
+4. `go test ./...` remains green.
+
+### 12.7 Status
+
+Pending. Implementation ordered: (1) §12 accepted → (2) `internal/apiref` + `cmd/kalua-apidoc` +
+Makefile targets → (3) write both `SKILL.md`s + generate `api.md` → (4) `.opencode/opencode.json`
+LSP wiring (+ language-id verification) → (5) `testdata/apps/api_demo.lua` → (6) acceptance run,
+then commit.
+
+(End of file)
 
 (End of file)

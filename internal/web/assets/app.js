@@ -100,6 +100,27 @@
         });
     }
 
+    // Clipboard
+    function setClipboard(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(function(){});
+        }
+    }
+
+    function getClipboard(id) {
+        if (!navigator.clipboard || !navigator.clipboard.readText) {
+            send({type: 'clipboard_resp', id: id, value: ''});
+            return;
+        }
+        navigator.clipboard.readText()
+            .then(function(text) {
+                send({type: 'clipboard_resp', id: id, value: text || ''});
+            })
+            .catch(function() {
+                send({type: 'clipboard_resp', id: id, value: ''});
+            });
+    }
+
     // Message handling
     function handleMessage(msg) {
         switch (msg.type) {
@@ -123,6 +144,15 @@
                 break;
             case 'status':
                 showStatus(msg.text);
+                break;
+            case 'status_close':
+                hideStatus();
+                break;
+            case 'clipboard_set':
+                setClipboard(msg.text);
+                break;
+            case 'clipboard_get':
+                getClipboard(msg.id);
                 break;
             case 'error':
                 showError(msg.msg, msg.stack);
@@ -217,6 +247,11 @@
     function showStatus(text) {
         statusBar.textContent = text;
         statusBar.classList.remove('hidden');
+    }
+
+    function hideStatus() {
+        statusBar.classList.add('hidden');
+        statusBar.textContent = '';
     }
 
     function showError(msg, stack) {

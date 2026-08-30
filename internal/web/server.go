@@ -237,8 +237,15 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		id := getString(msg, "id")
 		choice := getString(msg, "choice")
 		sess.HandleMsgboxChoice(id, choice)
+	case "clipboard_resp":
+		id := getString(msg, "id")
+		value := getString(msg, "value")
+		sess.PostClipboardResp(id, value)
 	case "client_info":
-		// TODO: handle client info (screen size, locale)
+		w := getInt(msg, "w")
+		h := getInt(msg, "h")
+		locale := getString(msg, "locale")
+		sess.SetClientInfo(w, h, locale)
 	case "ping":
 		// Keep-alive
 	}
@@ -249,6 +256,20 @@ func getString(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+func getInt(m map[string]interface{}, key string) int {
+	switch v := m[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return int(n)
+		}
+	}
+	return 0
 }
 
 func toLValue(v interface{}) lua.LValue {

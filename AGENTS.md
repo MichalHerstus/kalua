@@ -147,3 +147,16 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - Expression funcs documented in `api_doc.go` (`ExprFuncs`/`ExprInfo`); LSP completion (bare-identifier path), hover, and go-to-definition support them
 - Serve mode (`SetupServe`) now also installs the `K.*` helpers (§2.3) and expression functions, matching run mode's coerce/expression surface
 - Coercion-based semantics (half-away-from-zero round, Sunday=1 weekday) pinned by `internal/bindings/funcs_test.go` and `internal/host/exprfuncs_test.go`
+
+## Implemented Features (Phase 9 - Tier 2 wave)
+
+- Data formats (§5.10): `k.csv_parse/string/load/save`, `k.ini_parse/string/load/save` + `k.ini_read/write`, `k.yaml_parse/string/load/save`, `k.xml_load/xml_save` (`internal/bindings/formats.go`; YAML via `gopkg.in/yaml.v3`)
+- Result-set conversions: `k.json_to_rows/rows_to_json`, `k.csv_to_rows/rows_to_csv`, `k.xml_to_rows/rows_to_xml` (`internal/bindings/rows.go`)
+- Database tier-2: `k.connect_sqlite/disconnect_sqlite`, `k.db_kill_table`, `k.db_proc` (`internal/bindings/db.go`)
+- Crypto tier-2: `k.crypt_symmetric` (AES-CBC), `k.crypt_asymmetric`/`k.sign`/`k.verify` (RSA PKCS#1 v1.5) (`internal/bindings/crypto.go`)
+- Files tier-2: `k.zip_add/extract/list` (`internal/bindings/files.go`)
+- Flow tier-2: `k.timer_start/stop` (fires Lua global named by the timer id), `k.status_show/close`, `k.param_get/set` (persisted `.kalua.params.json`), `k.net_ok`, `k.locale`, `k.ping` (TCP latency probe) (`internal/bindings/flow.go`, `net.go`)
+- Comm tier-2: `k.socket_open/write/read/read_line/close` (`internal/bindings/comm.go`)
+- Comm tier-2 (phase 9 remainder): FTP `k.ftp_connect/set_cwd/get_file/put_file/file_exists/create_dir/delete/rename/list/disconnect` (minimal client, `internal/bindings/ftp.go`); SMTP `k.smtp_connect/send/disconnect` (`smtp.go`, `net/smtp`); POP3 `k.pop3_connect/stat/list/retr/dele/noop/quit` (`pop3.go`); SOAP `k.webservice_run(profile, params)` (`soap.go`)
+- Fixed a latent gopher-lua v1.1.2 bug: `cancel()` on a *finished* coroutine nil-panics; all session coroutine resumes now only cancel suspended/errored threads (`internal/session/session.go`); also wired `app.SetSession` so `sendOutbox` reaches the session outbox
+- New dependency: `gopkg.in/yaml.v3`

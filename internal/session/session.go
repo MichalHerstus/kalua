@@ -24,6 +24,9 @@ const (
 	inboxWSEvent                // event from browser (click, input, etc.)
 	inboxTimer                  // timer fired
 	inboxAsyncDone              // blocking operation completed (DB, HTTP, etc.)
+	inboxMsgboxChoice           // user answered a k.msgbox
+	inboxClipboardResp          // browser clipboard_get value
+	inboxQuery                  // external read of Lua state (tests)
 	inboxClose                  // session teardown
 )
 
@@ -43,6 +46,15 @@ type inboxMsg struct {
 	value lua.LValue  // event value
 	timer string      // timer ID
 	data  interface{} // generic payload for async completions
+
+	// respID and resp identify a browser round-trip response (msgbox choice,
+	// clipboard_get value) so the actor can resume the suspended coroutine.
+	respID string
+	resp   string
+
+	// query is a unit of work to run on the actor goroutine (inboxQuery).
+	query func(*lua.LState) lua.LValue
+	reply chan lua.LValue
 }
 
 // Session is the per-tab actor. It owns its LState and processes events
@@ -55,6 +67,7 @@ type Session struct {
 	inbox    chan inboxMsg
 	outbox   chan common.OutboxMsg
 	cancel   context.CancelFunc
+	done     chan struct{} // closed on Close; stop PostTimer from blocking
 	wg       sync.WaitGroup
 	quitting bool
 
@@ -68,6 +81,12 @@ type Session struct {
 	// Async operations - suspended coroutines waiting for completion
 	asyncOps map[string]*asyncOp
 	asyncMu  sync.Mutex
+
+	// Client info from the browser's client_info message (screen size/locale).
+	clientMu     sync.RWMutex
+	clientW      int
+	clientH      int
+	clientLocale string
 }
 
 // New creates and starts a new session actor.
@@ -110,11 +129,17 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 		inbox:  make(chan inboxMsg, 64),
 		outbox: make(chan common.OutboxMsg, 64),
 		cancel: cancel,
+		done:   make(chan struct{}),
 		timers: make(map[string]*time.Timer),
+		// Async operations - suspended coroutines waiting for completion
+		asyncOps: make(map[string]*asyncOp),
 	}
 
 	// Set session on env for msgbox, clipboard, etc.
 	env.Sess = s
+	// Share the session with the App so bindings' sendOutbox (which routes
+	// through e.App.Session()) reach the session outbox.
+	app.SetSession(s)
 
 	// Start the actor goroutine
 	s.wg.Add(1)
@@ -162,7 +187,16 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.handleTimer(msg.timer, logger)
 	case inboxAsyncDone:
 		s.handleAsyncDone(msg.data, logger)
+	case inboxMsgboxChoice:
+		s.resumeAsyncResp(msg.respID, lua.LString(msg.resp), "msgbox", logger)
+	case inboxClipboardResp:
+		s.resumeAsyncResp(msg.respID, lua.LString(msg.resp), "clipboard", logger)
+	case inboxQuery:
+		if msg.query != nil && msg.reply != nil {
+			msg.reply <- msg.query(s.L)
+		}
 	case inboxClose:
+		s.teardown(logger)
 		s.teardown(logger)
 	}
 }
@@ -210,11 +244,15 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 
 	// Run the handler in a coroutine
 	co, cancel := s.L.NewThread()
-	defer cancel()
 
 	st, err, _ := s.L.Resume(co, fn, msg.value)
 	if st == lua.ResumeError {
-		logger.Errorf("handler error: %v", err)
+		// cancel() may be nil (NewThread returns nil when the state has no
+		// context) and may panic if called on a finished coroutine; guard both.
+		if cancel != nil {
+			cancel()
+		}
+		logger.Errorf("handler error: %v\n%s", err, getStack(s.L))
 		s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)}
 		return
 	}
@@ -223,10 +261,20 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 	s.flushOutbox()
 }
 
-// handleTimer processes a timer event.
+// handleTimer processes a timer event. It looks up a Lua global function named
+// after the timer id (e.g. `function mytimer()`), or — when no such global
+// exists — a form handler registered under the special "timer" form
+// (k.form.on("timer", id, fn)). Running inside the actor keeps every timer
+// handler serialized with the rest of the session's events.
 func (s *Session) handleTimer(timerID string, logger Logger) {
-	// Timer fires a form event: form "timer", event "timer(id)"
-	// This is handled by the form's timer handler
+	fn := s.L.GetGlobal(timerID)
+	if fn != lua.LNil {
+		if lfn, ok := fn.(*lua.LFunction); ok {
+			s.runTimerHandler(lfn, lua.LString(timerID), logger)
+			return
+		}
+	}
+	// Fall back to the form handler table path.
 	s.handleWSEvent(inboxMsg{
 		typ:   inboxWSEvent,
 		form:  "timer",
@@ -234,6 +282,32 @@ func (s *Session) handleTimer(timerID string, logger Logger) {
 		event: "timer(" + timerID + ")",
 		value: lua.LString(timerID),
 	}, logger)
+}
+
+// runTimerHandler calls a timer handler function in a fresh coroutine.
+func (s *Session) runTimerHandler(fn *lua.LFunction, val lua.LValue, logger Logger) {
+	co, cancel := s.L.NewThread()
+	defer func() {
+		if r := recover(); r != nil {
+			// defensive: never let one bad timer handler kill the session
+			logger.Errorf("timer handler panic: %v", r)
+			s.SendOutbox(common.OutboxMsg{Type: "error", Msg: fmt.Sprintf("timer panic: %v", r)})
+		}
+	}()
+	st, err, _ := s.L.Resume(co, fn, val)
+	if st == lua.ResumeError {
+		// The coroutine is still suspended/errored; cancel it to release
+		// resources. On a normal (ResumeOK) completion, cancel() may panic in
+		// gopher-lua v1.1.2, so it is only called on this path. It may also be
+		// nil when the state has no context.
+		if cancel != nil {
+			cancel()
+		}
+		logger.Errorf("timer handler error: %v", err)
+		s.SendOutbox(common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)})
+		return
+	}
+	s.flushOutbox()
 }
 
 // handleAsyncDone resumes a suspended coroutine with async results.
@@ -281,8 +355,11 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 		return
 	}
 
-	// Clean up the stored op now that the coroutine is resumed.
-	if op.cancel != nil {
+	// Clean up the stored op now that the coroutine is resumed. On a normal
+	// completion (ResumeOK) the coroutine is finished; calling cancel() on a
+	// finished coroutine may panic in gopher-lua v1.1.2, so only cancel when it
+	// is still suspended (ResumeYield, waiting for the next async completion).
+	if st != lua.ResumeOK && op.cancel != nil {
 		op.cancel()
 	}
 
@@ -348,30 +425,73 @@ func (s *Session) ShowMsgbox(co *lua.LState, cancel func(), text, kind string) s
 	return ""
 }
 
-// HandleMsgboxChoice resumes the coroutine waiting for a msgbox response.
+// HandleMsgboxChoice is called from the web bridge goroutine when the browser
+// answers a k.msgbox modal. It forwards the answer to the actor inbox so the
+// resume happens on the actor goroutine (s.L is not thread-safe).
 func (s *Session) HandleMsgboxChoice(msgboxID, choice string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxMsgboxChoice, respID: msgboxID, resp: choice}:
+	case <-s.done:
+		// session closed; drop
+	}
+}
+
+// RequestClipboardGet asks the browser for clipboard text and suspends the
+// current coroutine until the value is delivered via PostClipboardResp.
+func (s *Session) RequestClipboardGet(co *lua.LState, cancel func()) {
+	clipID := fmt.Sprintf("clipboard_%d", time.Now().UnixNano())
+
+	// Store the suspended coroutine
 	s.asyncMu.Lock()
-	op, exists := s.asyncOps[msgboxID]
+	s.asyncOps[clipID] = &asyncOp{co: co, cancel: cancel}
+	s.asyncMu.Unlock()
+
+	// Send clipboard read request to browser
+	s.SendOutbox(common.OutboxMsg{
+		Type: "clipboard_get",
+		ID:   clipID,
+	})
+}
+
+// PostClipboardResp is called from the web bridge goroutine when the browser
+// delivers clipboard text. It forwards the value to the actor inbox so the
+// resume happens on the actor goroutine (s.L is not thread-safe).
+func (s *Session) PostClipboardResp(clipID, value string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxClipboardResp, respID: clipID, resp: value}:
+	case <-s.done:
+		// session closed; drop
+	}
+}
+
+// resumeAsyncResp resumes a coroutine suspended by ShowMsgbox/RequestClipboardGet
+// with the browser's answer. Must run on the actor goroutine.
+func (s *Session) resumeAsyncResp(respID string, val lua.LValue, kind string, logger Logger) {
+	s.asyncMu.Lock()
+	op, exists := s.asyncOps[respID]
 	if exists {
-		delete(s.asyncOps, msgboxID)
+		delete(s.asyncOps, respID)
 	}
 	s.asyncMu.Unlock()
 
 	if !exists {
+		logger.Warnf("%s response for unknown op: %s", kind, respID)
 		return
 	}
 
-	// Resume the coroutine with the choice
-	st, err, _ := s.L.Resume(op.co, nil, lua.LString(choice))
+	// Resume the coroutine with the value.
+	st, err, _ := s.L.Resume(op.co, nil, val)
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
-			s.env.Logger.Errorf("msgbox resume error: %v", err)
+			s.env.Logger.Errorf("%s resume error: %v", kind, err)
 		}
 		return
 	}
 
-	// Clean up the stored op now that the coroutine is resumed.
-	if op.cancel != nil {
+	// Clean up the stored op now that the coroutine is resumed. Only cancel a
+	// still-suspended coroutine; calling cancel() on a finished one may panic
+	// in gopher-lua v1.1.2.
+	if st != lua.ResumeOK && op.cancel != nil {
 		op.cancel()
 	}
 
@@ -404,13 +524,33 @@ func (s *Session) Inbox() chan<- inboxMsg {
 }
 
 // PostEvent posts a browser event to the session inbox.
+// PostEvent posts a browser event to the session inbox.
 func (s *Session) PostEvent(form, ctrl, event string, value lua.LValue) {
 	s.inbox <- inboxMsg{typ: inboxWSEvent, form: form, ctrl: ctrl, event: event, value: value}
 }
 
+// GetGlobal reads a Lua global on the actor goroutine and returns its value.
+// Safe to call from any goroutine (tests, web bridge); the read is serialized
+// through the inbox so it cannot race the actor's Lua state access.
+func (s *Session) GetGlobal(name string) lua.LValue {
+	reply := make(chan lua.LValue, 1)
+	select {
+	case s.inbox <- inboxMsg{typ: inboxQuery, query: func(L *lua.LState) lua.LValue {
+		return L.GetGlobal(name)
+	}, reply: reply}:
+	case <-s.done:
+		return lua.LNil
+	}
+	return <-reply
+}
+
 // PostTimer posts a timer event to the session inbox.
 func (s *Session) PostTimer(timerID string) {
-	s.inbox <- inboxMsg{typ: inboxTimer, timer: timerID}
+	select {
+	case s.inbox <- inboxMsg{typ: inboxTimer, timer: timerID}:
+	case <-s.done:
+		// session closed; drop
+	}
 }
 
 // StartTimer starts a session-scoped timer.
@@ -458,17 +598,38 @@ func (s *Session) TopForm() string {
 	return s.formStack[len(s.formStack)-1]
 }
 
+// SetClientInfo stores the browser viewport size and locale reported via the
+// client_info WebSocket message. Called from the WS bridge goroutine, so it is
+// guarded by clientMu; the actor reads it back via ClientInfo.
+func (s *Session) SetClientInfo(w, h int, locale string) {
+	s.clientMu.Lock()
+	defer s.clientMu.Unlock()
+	s.clientW = w
+	s.clientH = h
+	if locale != "" {
+		s.clientLocale = locale
+	}
+}
+
+// ClientInfo returns the stored viewport size and locale (0x0 / "" before the
+// browser's first client_info message).
+func (s *Session) ClientInfo() (w, h int, locale string) {
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+	return s.clientW, s.clientH, s.clientLocale
+}
+
 // Close closes the session and releases resources.
 func (s *Session) Close() error {
-	s.cancel()
-	close(s.inbox)
-	s.wg.Wait()
-
-	// Stop all timers
+	// Stop timers before tearing down so no timer callback touches s.L or the
+	// inbox after we close them.
 	for _, t := range s.timers {
 		t.Stop()
 	}
-
+	s.cancel()
+	close(s.done)
+	close(s.inbox)
+	s.wg.Wait()
 	s.L.Close()
 	return nil
 }

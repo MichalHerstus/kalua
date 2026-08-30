@@ -176,6 +176,85 @@ var registerKnown = map[string]string{
 	"tcp":          "server", // namespace
 	"tcp.send":     "server",
 	"tcp.close":    "server",
+	// tier-2 flow
+	"timer_start":   "flow",
+	"timer_stop":    "flow",
+	"status_show":   "flow",
+	"status_close":  "flow",
+	"param_set":     "flow",
+	"param_get":     "flow",
+	"net_ok":        "flow",
+	"locale":        "flow",
+	"ping":          "flow",
+	// tier-2 database
+	"connect_sqlite":    "database",
+	"disconnect_sqlite": "database",
+	"db_kill_table":     "database",
+	"db_proc":           "database",
+	// tier-2 comm
+	"socket_open":      "comm",
+	"socket_write":     "comm",
+	"socket_read":      "comm",
+	"socket_read_line": "comm",
+	"socket_close":     "comm",
+	// tier-2 FTP
+	"ftp_connect":     "comm",
+	"ftp_set_cwd":     "comm",
+	"ftp_get_file":    "comm",
+	"ftp_put_file":    "comm",
+	"ftp_file_exists": "comm",
+	"ftp_create_dir":  "comm",
+	"ftp_delete":      "comm",
+	"ftp_rename":      "comm",
+	"ftp_list":        "comm",
+	"ftp_disconnect":  "comm",
+	// tier-2 email (SMTP)
+	"smtp_connect":    "email",
+	"smtp_send":       "email",
+	"smtp_disconnect": "email",
+	// tier-2 email (POP3)
+	"pop3_connect": "email",
+	"pop3_stat":    "email",
+	"pop3_list":    "email",
+	"pop3_retr":    "email",
+	"pop3_dele":    "email",
+	"pop3_noop":    "email",
+	"pop3_quit":    "email",
+	// tier-2 web service (SOAP)
+	"webservice_run": "comm",
+	// tier-2 crypto
+	"crypt_symmetric":   "crypto",
+	"crypt_asymmetric":  "crypto",
+	"sign":              "crypto",
+	"verify":            "crypto",
+	// tier-2 files
+	"zip_list":    "files",
+	"zip_add":     "files",
+	"zip_extract": "files",
+	// tier-2 data formats
+	"csv_parse":  "formats",
+	"csv_string": "formats",
+	"csv_load":   "formats",
+	"csv_save":   "formats",
+	"ini_parse":  "formats",
+	"ini_string": "formats",
+	"ini_load":   "formats",
+	"ini_save":   "formats",
+	"ini_read":   "formats",
+	"ini_write":  "formats",
+	"yaml_parse": "formats",
+	"yaml_string": "formats",
+	"yaml_load":  "formats",
+	"yaml_save":  "formats",
+	"xml_load":   "formats",
+	"xml_save":   "formats",
+	// tier-2 rows conversions
+	"json_to_rows": "rows",
+	"rows_to_json": "rows",
+	"csv_to_rows":  "rows",
+	"rows_to_csv":  "rows",
+	"xml_to_rows":  "rows",
+	"rows_to_xml":  "rows",
 }
 
 // register puts a k.* binding into the env's k namespace.
@@ -295,6 +374,17 @@ func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterfac
 	registerCrypto(e)
 	registerXML(e)
 	registerExprFuncs(e)
+	registerFormats(e)
+	registerRows(e)
+	registerComm(e)
+	registerSMTP(e)
+	registerPop3(e)
+	registerFTP(e)
+	registerSoap(e)
+	registerSMTP(e)
+	registerPop3(e)
+	registerFTP(e)
+	registerSoap(e)
 
 	argsT := L.NewTable()
 	for i, a := range opts.Args {
