@@ -300,6 +300,7 @@ type fakeLogger struct{}
 
 func (f *fakeLogger) Printf(format string, args ...interface{})    {}
 func (f *fakeLogger) Errorf(format string, args ...interface{})    {}
+func (f *fakeLogger) Tracef(format string, args ...interface{})    {}
 
 // TestExprFuncs_CheckCompat asserts the static checker does not flag the
 // documented expression functions as unknown globals.

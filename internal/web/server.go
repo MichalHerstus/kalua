@@ -129,7 +129,39 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.sessionsMu.Lock()
 	if len(s.sessions) >= s.sessionLimit {
 		s.sessionsMu.Unlock()
-		http.Error(w, "session limit reached", http.StatusServiceUnavailable)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KALUA — Session Limit</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f5f5f5; color: #333; display: flex; align-items: center;
+         justify-content: center; min-height: 100vh; }
+  .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.12);
+          padding: 40px 48px; max-width: 480px; text-align: center; }
+  h1 { font-size: 20px; margin-bottom: 12px; }
+  p  { font-size: 14px; color: #666; line-height: 1.6; margin-bottom: 16px; }
+  code { background: #eee; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  .retry { display: inline-block; margin-top: 8px; padding: 8px 20px;
+           background: #4a90d9; color: #fff; border: none; border-radius: 4px;
+           font-size: 14px; cursor: pointer; text-decoration: none; }
+  .retry:hover { background: #357abd; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Application Already Running</h1>
+  <p>This KALUA application has reached its session limit.
+     Close one of the open tabs or increase the limit with <code>--session-limit N</code>.</p>
+  <a class="retry" href="javascript:location.reload()">Retry</a>
+</div>
+</body>
+</html>`)
 		return
 	}
 	s.sessionsMu.Unlock()
@@ -246,6 +278,10 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		id := getString(msg, "id")
 		value := getString(msg, "value")
 		sess.PostClipboardResp(id, value)
+	case "file_picker_resp":
+		id := getString(msg, "id")
+		value := getString(msg, "value")
+		sess.PostFilePickerResp(id, value)
 	case "client_info":
 		w := getInt(msg, "w")
 		h := getInt(msg, "h")

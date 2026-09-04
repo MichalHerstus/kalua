@@ -451,6 +451,7 @@ func (s *Server) buildWorkers(count int) ([]*Worker, error) {
 		Args:        s.cfg.Args,
 		AllowFS:     s.cfg.AllowFS,
 		MaxFileSize: s.cfg.MaxFileSize,
+		Verbose:     s.cfg.Verbose,
 	}
 	var workers []*Worker
 	for i := 0; i < count; i++ {

@@ -50,6 +50,7 @@ var whitelisted = []struct {
 	{lua.StringLibName, lua.OpenString},
 	{lua.MathLibName, lua.OpenMath},
 	{lua.OsLibName, lua.OpenOs},
+	{lua.DebugLibName, lua.OpenDebug},
 }
 
 // New returns a sandboxed LState. No io, no os.execute, no require, no debug
@@ -77,5 +78,5 @@ func New() *lua.LState {
 var SandboxGlobals = struct {
 	Libs []string
 }{
-	Libs: []string{"_G", "_VERSION", "ipairs", "pairs", "assert", "error", "getmetatable", "next", "pcall", "rawequal", "select", "setmetatable", "tonumber", "tostring", "type", "unpack", "xpcall", "string", "table", "math", "os"},
+	Libs: []string{"_G", "_VERSION", "ipairs", "pairs", "assert", "error", "getmetatable", "next", "pcall", "rawequal", "select", "setmetatable", "tonumber", "tostring", "type", "unpack", "xpcall", "string", "table", "math", "os", "debug"},
 }

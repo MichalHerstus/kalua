@@ -16,8 +16,8 @@ go test ./...
 go test ./internal/host
 
 # CLI usage
-./KALUA run <app.lua> [--port 0] [--no-browser] [--db NAME=DSN] [--arg K=V]
-./KALUA serve <app.lua> [--port 8080] [--host 127.0.0.1] [--workers 4] [--mode http|ws|tcp] [--db NAME=DSN] [--arg K=V]
+./KALUA run <app.lua> [--port 0] [--no-browser] [--db NAME=DSN] [--arg K=V] [-v|--verbose] [--repl-on-error] [--debug] [--test]
+./KALUA serve <app.lua> [--port 8080] [--host 127.0.0.1] [--workers 4] [--mode http|ws|tcp] [--db NAME=DSN] [--arg K=V] [-v|--verbose] [--debug] [--debug-worker]
 ./KALUA check <app.lua>     # static validation (syntax, unknown k.*, main)
 ./KALUA new <name>          # scaffold minimal app.lua
 ./KALUA lsp                 # language server over stdio (LSP, Content-Length frames)
@@ -75,7 +75,8 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 ## Development Notes
 
 - Go 1.26.3 (matches go.mod)
-- Dependencies: `github.com/yuin/gopher-lua v1.1.2`, `github.com/coder/websocket v1.8+`, `go.lsp.dev/protocol v1.0.1`, `go.lsp.dev/jsonrpc2 v1.0.1`
+- Dependencies: `github.com/coder/websocket v1.8+`, `go.lsp.dev/protocol v1.0.1`, `go.lsp.dev/jsonrpc2 v1.0.1`
+- **gopher-lua**: vendored fork at `third_party/gopher-lua` (based on v1.1.2) with `debug.hook()` support; referenced via `replace github.com/yuin/gopher-lua => ./third_party/gopher-lua` in go.mod
 - LSP: `internal/lsp` serves `KALUA lsp` over stdio; position encoding is UTF-8 (character = byte offset in line); server is the source of truth for completion/hover/definition via `internal/bindings` api_doc; diagnostics use `internal/checker`. LSP union types are sealed interfaces (`Boolean`, `TextDocumentSync`, `InlayHintTooltip`); `TextDocumentContentChangeEvent` is a union of WholeDocument/Partial. The connection is wired manually (union-aware codec via `protocol.Marshal/Unmarshal`) so messages dispatch serially in arrival order — do NOT reintroduce `AsyncHandler`/`CancelHandler` (breaks LSP ordering; `CancelHandler`'s context propagation races the pooled request).
 - No linting/formatting config found — uses `go fmt` defaults
 - No CI/CD config found
@@ -169,3 +170,15 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - Serve SIGHUP hot reload: `Server.Reload()` recompiles the script, builds a fresh worker pool, and swaps it atomically under `workerMu`; workers are leased per HTTP request / WS/TCP connection (`Worker.refs`/`retired`/`closeOnce`), so superseded workers finish in-flight work and open connections before their Lua state is released — a reload error keeps the old pool serving. `Internal/cli` `serveCmd` consumes SIGHUP (INT/TERM still stop via `signal.NotifyContext`)
 - Serve `k.shared.*` JSON round-trip: `set` stores JSON, `get` decodes with legacy raw-string fallback (`registerShared(e, store)` in `serve.go`); `k.print` sinks through the host logger in run mode too (`internal/bindings/flow.go`)
 - Tests: `internal/server/worker_test.go` (HTTP response forms, WS/TCP cancel-panic + error logging), `internal/server/server_e2e_test.go` (real HTTP/WS/TCP sockets + init/shutdown lifecycle + SIGHUP reload swap / error-keeps-old-pool / open-connection-survives-reload)
+
+## Implemented Features (Phase 11 - Debugging Tier 1)
+
+- **Vendored patched gopher-lua** (`third_party/gopher-lua`): fork of v1.1.2 with `debug.hook()` support (port from edolphin-ydf/gopher-lua). Added `hook.go` with LHook/CHook/RHook/CTHook, hook call-sites in `vm.go` (line, count, call, return), `SetHook` + `debug.sethook` in `debuglib.go`. Enabled `debug` library in sandbox. Uses `replace` directive in go.mod.
+- `--verbose` (short `-v`): enhanced tracing of all `k.*` API calls — logs function entry with args and exit with return values (reads from top-of-stack). Works in both `run` and `serve` modes.
+- `k.debug.*` API (Tier 1 introspection):
+  - `k.debug.stack()` — returns table of call frames with `{level, name, source, line, what, locals}`
+  - `k.debug.locals([level])` — returns table of local name→value at given frame (default 1)
+  - `k.debug.trace(msg)` — script-side trace anchor; logs via host logger when verbose
+- Post-mortem dump: on runtime error with `--verbose`, prints full stack trace with locals using `xpcall` + `debug.traceback`
+- `--repl-on-error`: headless interactive Lua REPL at crash site (works with `--test` mode). Wraps `main()` in `xpcall(debug.traceback)`, captures full traceback, drops into REPL with access to `k.*`, `K.*`, `debug.*`, and script globals. Supports expressions (`1+1` or `= 1+1`), statements, and REPL commands (`exit`, `quit`, Ctrl+D).
+- CLI flags: `run --repl-on-error` (functional), `run --debug` / `serve --debug --debug-worker` (stub warnings, Tier 2 EmmyLua debugger not yet implemented)

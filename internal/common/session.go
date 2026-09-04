@@ -19,6 +19,8 @@ type SessionInterface interface {
 	ClientInfo() (w, h int, locale string)
 	RequestClipboardGet(co *lua.LState, cancel func())
 	PostClipboardResp(clipID, value string)
+	RequestFilePicker(co *lua.LState, cancel func(), accept string, multiple bool)
+	PostFilePickerResp(pickerID, value string)
 	StoreFormCoro(name string, co *lua.LState)
 	ResumeFormCoro(name string) bool
 }

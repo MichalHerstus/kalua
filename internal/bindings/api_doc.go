@@ -36,9 +36,16 @@ var apiDocs = map[string]Info{
 	"msgbox":        {Name: "msgbox", Group: "flow", Signature: "k.msgbox(text[, kind])", Docs: "Shows a message box; kind defaults to \"info\". Returns user's choice."},
 	"clipboard_set": {Name: "clipboard_set", Group: "flow", Signature: "k.clipboard_set(text)", Docs: "Writes text to the browser clipboard."},
 	"clipboard_get": {Name: "clipboard_get", Group: "flow", Signature: "k.clipboard_get()", Docs: "Reads text from the browser clipboard."},
+	"pick_file":     {Name: "pick_file", Group: "flow", Signature: "k.pick_file([opts])", Docs: "Opens a browser file picker dialog. opts (optional table): {accept=\"image/*,.pdf\", multiple=true}. Returns a table of files: {{name, size, type, data}, ...} where data is base64-encoded. Returns nil on cancel."},
 	"bell":          {Name: "bell", Group: "flow", Signature: "k.bell()", Docs: "Plays a system beep sound via WebAudio."},
 	"screen_size":   {Name: "screen_size", Group: "flow", Signature: "k.screen_size()", Docs: "Returns viewport dimensions as {width, height}."},
 	"http_request":  {Name: "http_request", Group: "flow", Signature: "k.http_request(optsTable)", Docs: "Makes an HTTP request. opts: {method, url, headers, body, timeout}. Returns {status, headers, body}."},
+
+	// debug
+	"debug":        {Name: "debug", Group: "debug", Signature: "k.debug", Docs: "Runtime introspection helpers: stack/locals/trace."},
+	"debug.stack":  {Name: "debug.stack", Group: "debug", Signature: "k.debug.stack()", Docs: "Returns a table of the current call frames, each with level, name, source, line and locals."},
+	"debug.locals": {Name: "debug.locals", Group: "debug", Signature: "k.debug.locals([level])", Docs: "Returns a table of local name → value for the given frame level (default 1)."},
+	"debug.trace":  {Name: "debug.trace", Group: "debug", Signature: "k.debug.trace([msg])", Docs: "Logs a script-side trace anchor when verbose tracing is enabled."},
 
 	// forms
 	"form":           {Name: "form", Group: "forms", Signature: "k.form", Docs: "Form declarations: k.form.new/show/close/..."},

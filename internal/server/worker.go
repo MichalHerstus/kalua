@@ -453,6 +453,7 @@ func (w *Worker) release() {
 type Logger interface {
 	Errorf(format string, args ...interface{})
 	Printf(format string, args ...interface{})
+	Tracef(format string, args ...interface{})
 }
 
 // HTTPRequest represents an incoming HTTP request.

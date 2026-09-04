@@ -84,6 +84,7 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 		k:       k,
 		workdir: workdirOf(opts),
 		allowFS: allowFSOf(opts),
+		verbose: opts.Verbose,
 	}
 	if e.maxFileSize <= 0 {
 		e.maxFileSize = DefaultMaxFileSize
@@ -96,6 +97,7 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 	L.SetGlobal("K", K)
 
 	registerExprFuncs(e)
+	registerDebug(e)
 
 	// k.shared_* uses the Env for JSON value serialization.
 	registerShared(e, shared)

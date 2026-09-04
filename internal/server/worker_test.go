@@ -17,6 +17,7 @@ type discardLogger struct{}
 
 func (discardLogger) Printf(string, ...interface{}) {}
 func (discardLogger) Errorf(string, ...interface{}) {}
+func (discardLogger) Tracef(string, ...interface{}) {}
 
 type captureLogger struct {
 	mu  sync.Mutex
@@ -29,6 +30,8 @@ func (c *captureLogger) Errorf(f string, a ...interface{}) {
 	defer c.mu.Unlock()
 	c.err = append(c.err, fmt.Sprintf(f, a...))
 }
+
+func (c *captureLogger) Tracef(string, ...interface{}) {}
 
 func (c *captureLogger) errors() []string {
 	c.mu.Lock()

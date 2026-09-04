@@ -31,6 +31,9 @@ type Options struct {
 	// MaxFileSize bounds how many bytes k.file_load / k.json_load may read.
 	// Zero means the default of 16 MiB.
 	MaxFileSize int64
+
+	// Verbose enables enhanced tracing of k.* API calls (Tier 1 debugging).
+	Verbose bool
 }
 
 // DefaultMaxFileSize bounds k.file_load/k.json_load reads unless Options
@@ -64,12 +67,16 @@ type Env struct {
 
 	// Logger for error logging
 	Logger Logger
+
+	// verbose eust whether k.* API tracing is enabled (Options.Verbose).
+	verbose bool
 }
 
 // Logger interface for logging.
 type Logger interface {
 	Printf(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
+	Tracef(format string, args ...interface{})
 }
 
 // registerKnown tracks name→group across all envs. register() writes here so
@@ -83,9 +90,14 @@ var registerKnown = map[string]string{
 	"msgbox":                    "flow",
 	"clipboard_set":             "flow",
 	"clipboard_get":             "flow",
+	"pick_file":                 "flow",
 	"bell":                      "flow",
 	"screen_size":               "flow",
 	"http_request":              "flow",
+	"debug":                     "debug", // namespace
+	"debug.stack":               "debug",
+	"debug.locals":              "debug",
+	"debug.trace":               "debug",
 	"form":                      "forms", // namespace
 	"form.new":                  "forms",
 	"form.show":                 "forms",
@@ -263,13 +275,38 @@ func (e *Env) register(name, group string, fn lua.LGFunction) {
 	e.known[name] = group
 	registerKnown[name] = group
 
+	// When verbose tracing is enabled, wrap every k.* binding so function
+	// entry/exit is logged. Keeps the trace cheap (one interface assert) when
+	// tracing is off.
+	var callFn lua.LGFunction = fn
+	if e.verbose && e.Logger != nil {
+		callFn = func(L *lua.LState) int {
+			n := L.GetTop()
+			args := make([]string, 0, n)
+			for i := 1; i <= n; i++ {
+				args = append(args, L.Get(i).String())
+			}
+			e.Logger.Tracef("k.%s(%s)", name, joinArgs(args))
+			ret := fn(L)
+			if ret > 0 {
+				top := L.GetTop()
+				outs := make([]string, 0, ret)
+				for i := top - ret + 1; i <= top; i++ {
+					outs = append(outs, L.Get(i).String())
+				}
+				e.Logger.Tracef("k.%s => %s", name, joinArgs(outs))
+			}
+			return ret
+		}
+	}
+
 	// Handle dotted names (e.g., "form.new" -> k.form.new)
 	parts := split(name, ".")
 	tbl := e.k
 	for i, part := range parts {
 		if i == len(parts)-1 {
 			// Last part: set the function
-			tbl.RawSetString(part, e.L.NewFunction(fn))
+			tbl.RawSetString(part, e.L.NewFunction(callFn))
 		} else {
 			// Intermediate part: get or create sub-table
 			next := tbl.RawGetString(part)
@@ -312,7 +349,7 @@ func Known() map[string]bool {
 // sess is the session this env belongs to (for msgbox, clipboard, etc.); can be nil.
 // logger is used for error logging; can be nil.
 func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterface, logger Logger) *Env {
-	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize, Sess: sess, Logger: logger}
+	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize, Sess: sess, Logger: logger, verbose: opts.Verbose}
 	if e.maxFileSize <= 0 {
 		e.maxFileSize = DefaultMaxFileSize
 	}
@@ -366,6 +403,7 @@ func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterfac
 	}))
 
 	registerFlow(e)
+	registerDebug(e)
 	registerForms(e)
 	registerControls(e)
 	registerDB(e)

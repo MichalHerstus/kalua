@@ -78,14 +78,16 @@ func runCmd(args []string) int {
 	fs.SetOutput(os.Stderr)
 
 	var (
-		port         = fs.Int("port", 0, "HTTP port (0 = ephemeral)")
-		noBrowser    = fs.Bool("no-browser", false, "Do not open browser")
-		sessionLimit = fs.Int("session-limit", 8, "Max concurrent browser tabs")
-		verbose      = fs.Bool("v", false, "Verbose logging")
-		testMode     = fs.Bool("test", false, "Run in test mode (headless, no server)")
-		dbFlag       = multiFlag{}
-		argFlag      = multiFlag{}
-		allowFSFlag  = multiFlag{}
+		port          = fs.Int("port", 0, "HTTP port (0 = ephemeral)")
+		noBrowser     = fs.Bool("no-browser", false, "Do not open browser")
+		sessionLimit  = fs.Int("session-limit", 8, "Max concurrent browser tabs")
+		verbose       = fs.Bool("v", false, "Verbose logging")
+		testMode      = fs.Bool("test", false, "Run in test mode (headless, no server)")
+		replOnError   = fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
+		debugMode     = fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
+		dbFlag        = multiFlag{}
+		argFlag       = multiFlag{}
+		allowFSFlag   = multiFlag{}
 	)
 	fs.Var(&dbFlag, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 	fs.Var(&dbFlag, "d", "Shorthand for --db")
@@ -93,6 +95,9 @@ func runCmd(args []string) int {
 	fs.Var(&argFlag, "a", "Shorthand for --arg")
 	fs.Var(&allowFSFlag, "allow-fs", "Allow filesystem access outside cwd (repeatable)")
 	fs.Var(&allowFSFlag, "f", "Shorthand for --allow-fs")
+	fs.IntVar(port, "p", 0, "Shorthand for --port")
+	fs.BoolVar(noBrowser, "n", false, "Shorthand for --no-browser")
+	fs.IntVar(sessionLimit, "l", 8, "Shorthand for --session-limit")
 
 	if err := fs.Parse(flagArgs); err != nil {
 		return int(host.ExitUsage)
@@ -101,18 +106,22 @@ func runCmd(args []string) int {
 	if *testMode {
 		// Run in headless mode for tests
 		cfg := host.RunConfig{
-			ScriptPath: script,
-			Args:       argFlag.values,
-			DBs:        dbFlag.values,
-			AllowFS:    allowFSFlag.values,
-			Verbose:    *verbose,
+			ScriptPath:  script,
+			Args:        argFlag.values,
+			DBs:         dbFlag.values,
+			AllowFS:     allowFSFlag.values,
+			Verbose:     *verbose,
+			ReplOnError: *replOnError,
+		}
+		if *debugMode {
+			fmt.Fprintln(os.Stderr, "warning: --debug (EmmyLua debugger) not yet implemented")
 		}
 		return int(host.Run(cfg))
 	}
 
 	ctx := context.Background()
 	server := web.NewServer("127.0.0.1", *port, *sessionLimit,
-		bindings.Options{AllowFS: allowFSFlag.values}, host.NewLogger(*verbose))
+		bindings.Options{AllowFS: allowFSFlag.values, Verbose: *verbose}, host.NewLogger(*verbose))
 
 	// Open browser with script parameter
 	if !*noBrowser {
@@ -239,15 +248,17 @@ func serveCmd(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	var (
-		hostFlag    = fs.String("host", "127.0.0.1", "Host to bind to")
-		port        = fs.Int("port", 8080, "HTTP port")
-		workers     = fs.Int("workers", 4, "Number of worker processes")
-		mode        = fs.String("mode", "http", "Server mode: http, ws, tcp, or comma-separated combination")
-		verbose     = fs.Bool("v", false, "Verbose logging")
-		dbFlag      = multiFlag{}
-		argFlag     = multiFlag{}
-		allowFSFlag = multiFlag{}
+var (
+		hostFlag     = fs.String("host", "127.0.0.1", "Host to bind to")
+		port         = fs.Int("port", 8080, "HTTP port")
+		workers      = fs.Int("workers", 4, "Number of worker processes")
+		mode         = fs.String("mode", "http", "Server mode: http, ws, tcp, or comma-separated combination")
+		verbose      = fs.Bool("v", false, "Verbose logging")
+		debugMode    = fs.Bool("debug", false, "Enable EmmyLua debugger per worker (Tier 2, not yet implemented)")
+		debugWorker  = fs.Bool("debug-worker", false, "Attach debugger to each worker (Tier 2, not yet implemented)")
+		dbFlag       = multiFlag{}
+		argFlag      = multiFlag{}
+		allowFSFlag  = multiFlag{}
 	)
 	fs.Var(&dbFlag, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 	fs.Var(&dbFlag, "d", "Shorthand for --db")
@@ -255,6 +266,9 @@ func serveCmd(args []string) int {
 	fs.Var(&argFlag, "a", "Shorthand for --arg")
 	fs.Var(&allowFSFlag, "allow-fs", "Allow filesystem access outside cwd (repeatable)")
 	fs.Var(&allowFSFlag, "f", "Shorthand for --allow-fs")
+	fs.IntVar(port, "p", 8080, "Shorthand for --port")
+	fs.IntVar(workers, "w", 4, "Shorthand for --workers")
+	fs.StringVar(mode, "m", "http", "Shorthand for --mode")
 
 	if err := fs.Parse(flagArgs); err != nil {
 		return int(host.ExitUsage)
@@ -274,6 +288,9 @@ func serveCmd(args []string) int {
 		AllowFS:     allowFSFlag.values,
 		MaxFileSize: 0,
 		Verbose:     *verbose,
+	}
+	if *debugMode || *debugWorker {
+		fmt.Fprintln(os.Stderr, "warning: --debug/--debug-worker (EmmyLua debugger) not yet implemented")
 	}
 
 	srv := server.NewServer(cfg)

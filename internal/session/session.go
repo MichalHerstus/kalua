@@ -29,6 +29,7 @@ const (
 	inboxAsyncDone                  // blocking operation completed (DB, HTTP, etc.)
 	inboxMsgboxChoice               // user answered a k.msgbox
 	inboxClipboardResp              // browser clipboard_get value
+	inboxFilePickerResp             // browser file picker result (JSON-encoded files)
 	inboxQuery                      // external read of Lua state (tests)
 	inboxClose                      // session teardown
 )
@@ -68,6 +69,7 @@ type Session struct {
 	L        *lua.LState
 	app      *vm.App
 	env      *bindings.Env
+	verbose  bool
 	inbox    chan inboxMsg
 	outbox   chan common.OutboxMsg
 	cancel   context.CancelFunc
@@ -102,7 +104,6 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 	L := vm.New()
 	app := vm.NewApp(L)
 	env := bindings.Setup(L, app, opts, nil, logger) // session set after creation
-
 	// Load and compile the script
 	chunkFn, err := vm.LoadFile(L, scriptPath)
 	if err != nil {
@@ -134,6 +135,7 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 		L:      L,
 		app:    app,
 		env:    env,
+		verbose: opts.Verbose,
 		inbox:  make(chan inboxMsg, 64),
 		outbox: make(chan common.OutboxMsg, 64),
 		cancel: cancel,
@@ -171,6 +173,9 @@ func (s *Session) run(ctx context.Context, mainFn *lua.LFunction, logger Logger)
 		} else {
 			// Error during startup
 			logger.Errorf("main error: %v", err)
+			if s.verbose {
+				logger.Errorf("%s", postMortemDump(s.L))
+			}
 			s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error()}
 			s.outbox <- common.OutboxMsg{Type: "quit"}
 			return
@@ -207,6 +212,8 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.resumeAsyncResp(msg.respID, lua.LString(msg.resp), "msgbox", logger)
 	case inboxClipboardResp:
 		s.resumeAsyncResp(msg.respID, lua.LString(msg.resp), "clipboard", logger)
+	case inboxFilePickerResp:
+		s.resumeFilePickerResp(msg.respID, msg.resp, logger)
 	case inboxQuery:
 		if msg.query != nil && msg.reply != nil {
 			msg.reply <- msg.query(s.L)
@@ -280,7 +287,12 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		if cancel != nil {
 			cancel()
 		}
-		logger.Errorf("handler error: %v\n%s", err, getStack(s.L))
+		logger.Errorf("handler error: %v", err)
+		if s.verbose {
+			logger.Errorf("%s", postMortemDump(s.L))
+		} else {
+			logger.Errorf("%s", getStack(s.L))
+		}
 		s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)}
 		return
 	}
@@ -332,6 +344,11 @@ func (s *Session) runTimerHandler(fn *lua.LFunction, val lua.LValue, logger Logg
 			cancel()
 		}
 		logger.Errorf("timer handler error: %v", err)
+		if s.verbose {
+			logger.Errorf("%s", postMortemDump(s.L))
+		} else {
+			logger.Errorf("%s", getStack(s.L))
+		}
 		s.SendOutbox(common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)})
 		return
 	}
@@ -379,6 +396,11 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 	st, errResume, _ := s.L.Resume(op.co, nil, resumeVal)
 	if st == lua.ResumeError {
 		logger.Errorf("async resume error: %v", errResume)
+		if s.verbose {
+			logger.Errorf("%s", postMortemDump(s.L))
+		} else {
+			logger.Errorf("%s", getStack(s.L))
+		}
 		s.outbox <- common.OutboxMsg{Type: "error", Msg: errResume.Error(), Stack: getStack(s.L)}
 		return
 	}
@@ -525,6 +547,35 @@ func (s *Session) PostClipboardResp(clipID, value string) {
 	}
 }
 
+// RequestFilePicker asks the browser to open a file picker dialog and
+// suspends the current coroutine until files are selected or cancelled.
+// accept is a MIME filter (e.g. "image/*,.pdf"), multiple allows selecting
+// more than one file.
+func (s *Session) RequestFilePicker(co *lua.LState, cancel func(), accept string, multiple bool) {
+	pickerID := fmt.Sprintf("filepicker_%d", time.Now().UnixNano())
+
+	s.asyncMu.Lock()
+	s.asyncOps[pickerID] = &asyncOp{co: co, cancel: cancel}
+	s.asyncMu.Unlock()
+
+	s.SendOutbox(common.OutboxMsg{
+		Type:   "pick_file",
+		ID:     pickerID,
+		Accept: accept,
+		Multiple: multiple,
+	})
+}
+
+// PostFilePickerResp is called from the web bridge goroutine when the browser
+// delivers file picker results. The value is a JSON array of file objects.
+func (s *Session) PostFilePickerResp(pickerID, value string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxFilePickerResp, respID: pickerID, resp: value}:
+	case <-s.done:
+		// session closed; drop
+	}
+}
+
 // resumeAsyncResp resumes a coroutine suspended by ShowMsgbox/RequestClipboardGet
 // with the browser's answer. Must run on the actor goroutine.
 func (s *Session) resumeAsyncResp(respID string, val lua.LValue, kind string, logger Logger) {
@@ -558,6 +609,63 @@ func (s *Session) resumeAsyncResp(respID string, val lua.LValue, kind string, lo
 
 	// Flush outbox after handler
 	s.flushOutbox()
+}
+
+// resumeFilePickerResp resumes a coroutine suspended by RequestFilePicker
+// with a Lua table of file objects parsed from the JSON response.
+func (s *Session) resumeFilePickerResp(pickerID string, jsonResp string, logger Logger) {
+	s.asyncMu.Lock()
+	op, exists := s.asyncOps[pickerID]
+	if exists {
+		delete(s.asyncOps, pickerID)
+	}
+	s.asyncMu.Unlock()
+
+	if !exists {
+		logger.Warnf("file_picker response for unknown op: %s", pickerID)
+		return
+	}
+
+	val := s.parseFilePickerJSON(jsonResp)
+
+	st, err, _ := s.L.Resume(op.co, nil, val)
+	if st == lua.ResumeError {
+		if s.env != nil && s.env.Logger != nil {
+			s.env.Logger.Errorf("file_picker resume error: %v", err)
+		}
+		return
+	}
+
+	if st != lua.ResumeOK && op.cancel != nil {
+		op.cancel()
+	}
+
+	s.flushOutbox()
+}
+
+// parseFilePickerJSON converts a JSON array of file objects to a Lua table.
+// Each file object has: {name, size, type, data} where data is base64-encoded.
+func (s *Session) parseFilePickerJSON(jsonStr string) lua.LValue {
+	if jsonStr == "" || jsonStr == "null" {
+		return lua.LNil
+	}
+
+	var files []map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &files); err != nil {
+		// If parsing fails, return empty table
+		return s.L.NewTable()
+	}
+
+	tbl := s.L.NewTable()
+	for i, f := range files {
+		fileTbl := s.L.NewTable()
+		fileTbl.RawSetString("name", lua.LString(getStringFromMap(f, "name")))
+		fileTbl.RawSetString("size", lua.LNumber(getFloatFromMap(f, "size")))
+		fileTbl.RawSetString("type", lua.LString(getStringFromMap(f, "type")))
+		fileTbl.RawSetString("data", lua.LString(getStringFromMap(f, "data")))
+		tbl.RawSetInt(i+1, fileTbl)
+	}
+	return tbl
 }
 
 // flushOutbox drains the outbox and sends to the browser (handled by caller).
@@ -841,6 +949,7 @@ type Logger interface {
 	Printf(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
 	Warnf(format string, args ...interface{})
+	Tracef(format string, args ...interface{})
 }
 
 func getStack(L *lua.LState) string {
@@ -849,4 +958,59 @@ func getStack(L *lua.LState) string {
 		return ""
 	}
 	return fmt.Sprintf("%s:%d", dbg.Source, dbg.CurrentLine)
+}
+
+// postMortemDump builds a backtrace for an error: every frame with its
+// source, line, function name and local variables, plus upvalues. Used for
+// post-mortem inspection (Tier 1 debugging) and attached to verbose error logs.
+// NOTE: gopher-lua v1.1.2 unwinds frames before a Go Resume returns the error,
+// so after a ResumeError the per-frame locals are usually no longer reachable;
+// this returns the location as a fallback in that case.
+func postMortemDump(L *lua.LState) string {
+	var sb strings.Builder
+	sb.WriteString("Lua stack trace:")
+	found := false
+	level := 0
+	for {
+		dbg, ok := L.GetStack(level)
+		if !ok {
+			break
+		}
+		found = true
+		_, _ = L.GetInfo("nSlu", dbg, lua.LNil)
+		fmt.Fprintf(&sb, "\n  #%d %s in %q (line %d)",
+			level, dbg.Source, dbg.Name, dbg.CurrentLine)
+		// Locals
+		li := 1
+		for {
+			name, val := L.GetLocal(dbg, li)
+			if name == "" {
+				break
+			}
+			// Skip (*temporary) compiler temporaries in the dump for brevity
+			if !strings.HasPrefix(name, "(*temporary)") {
+				fmt.Fprintf(&sb, "\n      local %s = %s", name, val.String())
+			}
+			li++
+		}
+		level++
+	}
+	if !found {
+		sb.WriteString("\n  (frames unwound; no backtrace available)")
+	}
+	return sb.String()
+}
+
+func getStringFromMap(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func getFloatFromMap(m map[string]interface{}, key string) float64 {
+	if v, ok := m[key].(float64); ok {
+		return v
+	}
+	return 0
 }

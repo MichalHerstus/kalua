@@ -121,6 +121,66 @@
             });
     }
 
+    // File picker
+    function pickFile(id, accept, multiple) {
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.style.display = 'none';
+        if (accept) input.accept = accept;
+        if (multiple) input.multiple = true;
+
+        input.addEventListener('change', function() {
+            var files = input.files;
+            if (!files || files.length === 0) {
+                send({type: 'file_picker_resp', id: id, value: '[]'});
+                document.body.removeChild(input);
+                return;
+            }
+
+            var results = [];
+            var remaining = files.length;
+
+            for (var i = 0; i < files.length; i++) {
+                (function(file) {
+                    var reader = new FileReader();
+                    reader.onload = function(e) {
+                        var base64 = e.target.result.split(',')[1] || '';
+                        results.push({
+                            name: file.name,
+                            size: file.size,
+                            type: file.type,
+                            data: base64
+                        });
+                        remaining--;
+                        if (remaining === 0) {
+                            results.sort(function(a, b) {
+                                return a.name.localeCompare(b.name);
+                            });
+                            send({type: 'file_picker_resp', id: id, value: JSON.stringify(results)});
+                            document.body.removeChild(input);
+                        }
+                    };
+                    reader.onerror = function() {
+                        remaining--;
+                        if (remaining === 0) {
+                            send({type: 'file_picker_resp', id: id, value: JSON.stringify(results)});
+                            document.body.removeChild(input);
+                        }
+                    };
+                    reader.readAsDataURL(file);
+                })(files[i]);
+            }
+        });
+
+        input.addEventListener('cancel', function() {
+            send({type: 'file_picker_resp', id: id, value: '[]'});
+            document.body.removeChild(input);
+        });
+
+        document.body.appendChild(input);
+        input.click();
+    }
+
     // Message handling
     function handleMessage(msg) {
         switch (msg.type) {
@@ -153,6 +213,9 @@
                 break;
             case 'clipboard_get':
                 getClipboard(msg.id);
+                break;
+            case 'pick_file':
+                pickFile(msg.id, msg.accept, msg.multiple);
                 break;
             case 'error':
                 showError(msg.msg, msg.stack);

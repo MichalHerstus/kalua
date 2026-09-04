@@ -15,6 +15,7 @@ type tLogger struct{}
 func (tLogger) Printf(string, ...interface{}) {}
 func (tLogger) Errorf(string, ...interface{}) {}
 func (tLogger) Warnf(string, ...interface{})  {}
+func (tLogger) Tracef(string, ...interface{}) {}
 
 func TestRealClipboard(t *testing.T) {
 	tmp := t.TempDir()

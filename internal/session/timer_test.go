@@ -16,6 +16,7 @@ type discardLogger struct{}
 func (discardLogger) Printf(string, ...interface{}) {}
 func (discardLogger) Errorf(string, ...interface{}) {}
 func (discardLogger) Warnf(string, ...interface{})  {}
+func (discardLogger) Tracef(string, ...interface{}) {}
 
 // captureLogger collects error messages so tests can surface failures.
 type captureLogger struct{ errs []string }
@@ -26,6 +27,7 @@ func (c *captureLogger) Errorf(f string, a ...interface{}) {
 	c.errs = append(c.errs, fmt.Sprintf(f, a...))
 }
 func (c *captureLogger) Warnf(string, ...interface{}) {}
+func (c *captureLogger) Tracef(string, ...interface{}) {}
 
 // TestTimerFiresGlobal verifies k.timer_start fires a Lua global named after
 // the timer id through the actor loop.

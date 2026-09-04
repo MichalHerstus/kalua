@@ -13,6 +13,8 @@ require (
 	modernc.org/sqlite v1.57.0
 )
 
+replace github.com/yuin/gopher-lua => ./third_party/gopher-lua
+
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect

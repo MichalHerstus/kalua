@@ -167,6 +167,34 @@ func registerFlow(e *Env) {
 		return L.Yield(lua.LNil)
 	})
 
+	// k.pick_file([opts]) — open a browser file picker dialog.
+	// opts (optional table): {accept="image/*,.pdf", multiple=true}
+	// Returns a table of files: {{name, size, type, data}, ...} where data is
+	// base64-encoded content. Returns nil on cancel.
+	// Suspends the current coroutine until files are selected or cancelled.
+	e.register("pick_file", "flow", func(L *lua.LState) int {
+		if e.Sess == nil {
+			L.RaiseError("pick_file: no session available")
+			return 0
+		}
+
+		accept := ""
+		multiple := false
+
+		opts := L.OptTable(1, nil)
+		if opts != nil {
+			if v := opts.RawGetString("accept"); v != lua.LNil {
+				accept = v.String()
+			}
+			if v := opts.RawGetString("multiple"); v != lua.LNil {
+				multiple = v == lua.LTrue || v.String() == "true"
+			}
+		}
+
+		e.Sess.RequestFilePicker(L, func() {}, accept, multiple)
+		return L.Yield(lua.LNil)
+	})
+
 	// k.bell() — play a system beep sound
 	e.register("bell", "flow", func(L *lua.LState) int {
 		if e.Sess == nil {
