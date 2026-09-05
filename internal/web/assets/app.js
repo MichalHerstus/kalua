@@ -463,6 +463,12 @@ function createTabulator(el) {
             case 'tabulator_refresh':
                 tabulatorRefresh(msg.selector);
                 break;
+            case 'looper_db_batch':
+                handleLooperDBBatch(msg);
+                break;
+            case 'looper_refresh':
+                looperRefresh(msg.selector || ('#c:' + msg.form + ':' + msg.ctrl));
+                break;
         }
     }
 
@@ -569,6 +575,170 @@ function createTabulator(el) {
         }
     }
 
+    // Loopers — DB-linked virtual-scroll row lists (k.ctrl.looper + k.looper.*).
+    // The container carries the paging contract as data-k-looper-* attributes and
+    // a hidden template row describing one row's cells. Rows arrive as
+    // looper_db_batch messages; scrolling near the bottom requests the next batch.
+
+    // initLoopers scans a DOM scope for .kalua-looper containers and primes each
+    // that is not already managed. DB-linked loopers request page 1 immediately.
+    function initLoopers(scope) {
+        const els = scope.querySelectorAll('.kalua-looper:not([data-k-looper-ready])');
+        els.forEach(function(el) {
+            el.setAttribute('data-k-looper-ready', 'true');
+            el.setAttribute('data-k-looper-next', '1');
+            el.setAttribute('data-k-looper-has-more', el.hasAttribute('data-k-looper-links') ? '1' : '0');
+            el.addEventListener('scroll', function() {
+                looperMaybeFetch(el);
+            });
+            if (el.getAttribute('data-k-looper-has-more') === '1') {
+                looperMaybeFetch(el);
+            }
+        });
+    }
+
+    // looperNextStart returns the next start_idx to request (1-based).
+    function looperNextStart(el) {
+        return parseInt(el.getAttribute('data-k-looper-next') || '1', 10);
+    }
+
+    // looperMaybeFetch issues the next batch when the scroll position is near
+    // the bottom and no request is in flight and more rows remain.
+    function looperMaybeFetch(el) {
+        if (el.getAttribute('data-k-looper-has-more') !== '1') return;
+        if (el.getAttribute('data-k-looper-loading') === '1') return;
+        if (el.scrollHeight - (el.scrollTop + el.clientHeight) > 80) return;
+        const form = el.dataset.kForm || '';
+        const ctrl = el.dataset.kCtrl || '';
+        const count = parseInt(el.dataset.kLooperPageSize || '50', 10) || 50;
+        const startIdx = looperNextStart(el);
+        el.setAttribute('data-k-looper-loading', '1');
+        send({
+            type: 'looper_scroll_request',
+            form: form,
+            ctrl: ctrl,
+            value: { start_idx: startIdx, count: count }
+        });
+    }
+
+    // looperCellValue formats a batch value for display.
+    function looperCellValue(v) {
+        if (v === null || v === undefined) return '';
+        if (typeof v === 'boolean') return v ? '\u2713' : '';
+        return String(v);
+    }
+
+    // looperById resolves a looper element. The looper id is "c:form:ctrl", which
+    // contains colons and therefore must be looked up by id, never querySelector.
+    function looperById(form, ctrl, selector) {
+        const id = (selector || ('#c:' + form + ':' + ctrl)).replace(/^#/, '');
+        return document.getElementById(id);
+    }
+
+    // handleLooperDBBatch appends rows from a looper_db_batch payload.
+    // payload: { rows: [{index, data:{control:value, "control.prop":value}}],
+    //            has_more, last_page }.
+    function handleLooperDBBatch(msg) {
+        const el = looperById(msg.form, msg.ctrl, msg.selector);
+        if (!el) return;
+        const payload = {};
+        try { Object.assign(payload, JSON.parse(msg.data || '{}')); } catch (e) {}
+        const rows = payload.rows || [];
+        const hasMore = !!payload.has_more;
+        const lastPage = payload.last_page || 0;
+
+        el.setAttribute('data-k-looper-loading', '0');
+        const rowsEl = el.querySelector('.kalua-looper-rows');
+        const template = rowsEl.querySelector('[data-k-looper-template="1"]');
+        let templateCells = [];
+        if (template) {
+            template.querySelectorAll('.kalua-looper-cell').forEach(function(cell) {
+                templateCells.push(cell.cloneNode(true));
+            });
+        }
+
+        rows.forEach(function(row) {
+            const rowEl = document.createElement('div');
+            rowEl.className = 'kalua-looper-row';
+            rowEl.setAttribute('data-k-looper-index', String(row.index || ''));
+            if (templateCells.length === 0) {
+                const cell = document.createElement('div');
+                cell.className = 'kalua-looper-cell';
+                cell.innerHTML = '<span class="kalua-looper-cell-value"></span>';
+                rowEl.appendChild(cell);
+            } else {
+                templateCells.forEach(function(cell) {
+                    rowEl.appendChild(cell.cloneNode(true));
+                });
+            }
+            const data = row.data || {};
+            rowEl.querySelectorAll('.kalua-looper-cell').forEach(function(cell) {
+                const key = cell.getAttribute('data-k-looper-control') || '';
+                const valueEl = cell.querySelector('.kalua-looper-cell-value');
+                if (valueEl && key) {
+                    valueEl.textContent = looperCellValue(data[key]);
+                }
+            });
+            rowsEl.appendChild(rowEl);
+        });
+
+        const next = looperNextStart(el) + rows.length;
+        el.setAttribute('data-k-looper-next', String(next));
+        el.setAttribute('data-k-looper-has-more', hasMore ? '1' : '0');
+        if (lastPage > 0) el.setAttribute('data-k-looper-last-page', String(lastPage));
+
+        // Keep fetching while the viewport can still be filled by short first pages.
+        if (hasMore && el.scrollHeight <= el.clientHeight) {
+            looperMaybeFetch(el);
+        }
+    }
+
+    // looperRefresh resets a looper's rows and re-requests page 1 (driven by
+    // k.looper.refresh / k.looper.set_db_source / k.looper.link_db). A refresh
+    // rebuilds the row set, so the current row selection is dropped.
+    function looperRefresh(selector) {
+        const el = document.getElementById(String(selector || '').replace(/^#/, ''));
+        if (!el) return;
+        el.querySelectorAll('.kalua-looper-row.selected').forEach(function(r) {
+            r.classList.remove('selected');
+        });
+        const rowsEl = el.querySelector('.kalua-looper-rows');
+        if (rowsEl) {
+            const template = rowsEl.querySelector('[data-k-looper-template="1"]');
+            rowsEl.querySelectorAll('.kalua-looper-row:not([data-k-looper-template="1"])').forEach(function(r) {
+                r.remove();
+            });
+            template.setAttribute('data-k-looper-template', '1');
+        }
+        el.setAttribute('data-k-looper-next', '1');
+        el.setAttribute('data-k-looper-has-more', '1');
+        el.setAttribute('data-k-looper-loading', '0');
+        looperMaybeFetch(el);
+    }
+
+    // selectLooperRow implements the looper cursor: clicking a row highlights it
+    // (single selection) and reports the selection to the host as onselect(line_idx)
+    // plus onclick(ctrl_name, line_idx). The highlight is a class on the row
+    // element, so it stays put as further batches append below it.
+    function selectLooperRow(el, rowEl, target) {
+        if (!rowEl || rowEl.hasAttribute('data-k-looper-template')) return;
+        el.querySelectorAll('.kalua-looper-row.selected').forEach(function(r) {
+            r.classList.remove('selected');
+        });
+        rowEl.classList.add('selected');
+
+        const lineIdx = parseInt(rowEl.getAttribute('data-k-looper-index') || '0', 10);
+        let ctrlName = '';
+        if (target) {
+            const cellEl = target.closest('.kalua-looper-cell');
+            if (cellEl) ctrlName = cellEl.getAttribute('data-k-looper-control') || '';
+        }
+        const form = el.dataset.kForm || '';
+        const ctrl = el.dataset.kCtrl || '';
+        sendEvent(form, ctrl, 'onselect', { line_idx: lineIdx, ctrl_name: ctrlName });
+        sendEvent(form, ctrl, 'onclick', { ctrl_name: ctrlName, line_idx: lineIdx });
+    }
+
     // tabulatorGetData answers k.table.get_data requests with all current row data.
     function tabulatorGetData(id, selector, form, ctrl) {
         const inst = selector && tabulatorInstances.get(selector);
@@ -596,6 +766,7 @@ function createTabulator(el) {
     function renderForm(html) {
         stage.innerHTML = html;
         initTabulators(stage);
+        initLoopers(stage);
         // Focus first focusable element
         const firstFocusable = stage.querySelector('input, select, button, textarea');
         if (firstFocusable) {
@@ -611,6 +782,7 @@ function createTabulator(el) {
             el.outerHTML = html;
             const fresh = document.querySelector(selector);
             if (fresh) initTabulators(fresh.parentElement || stage);
+            if (fresh) initLoopers(fresh.parentElement || stage);
         }
     }
 
@@ -727,6 +899,14 @@ function createTabulator(el) {
             const choice = msgboxBtn.dataset.kChoice;
             send({ type: 'msgbox_choice', id: id, choice: choice });
             closeMsgbox(id);
+            return;
+        }
+
+        // Looper row clicks move the cursor: highlight the row and report
+        // onselect/onclick to the host.
+        const loopEl = e.target.closest('.kalua-looper');
+        if (loopEl) {
+            selectLooperRow(loopEl, e.target.closest('.kalua-looper-row'), e.target);
             return;
         }
 

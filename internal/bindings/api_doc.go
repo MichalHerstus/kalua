@@ -73,6 +73,16 @@ var apiDocs = map[string]Info{
 	"ctrl.get_property": {Name: "ctrl.get_property", Group: "controls", Signature: "k.ctrl.get_property(form, name, prop)", Docs: "Gets an arbitrary control property."},
 	"ctrl.set_focus":    {Name: "ctrl.set_focus", Group: "controls", Signature: "k.ctrl.set_focus(form, name)", Docs: "Moves focus to a control in the browser."},
 	"ctrl.refresh":      {Name: "ctrl.refresh", Group: "controls", Signature: "k.ctrl.refresh(form, name)", Docs: "Re-renders a single control and pushes the update."},
+	"ctrl.looper":       {Name: "ctrl.looper", Group: "controls", Signature: "k.ctrl.looper(form, name, optsTable)", Docs: "Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}."},
+
+	// looper operations
+	"looper":               {Name: "looper", Group: "controls", Signature: "k.looper", Docs: "Looper control operations: k.looper.link_db/set_db_source/refresh/..."},
+	"looper.link_db":       {Name: "looper.link_db", Group: "controls", Signature: "k.looper.link_db(form, name, opts)", Docs: "Attaches a DB source to a looper: {db,query,links,page_size?,count_query?,where?,order_by?}. links list maps result columns to template controls: {column=N,control,property} by 1-based index or {field,col,control,property} by name."},
+	"looper.set_db_source": {Name: "looper.set_db_source", Group: "controls", Signature: "k.looper.set_db_source(form, name, opts)", Docs: "Swaps a DB-linked looper's source {db,query,links?,page_size?,count_query?,where?,order_by?} and refreshes."},
+	"looper.refresh":       {Name: "looper.refresh", Group: "controls", Signature: "k.looper.refresh(form, name)", Docs: "Re-runs a DB-linked looper's query and shows page 1."},
+	"looper.add_line":      {Name: "looper.add_line", Group: "controls", Signature: "k.looper.add_line(form, name, valuesTable)", Docs: "Raises a runtime error on DB-linked loopers (rows come from the linked query)."},
+	"looper.set_line":      {Name: "looper.set_line", Group: "controls", Signature: "k.looper.set_line(form, name, index, valuesTable)", Docs: "Raises a runtime error on DB-linked loopers (rows come from the linked query)."},
+	"looper.delete_line":   {Name: "looper.delete_line", Group: "controls", Signature: "k.looper.delete_line(form, name, index)", Docs: "Raises a runtime error on DB-linked loopers (rows come from the linked query)."},
 
 	// table operations
 	"table":                     {Name: "table", Group: "controls", Signature: "k.table", Docs: "Table control operations: k.table.add_line/delete_line/..."},
@@ -85,9 +95,9 @@ var apiDocs = map[string]Info{
 	"table.set_data":            {Name: "table.set_data", Group: "controls", Signature: "k.table.set_data(form, name, dataTable)", Docs: "Bulk replaces all row data (Tabulator mode pushes tabulator_update)."},
 	"table.get_data":            {Name: "table.get_data", Group: "controls", Signature: "k.table.get_data(form, name)", Docs: "Returns all current data of a table control."},
 	"table.get_selected_rows":   {Name: "table.get_selected_rows", Group: "controls", Signature: "k.table.get_selected_rows(form, name)", Docs: "Returns the selected row indices (1-based)."},
-"table.set_remote_data":   {Name: "table.set_remote_data", Group: "controls", Signature: "k.table.set_remote_data(form, name, {data,last_page,last_row})", Docs: "Pushes server-side pagination data to a tabulator table =  {data=rows, last_page=n} or {data=rows, last_row=n}."},
-	"table.refresh":         {Name: "table.refresh", Group: "controls", Signature: "k.table.refresh(form, name)", Docs: "Re-runs a DB-linked tabulator table's query and shows page 1."},
-	"table.set_db_source":   {Name: "table.set_db_source", Group: "controls", Signature: "k.table.set_db_source(form, name, opts)", Docs: "Swaps a DB-linked tabulator table's source {db,query,columns?,page_size?,count_query?,where?,order_by?} and refreshes."},
+	"table.set_remote_data":     {Name: "table.set_remote_data", Group: "controls", Signature: "k.table.set_remote_data(form, name, {data,last_page,last_row})", Docs: "Pushes server-side pagination data to a tabulator table =  {data=rows, last_page=n} or {data=rows, last_row=n}."},
+	"table.refresh":             {Name: "table.refresh", Group: "controls", Signature: "k.table.refresh(form, name)", Docs: "Re-runs a DB-linked tabulator table's query and shows page 1."},
+	"table.set_db_source":       {Name: "table.set_db_source", Group: "controls", Signature: "k.table.set_db_source(form, name, opts)", Docs: "Swaps a DB-linked tabulator table's source {db,query,columns?,page_size?,count_query?,where?,order_by?} and refreshes."},
 
 	// database
 	"connect_db":    {Name: "connect_db", Group: "database", Signature: "k.connect_db(dsn)", Docs: "Opens a database connection (DSN scheme: sqlite://, mysql://, postgres://, sqlserver://) and returns a handle."},

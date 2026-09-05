@@ -121,6 +121,14 @@ var registerKnown = map[string]string{
 	"ctrl.get_property":         "controls",
 	"ctrl.set_focus":            "controls",
 	"ctrl.refresh":              "controls",
+	"ctrl.looper":               "controls",
+	"looper":                    "controls", // namespace
+	"looper.link_db":            "controls",
+	"looper.set_db_source":      "controls",
+	"looper.refresh":            "controls",
+	"looper.add_line":           "controls",
+	"looper.set_line":           "controls",
+	"looper.delete_line":        "controls",
 	"table":                     "controls", // namespace
 	"table.add_line":            "controls",
 	"table.delete_line":         "controls",

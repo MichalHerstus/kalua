@@ -3,6 +3,8 @@ package bindings
 
 import (
 	"html"
+	"strconv"
+	"strings"
 
 	"github.com/yuin/gopher-lua"
 
@@ -210,6 +212,15 @@ func registerControls(e *Env) {
 		name := L.CheckString(2)
 		opts := L.OptTable(3, L.NewTable())
 		addControl(L, formName, name, "table", opts)
+		return 0
+	})
+
+	// k.ctrl.looper(form, name, options)
+	e.register("ctrl.looper", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "looper", opts)
 		return 0
 	})
 
@@ -543,6 +554,9 @@ func registerControls(e *Env) {
 
 	// Tabulator table data operations
 	registerTableOps(e)
+
+	// Looper data operations (DB-linked loopers)
+	registerLooperOps(e)
 }
 
 // addControl adds a control to a form definition.
@@ -636,6 +650,17 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("db", opts.RawGetString("db"))
 		ctrlTbl.RawSetString("query", opts.RawGetString("query"))
 		ctrlTbl.RawSetString("db_columns", opts.RawGetString("db_columns"))
+		ctrlTbl.RawSetString("page_size", opts.RawGetString("page_size"))
+		ctrlTbl.RawSetString("count_query", opts.RawGetString("count_query"))
+		ctrlTbl.RawSetString("db_where", opts.RawGetString("where"))
+		ctrlTbl.RawSetString("db_order_by", opts.RawGetString("order_by"))
+	}
+
+	// DB-linked looper options (Kalipso "connect to DB" parity)
+	if ctrlType == "looper" {
+		ctrlTbl.RawSetString("db", opts.RawGetString("db"))
+		ctrlTbl.RawSetString("query", opts.RawGetString("query"))
+		ctrlTbl.RawSetString("links", opts.RawGetString("links"))
 		ctrlTbl.RawSetString("page_size", opts.RawGetString("page_size"))
 		ctrlTbl.RawSetString("count_query", opts.RawGetString("count_query"))
 		ctrlTbl.RawSetString("db_where", opts.RawGetString("where"))
@@ -801,8 +826,135 @@ func renderControl(ctrl *lua.LTable) string {
 		</div>`
 	case "table":
 		return renderTable(ctrl, formName, name, id, label, value, visible, enabled, attrs)
+	case "looper":
+		return renderLooper(ctrl, formName, name, id, visible)
 	}
 	return `<div class="kalua-control">Unknown control: ` + escText(ctrlType) + `</div>`
+}
+
+// renderLooper renders a looper container. When the looper is DB-linked, the
+// container carries the DB paging contract as data-k-looper-* attributes and a
+// template row derived from the row→template links; the client populates rows
+// from looper_db_batch messages as the user scrolls.
+func renderLooper(ctrl *lua.LTable, formName, name, id, visible string) string {
+	columns := 1
+	if v := ctrl.RawGetString("columns"); v != lua.LNil {
+		if n := int(lua.LVAsNumber(v)); n > 0 {
+			columns = n
+		}
+	}
+	pageSize := 50
+	if v := ctrl.RawGetString("page_size"); v != lua.LNil {
+		if n := int(lua.LVAsNumber(v)); n > 0 {
+			pageSize = n
+		}
+	}
+
+	templateCells := looperTemplateHTML(ctrl, formName, name)
+	dbLinked := ""
+	if ctrl.RawGetString("db") != lua.LNil {
+		dbLinked = ` data-k-looper-links="` + escAttr(looperLinksAttr(ctrl)) + `"`
+	}
+
+	return `<div class="kalua-control"` + visible + `>
+		<div class="kalua-looper" id="` + escAttr(id) + `"
+		     data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `"
+		     data-k-looper-columns="` + strconv.Itoa(columns) + `"
+		     data-k-looper-page-size="` + strconv.Itoa(pageSize) + `"` + dbLinked + `>
+			<div class="kalua-looper-rows">` + templateCells + `</div>
+			<div class="kalua-looper-sentinel"></div>
+		</div>
+	</div>`
+}
+
+// looperTemplateHTML emits the template row that defines one row's cell
+// structure. Cells are keyed by the link's control name so the host can map
+// looper_db_batch data onto them. A non-DB looper renders a single empty cell
+// (no rows until a data source is attached).
+func looperTemplateHTML(ctrl *lua.LTable, formName, name string) string {
+	links := ctrl.RawGetString("links")
+	if links == lua.LNil {
+		return `<div class="kalua-looper-row" data-k-looper-template="1">
+				<div class="kalua-looper-cell" data-k-looper-control="">
+					<span class="kalua-looper-cell-value"></span>
+				</div>
+			</div>`
+	}
+	linksTbl, ok := links.(*lua.LTable)
+	if !ok {
+		return ""
+	}
+	var cells []string
+	linksTbl.ForEach(func(_, v lua.LValue) {
+		linkTbl, ok := v.(*lua.LTable)
+		if !ok {
+			return
+		}
+		control := linkTbl.RawGetString("control").String()
+		if control == "" {
+			control = linkTbl.RawGetString("ctrl").String()
+		}
+		prop := looperLinkProp(linkTbl, "property")
+		if prop == "" {
+			prop = looperLinkProp(linkTbl, "prop")
+		}
+		display := control
+		if prop != "" && prop != "value" {
+			display = control + "." + prop
+		}
+		if display == "" {
+			display = "cell"
+		}
+		cells = append(cells, `<div class="kalua-looper-cell" data-k-looper-control="`+escAttr(display)+`">
+					<span class="kalua-looper-cell-value"></span>
+				</div>`)
+	})
+	// Hide the template row from the user; the client uses it only to learn the
+	// per-row cell layout before replacing it with real (batched) rows.
+	return `<div class="kalua-looper-row" data-k-looper-template="1" style="display:none">` + strings.Join(cells, "\n") + `</div>`
+}
+
+// looperLinksAttr renders the links table as a compact JSON attribute so the
+// client knows the control order for map keys without the template row.
+func looperLinksAttr(ctrl *lua.LTable) string {
+	links := ctrl.RawGetString("links")
+	linksTbl, ok := links.(*lua.LTable)
+	if !ok {
+		return "[]"
+	}
+	var parts []string
+	linksTbl.ForEach(func(_, v lua.LValue) {
+		linkTbl, ok := v.(*lua.LTable)
+		if !ok {
+			return
+		}
+		key := linkTbl.RawGetString("control").String()
+		if key == "" {
+			key = linkTbl.RawGetString("ctrl").String()
+		}
+		prop := looperLinkProp(linkTbl, "property")
+		if prop == "" {
+			prop = looperLinkProp(linkTbl, "prop")
+		}
+		if key == "" {
+			return
+		}
+		if prop != "" && prop != "value" {
+			key += "." + prop
+		}
+		parts = append(parts, `"`+jsonEscape(key)+`"`)
+	})
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
+// looperLinkProp reads a looper link key guarding against LNil, whose .String()
+// would come back as "nil" and corrupt data-k-looper-* attrs.
+func looperLinkProp(linkTbl *lua.LTable, key string) string {
+	v := linkTbl.RawGetString(key)
+	if v == lua.LNil {
+		return ""
+	}
+	return v.String()
 }
 
 // sendOutbox sends a message to the session outbox.

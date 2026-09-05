@@ -35,6 +35,8 @@ const (
 	inboxTabulatorDataResp                   // browser answered k.table.get_data
 	inboxTabulatorSelectionResp              // browser answered k.table.get_selected_rows
 	inboxTabulatorAjaxRequest                // browser asked for a remote page of rows
+	inboxLooperScrollRequest                 // browser asked for the next looper batch of rows
+	inboxLooperRefreshRequest                // browser re-triggered a looper fetch
 )
 
 // asyncOp represents a suspended coroutine waiting for an async operation
@@ -236,6 +238,10 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.resumeTabulatorSelectionResp(msg.respID, msg.selectRows, logger)
 	case inboxTabulatorAjaxRequest:
 		s.handleTabulatorAjaxRequest(msg, logger)
+	case inboxLooperScrollRequest:
+		s.handleLooperScrollRequest(msg, logger)
+	case inboxLooperRefreshRequest:
+		s.handleLooperRefreshRequest(msg, logger)
 	}
 }
 
@@ -248,8 +254,19 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		value = s.toLuaValue(msg.raw)
 	}
 
+	// Looper row selection: the browser sends onselect/onclick with a value
+	// table {line_idx, ctrl_name}. Unpack it into the Kalipso handler
+	// signatures onselect(line_idx) and onclick(ctrl_name, line_idx); the table
+	// is not a set of control values, so skip the control-value update.
+	looperDispatch := false
+	if (msg.event == "onselect" || msg.event == "onclick") && s.isLooperControl(msg.form, msg.ctrl) {
+		if vt, ok := value.(*lua.LTable); ok {
+			looperDispatch = vt.RawGetString("line_idx") != lua.LNil
+		}
+	}
+
 	// Update control value in form definition from browser event
-	if value != lua.LNil {
+	if !looperDispatch && value != lua.LNil {
 		s.updateControlValue(msg.form, msg.ctrl, value)
 	}
 
@@ -295,7 +312,23 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 	// Run the handler in a coroutine
 	co, cancel := s.L.NewThread()
 
-	st, err, _ := s.L.Resume(co, fn, value)
+	var resumeArgs []lua.LValue
+	switch {
+	case looperDispatch && msg.event == "onselect":
+		vt := value.(*lua.LTable)
+		resumeArgs = []lua.LValue{vt.RawGetString("line_idx")}
+	case looperDispatch && msg.event == "onclick":
+		vt := value.(*lua.LTable)
+		ctrlName := vt.RawGetString("ctrl_name")
+		if ctrlName == lua.LNil {
+			ctrlName = lua.LString("")
+		}
+		resumeArgs = []lua.LValue{ctrlName, vt.RawGetString("line_idx")}
+	default:
+		resumeArgs = []lua.LValue{value}
+	}
+
+	st, err, _ := s.L.Resume(co, fn, resumeArgs...)
 	if st == lua.ResumeError {
 		// cancel() may be nil (NewThread returns nil when the state has no
 		// context) and may panic if called on a finished coroutine; guard both.
@@ -470,6 +503,205 @@ func (s *Session) sendRemoteData(remote remotePagePayload, msg inboxMsg) {
 		Selector: "#c:" + msg.form + ":" + msg.ctrl,
 		Data:     remote.toJSON(),
 	})
+}
+
+// handleLooperScrollRequest services the browser's next-batch ask for a looper.
+// DB-linked loopers are paged in-process by the Go pager; otherwise an optional
+// looper_scroll_request Lua handler is invoked in a fresh coroutine (return
+// values are ignored — the handler is responsible for pushing rows itself).
+func (s *Session) handleLooperScrollRequest(msg inboxMsg, logger Logger) {
+	// Try the DB-linked pager first.
+	if ctrl := s.controlTable(msg.form, msg.ctrl); ctrl != nil {
+		if link, ok := bindings.LooperDBLinkFromControl(ctrl); ok {
+			s.dispatchDBLooperPage(link, msg, logger)
+			return
+		}
+	}
+
+	// Fall back to a registered Lua looper_scroll_request handler.
+	val := lua.LNil
+	if msg.raw != nil {
+		val = s.toLuaValue(msg.raw)
+	}
+	formTbl := s.L.GetGlobal(msg.form)
+	if formTbl == lua.LNil {
+		return
+	}
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return
+	}
+	handlers := tbl.RawGetString("handlers")
+	if handlers == lua.LNil {
+		return
+	}
+	handlersTbl, ok := handlers.(*lua.LTable)
+	if !ok {
+		return
+	}
+	ctrlHandlers := handlersTbl.RawGetString(msg.ctrl)
+	if ctrlHandlers == lua.LNil {
+		return
+	}
+	ctrlTbl, ok := ctrlHandlers.(*lua.LTable)
+	if !ok {
+		return
+	}
+	handler := ctrlTbl.RawGetString("looper_scroll_request")
+	if handler == lua.LNil {
+		return
+	}
+	fn, ok := handler.(*lua.LFunction)
+	if !ok {
+		return
+	}
+	co, cancel := s.L.NewThread()
+	st, err, _ := s.L.Resume(co, fn, val)
+	if st == lua.ResumeError {
+		if cancel != nil {
+			cancel()
+		}
+		logger.Errorf("looper_scroll_request handler error: %v", err)
+		s.SendOutbox(common.OutboxMsg{Type: "error", Msg: err.Error()})
+		return
+	}
+	if st != lua.ResumeOK && cancel != nil {
+		cancel()
+	}
+	s.flushOutbox()
+}
+
+// handleLooperRefreshRequest re-dispatches a page-1 looper fetch. The server
+// normally triggers reloads itself via the looper_refresh outbox message, so
+// this only exists for browsers that explicitly re-request.
+func (s *Session) handleLooperRefreshRequest(msg inboxMsg, logger Logger) {
+	s.handleLooperScrollRequest(inboxMsg{
+		typ:  inboxLooperScrollRequest,
+		form: msg.form,
+		ctrl: msg.ctrl,
+		raw:  map[string]interface{}{"start_idx": 1, "count": 50},
+	}, logger)
+}
+
+// dispatchDBLooperPage pages a DB-linked looper in-process and sends the
+// mapped batch to the browser. Errors surface as a banner; they never crash the
+// session (the client simply stops requesting more rows).
+func (s *Session) dispatchDBLooperPage(link *bindings.LooperDBLink, msg inboxMsg, logger Logger) {
+	req, startIdx := parseLooperScrollReq(msg.raw)
+	res, err := bindings.FetchLooperRows(s.L, link, req)
+	if err != nil {
+		logger.Errorf("looper DB page error: %v", err)
+		s.SendOutbox(common.OutboxMsg{Type: "error", Msg: "looper page error: " + err.Error()})
+		return
+	}
+
+	payload := looperBatchPayload{LastPage: res.LastPage}
+	if res != nil {
+		payload.Rows = looperBatchRows(link, res, startIdx)
+		payload.HasMore = req.Page < res.LastPage
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		data = []byte(`{"rows":[],"has_more":false,"last_page":1}`)
+	}
+	s.SendOutbox(common.OutboxMsg{
+		Type:     "looper_db_batch",
+		Form:     msg.form,
+		Ctrl:     msg.ctrl,
+		Selector: "#c:" + msg.form + ":" + msg.ctrl,
+		Data:     string(data),
+	})
+	s.flushOutbox()
+}
+
+// looperBatchPayload is the looper_db_batch wire format sent to the browser:
+// {rows:[{index,data}], has_more, last_page}.
+type looperBatchPayload struct {
+	Rows     []looperBatchRow `json:"rows"`
+	HasMore  bool             `json:"has_more"`
+	LastPage int              `json:"last_page"`
+}
+
+// looperBatchRow is one rendered looper row. data keys are template control
+// names (or "control.property" for non-default properties).
+type looperBatchRow struct {
+	Index int                    `json:"index"`
+	Data  map[string]interface{} `json:"data"`
+}
+
+// looperBatchRows maps a fetched page of plain rows onto the template controls
+// named by the looper's links, labelled with absolute 1-based row indices.
+func looperBatchRows(link *bindings.LooperDBLink, res *bindings.LooperPageResult, startIdx int) []looperBatchRow {
+	if res == nil {
+		return nil
+	}
+	var out []looperBatchRow
+	for i, row := range res.Rows {
+		data := map[string]interface{}{}
+		for _, l := range link.Links {
+			var val interface{}
+			if l.Field != "" {
+				val = row[l.Field]
+			} else if l.Column >= 1 && l.Column <= len(res.Columns) {
+				val = row[res.Columns[l.Column-1]]
+			}
+			key := l.Control
+			if l.Property != "" && l.Property != "value" {
+				key += "." + l.Property
+			}
+			data[key] = val
+		}
+		out = append(out, looperBatchRow{Index: startIdx + i, Data: data})
+	}
+	return out
+}
+
+// parseLooperScrollReq decodes the browser's looper_scroll_request value (a
+// JSON-decoded map {start_idx,count,sort?,filter?}) into a bindings.LooperPageReq
+// plus the absolute 1-based index the batch should start from.
+func parseLooperScrollReq(raw interface{}) (bindings.LooperPageReq, int) {
+	startIdx := 1
+	var req bindings.LooperPageReq
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		req.Page, req.Size = 1, 50
+		return req, startIdx
+	}
+	if start := ifaceInt(m["start_idx"]); start > 0 {
+		startIdx = start
+	}
+	size := ifaceInt(m["count"])
+	if size <= 0 {
+		size = 50
+	}
+	req.Page = startIdx/size + 1 // start_idx is 1-based
+	if req.Page < 1 {
+		req.Page = 1
+	}
+	req.Size = size
+
+	if sortRaw, ok := m["sort"].([]interface{}); ok {
+		for _, s := range sortRaw {
+			if sm, ok := s.(map[string]interface{}); ok {
+				req.Sort = append(req.Sort, bindings.SortSpec{
+					Field: ifaceStr(sm["field"]),
+					Dir:   ifaceStr(sm["dir"]),
+				})
+			}
+		}
+	}
+	if filtRaw, ok := m["filter"].([]interface{}); ok {
+		for _, f := range filtRaw {
+			if fm, ok := f.(map[string]interface{}); ok {
+				req.Filter = append(req.Filter, bindings.FilterSpec{
+					Field: ifaceStr(fm["field"]),
+					Op:    ifaceStr(fm["type"]),
+					Value: ifaceStr(fm["value"]),
+				})
+			}
+		}
+	}
+	return req, startIdx
 }
 
 // remotePagePayload is the tabulator_remote_data response the Lua
@@ -881,6 +1113,23 @@ func (s *Session) PostTabulatorAjaxRequest(form, ctrl string, value interface{})
 	}
 }
 
+// PostLooperScrollRequest forwards the browser's looper_scroll_request (a
+// JSON-decoded value {start_idx,count,sort?,filter?}) to the actor inbox.
+func (s *Session) PostLooperScrollRequest(form, ctrl string, value interface{}) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxLooperScrollRequest, form: form, ctrl: ctrl, raw: value}:
+	case <-s.done:
+	}
+}
+
+// PostLooperRefreshRequest forwards the browser's looper_refresh_request.
+func (s *Session) PostLooperRefreshRequest(form, ctrl string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxLooperRefreshRequest, form: form, ctrl: ctrl}:
+	case <-s.done:
+	}
+}
+
 // PostClipboardResp is called from the web bridge goroutine when the browser
 // delivers clipboard text. It forwards the value to the actor inbox so the
 // resume happens on the actor goroutine (s.L is not thread-safe).
@@ -1286,6 +1535,26 @@ func (s *Session) toLuaValue(v interface{}) lua.LValue {
 	default:
 		return lua.LString(fmt.Sprintf("%v", v))
 	}
+}
+
+// isLooperControl reports whether form.controls[ctrlName] is a k.ctrl.looper.
+func (s *Session) isLooperControl(formName, ctrlName string) bool {
+	formTbl := s.L.GetGlobal(formName)
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	return ctrlTbl.RawGetString("type").String() == "looper"
 }
 
 // updateControlValue updates a control's value in the form definition.

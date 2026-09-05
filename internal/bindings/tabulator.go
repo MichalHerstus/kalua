@@ -222,6 +222,122 @@ func registerTableOps(e *Env) {
 	})
 }
 
+// registerLooperOps installs the k.looper.* operations (DB-linked loopers,
+// Kalipso parity). Called from registerControls so the operations share the
+// controls API namespace.
+func registerLooperOps(e *Env) {
+	// k.looper.link_db(form, name, {db, query, links, ...}) - attach a DB source
+	e.register("looper.link_db", "controls", func(L *lua.LState) int {
+		return looperConfDBSource(L, e, L.CheckString(1), L.CheckString(2), L.OptTable(3, L.NewTable()))
+	})
+
+	// k.looper.set_db_source(form, name, {db, query, links?, ...}) - swap a
+	// DB-linked looper's source at runtime; the next fetch uses it.
+	e.register("looper.set_db_source", "controls", func(L *lua.LState) int {
+		return looperConfDBSource(L, e, L.CheckString(1), L.CheckString(2), L.OptTable(3, L.NewTable()))
+	})
+
+	// k.looper.refresh(form, name) - re-run a DB-linked looper's query (page 1)
+	e.register("looper.refresh", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			return 0
+		}
+		if ctrl.RawGetString("type").String() != "looper" {
+			L.RaiseError("control %s is not a looper", name)
+			return 0
+		}
+		if ctrl.RawGetString("db") == lua.LNil {
+			L.RaiseError("control %s is not DB-linked", name)
+			return 0
+		}
+		sendOutbox(e, common.OutboxMsg{
+			Type:     "looper_refresh",
+			Form:     formName,
+			Ctrl:     name,
+			Selector: "#c:" + formName + ":" + name,
+		})
+		return 0
+	})
+
+	// Row-edit operations are guarded: a DB-linked looper's rows come solely
+	// from the linked query, so manual mutations raise a runtime error.
+	e.register("looper.add_line", "controls", func(L *lua.LState) int {
+		return looperManualOp(L, "add_line", L.CheckString(1), L.CheckString(2))
+	})
+	e.register("looper.set_line", "controls", func(L *lua.LState) int {
+		return looperManualOp(L, "set_line", L.CheckString(1), L.CheckString(2))
+	})
+	e.register("looper.delete_line", "controls", func(L *lua.LState) int {
+		return looperManualOp(L, "delete_line", L.CheckString(1), L.CheckString(2))
+	})
+}
+
+// looperConfDBSource writes the DB-link options onto a looper control and
+// refreshes it so the new source drives the next page. Shared by k.looper.link_db
+// and k.looper.set_db_source.
+func looperConfDBSource(L *lua.LState, e *Env, formName, name string, opts *lua.LTable) int {
+	ctrl := getControl(L, formName, name)
+	if ctrl == nil {
+		return 0
+	}
+	if ctrl.RawGetString("type").String() != "looper" {
+		L.RaiseError("control %s is not a looper", name)
+		return 0
+	}
+
+	if v := opts.RawGetString("db"); v != lua.LNil {
+		ctrl.RawSetString("db", v)
+	}
+	if v := opts.RawGetString("query"); v != lua.LNil {
+		ctrl.RawSetString("query", v)
+	}
+	if v := opts.RawGetString("links"); v != lua.LNil {
+		ctrl.RawSetString("links", v)
+	}
+	if v := opts.RawGetString("page_size"); v != lua.LNil {
+		ctrl.RawSetString("page_size", v)
+	}
+	if v := opts.RawGetString("count_query"); v != lua.LNil {
+		ctrl.RawSetString("count_query", v)
+	}
+	if v := opts.RawGetString("where"); v != lua.LNil {
+		ctrl.RawSetString("db_where", v)
+	}
+	if v := opts.RawGetString("order_by"); v != lua.LNil {
+		ctrl.RawSetString("db_order_by", v)
+	}
+
+	sendOutbox(e, common.OutboxMsg{
+		Type:     "looper_refresh",
+		Form:     formName,
+		Ctrl:     name,
+		Selector: "#c:" + formName + ":" + name,
+	})
+	return 0
+}
+
+// looperManualOp guards k.looper.add_line/set_line/delete_line. Mutating a
+// DB-linked looper is a runtime error (rows come from the linked query).
+func looperManualOp(L *lua.LState, op, formName, name string) int {
+	ctrl := getControl(L, formName, name)
+	if ctrl == nil {
+		return 0
+	}
+	if ctrl.RawGetString("type").String() != "looper" {
+		L.RaiseError("control %s is not a looper", name)
+		return 0
+	}
+	if ctrl.RawGetString("db") != lua.LNil {
+		L.RaiseError("k.looper.%s is not supported on a DB-linked looper: rows come from the linked query (use k.looper.refresh)", op)
+		return 0
+	}
+	L.RaiseError("k.looper.%s is not implemented for loopers without a DB link", op)
+	return 0
+}
+
 // remotePage is the tabulator_remote_data payload.
 type remotePage struct {
 	Data     string

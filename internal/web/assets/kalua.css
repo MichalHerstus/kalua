@@ -429,3 +429,47 @@ body {
 .kalua-tabulator-wrapper .tabulator-row.tabulator-selected {
     background-color: #d6e4f5;
 }
+
+/* Looper control: DB-linked virtual-scroll row list */
+.kalua-looper {
+    position: relative;
+    width: 100%;
+    max-height: 420px;
+    overflow-y: auto;
+    border: 1px solid #d0d5dd;
+    border-radius: 6px;
+    background: #fff;
+    -webkit-overflow-scrolling: touch;
+}
+
+.kalua-looper-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid #eef0f3;
+    align-items: center;
+    cursor: pointer;
+}
+
+.kalua-looper-row.selected {
+    background: #e3edff;
+    box-shadow: inset 3px 0 0 #2f6fdd;
+}
+
+.kalua-looper-row:last-child {
+    border-bottom: none;
+}
+
+.kalua-looper-cell {
+    min-width: 40px;
+    padding: 2px 4px;
+}
+
+.kalua-looper-cell-value {
+    word-break: break-word;
+}
+
+.kalua-looper-sentinel {
+    height: 1px;
+}

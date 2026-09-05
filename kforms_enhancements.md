@@ -383,10 +383,80 @@ type LooperDBLink struct {
 - WebSocket messages for incremental updates
 - Client: apply row data to cloned template controls
 
+- WebSocket messages for incremental updates
+- Client: apply row data to cloned template controls
+
 ### Phase 3: DB Linking (2 days)
 - `k.looper.link_db` - store query + column mappings
 - `k.looper.refresh` - execute query, populate rows
 - Reuse existing `k.db_select` / `k.sql` infrastructure
+
+### DB-Linked Loopers (mirror of the Tabulator DB-Linked Tables design)
+
+Same pattern as §1's DB-linked Tabulator: a `k.ctrl.looper` linked to a DB
+handle + SELECT is populated server-side by a Go helper (no per-app render
+loop), reusing the identical whitelist / bound-param / driver-paging
+discipline from `tabledb.go`.
+
+#### New Options for `k.ctrl.looper(form, name, opts)` (all optional → zero regression)
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `db` | `handle` | Connection handle from `k.connect_db` / `k.connect_sqlite` |
+| `query` | `string` | Base `SELECT` statement (table/view/raw SQL) |
+| `links` | `table[]` | Result→template map: `{column=N, control="txt_name", property="value"}` (1-based column index) **or** `{field="col_name", control="...", property=...}` |
+| `page_size` | `number` | Rows per page (virtual-scroll batch size; default from opts) |
+| `count_query` | `string` | Optional `SELECT COUNT(*) ...`; derived from `query` if omitted |
+| `where` | `table` | Optional base filter `{col=val}` ANDed into every page (reuses `db_select` builder) |
+| `order_by` | `string` | Optional base ordering `"col [ASC|DESC]"` prepended to user sort |
+
+### New Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `k.looper.link_db` | `(form, name, {db, query, links, page_size?, count_query?, where?, order_by?})` | Attach DB source to a looper |
+| `k.looper.set_db_source` | `(form, name, {db, query, links?, page_size?, count_query?, where?, order_by?})` | Swap DB source at runtime; next fetch uses it |
+| `k.looper.refresh` | `(form, name)` | Re-run the linked query, show page 1 |
+
+### Behavior
+
+- **Dispatching**: on `looper_scroll_request`, if the control carries a `db`
+  handle the session services the page in-process via the Go pager; otherwise
+  the existing Lua `looper_scroll_request` handler path runs (unchanged).
+- **Auto-columns**: when `columns` is absent the pager maps the query result's
+  column names to Tabulator fields; type inference stays client-side.
+- **Sorting**: header sort → `ORDER BY <whitelisted field> [ASC|DESC]`,
+  prepended by base `order_by` when present.
+- **Filtering**: header filter `{field, type, value}` → safe operator map
+  (`= != < <= > >= like in`); values are bound params. Non-whitelisted
+  fields are dropped.
+- **Whitelist (security)**: only mapped/result columns may appear in
+  `ORDER BY`/`WHERE` — same discipline as the Phase-B2/B6 SQL-identifier fix.
+  `query` is author-supplied (trusted, like `k.sql`); the appended paging/
+  sort/filter is generated exclusively from whitelisted fields + bound params.
+- **Count**: `has_more` from `COUNT(*)` (`count_query`, or derived subquery).
+- **Refresh**: `looper_refresh` → client re-triggers the remote loader for
+  page 1.
+
+### WebSocket Message Types
+
+| Direction | Type | Payload |
+|-----------|------|---------|
+| Go → Browser | `looper_db_batch` | `{selector, rows: [{index, data:{ctrl:value}}], has_more, last_page}` |
+| Browser → Go | `looper_scroll_request` | `{form, ctrl, start_idx, count, sort?, filter?}` |
+| Browser → Go | `looper_refresh_request` | `{form, ctrl}` |
+
+### Implementation Phases
+
+| # | Work | Files |
+|---|------|-------|
+| L1 | `addControl` stores `db/query/links/page_size/count_query/db_where/db_order_by` | `internal/bindings/forms.go` |
+| L2 | `FetchLooperRows(e, link, req)` pager (COUNT + page + safe sort/filter) | `internal/bindings/tabledb.go` |
+| L3 | Dispatch DB-linked pages in `handleLooperScrollRequest`; error → banner (no crash) | `internal/session/session.go` |
+| L4 | `k.looper.refresh` + `k.looper.set_db_source` (+ `registerKnown`/`api_doc.go`/`api.md`) | `internal/bindings/tabulator.go` |
+| L5 | Client: handle `looper_db_batch`, `looper_refresh`, virtual scroll + `has_more` | `internal/web/assets/app.js` |
+| L5 | Tests: pager unit (paging/sort/whitelist/filter/count) + session e2e (sqlite) | `tabulator_test.go`, session e2e |
+| L6 | Demo: sqlite DB-linked looper + refresh + runtime source swap | `testdata/apps/tabulator_demo.lua` |
 
 ### Phase 4: Virtual Scrolling (2 days)
 - Go: render with sentinel elements, `looper_scroll_request` handler

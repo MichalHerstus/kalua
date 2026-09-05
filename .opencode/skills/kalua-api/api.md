@@ -127,6 +127,9 @@ Adds a label control to a form.
 **`k.ctrl.list(form, name, optsTable)`**  
 Adds a multi-row select list. opts.items is a table of choices.
 
+**`k.ctrl.looper(form, name, optsTable)`**  
+Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}.
+
 **`k.ctrl.radio(form, name, optsTable)`**  
 Adds a radio button control.
 
@@ -147,6 +150,27 @@ Adds a table control; rows manipulated via k.table.*.
 
 **`k.ctrl.textbox(form, name, optsTable)`**  
 Adds a textbox control. opts may set label, value, enabled, visible.
+
+**`k.looper`**  
+Looper control operations: k.looper.link_db/set_db_source/refresh/...
+
+**`k.looper.add_line(form, name, valuesTable)`**  
+Raises a runtime error on DB-linked loopers (rows come from the linked query).
+
+**`k.looper.delete_line(form, name, index)`**  
+Raises a runtime error on DB-linked loopers (rows come from the linked query).
+
+**`k.looper.link_db(form, name, opts)`**  
+Attaches a DB source to a looper: {db,query,links,page_size?,count_query?,where?,order_by?}. links list maps result columns to template controls: {column=N,control,property} by 1-based index or {field,col,control,property} by name.
+
+**`k.looper.refresh(form, name)`**  
+Re-runs a DB-linked looper's query and shows page 1.
+
+**`k.looper.set_db_source(form, name, opts)`**  
+Swaps a DB-linked looper's source {db,query,links?,page_size?,count_query?,where?,order_by?} and refreshes.
+
+**`k.looper.set_line(form, name, index, valuesTable)`**  
+Raises a runtime error on DB-linked loopers (rows come from the linked query).
 
 **`k.table.add_line(form, name, valuesTable)`**  
 Appends a row to a table control.

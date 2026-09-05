@@ -265,7 +265,13 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
-			s.logger.Printf("ws read: %v", err)
+			// Expected when the browser refreshes, navigates away, or the tab
+			// closes: the graceful 1000/1001 close is normal, not an error.
+			if status := websocket.CloseStatus(err); status != -1 {
+				s.logger.Printf("ws closed by client (code %d)", status)
+			} else {
+				s.logger.Errorf("ws read: %v", err)
+			}
 			break
 		}
 
@@ -330,6 +336,15 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		ctrl := getString(msg, "ctrl")
 		value := msg["value"]
 		sess.PostTabulatorAjaxRequest(form, ctrl, value)
+	case "looper_scroll_request":
+		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
+		value := msg["value"]
+		sess.PostLooperScrollRequest(form, ctrl, value)
+	case "looper_refresh_request":
+		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
+		sess.PostLooperRefreshRequest(form, ctrl)
 	case "client_info":
 		w := getInt(msg, "w")
 		h := getInt(msg, "h")
