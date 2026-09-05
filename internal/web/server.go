@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -79,8 +80,12 @@ func (s *Server) Run(ctx context.Context, defaultScript string) error {
 
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -103,6 +108,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
+	// Security headers
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 
 	tmpl, err := template.ParseFS(templatesFS, "templates/shell.html")
 	if err != nil {
@@ -168,7 +179,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Upgrade to WebSocket
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{"*"},
+		OriginPatterns: []string{"http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"},
 	})
 	if err != nil {
 		s.logger.Errorf("websocket accept: %v", err)
@@ -186,6 +197,19 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	if scriptPath == "" {
 		scriptPath = "app.lua"
+	}
+	// Security: restrict script path to the configured default or its basename
+	// to prevent arbitrary file execution via ?script= parameter
+	if s.defaultScript != "" {
+		allowed := s.defaultScript
+		if !filepath.IsAbs(allowed) {
+			// If defaultScript is relative, also allow the basename
+			allowed = filepath.Base(allowed)
+		}
+		if scriptPath != s.defaultScript && scriptPath != filepath.Base(s.defaultScript) {
+			s.logger.Warnf("rejected arbitrary script path: %s", scriptPath)
+			scriptPath = s.defaultScript
+		}
 	}
 
 	// Create session
@@ -219,13 +243,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Start outbox pump
 	outboxDone := make(chan struct{})
 	go func() {
-		for msg := range sess.Outbox() {
-			if err := s.sendWS(c, msg); err != nil {
-				s.logger.Errorf("send outbox: %v", err)
-				return
+		defer close(outboxDone)
+		for {
+			select {
+			case msg, ok := <-sess.Outbox():
+				if !ok {
+					return // outbox closed
+				}
+				if err := s.sendWS(c, msg); err != nil {
+					s.logger.Errorf("send outbox: %v", err)
+					return
+				}
+			case <-sess.Done():
+				return // session closing
 			}
 		}
-		close(outboxDone)
 	}()
 
 	// Read inbox messages from WebSocket
@@ -246,7 +278,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		s.handleWSMessage(sess, msg)
 	}
 
-	<-outboxDone
+	select {
+	case <-outboxDone:
+	case <-ctx.Done():
+	}
 }
 
 // sendWS sends a JSON message over WebSocket.

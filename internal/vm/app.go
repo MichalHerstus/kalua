@@ -131,10 +131,6 @@ func (a *App) Run(fn *lua.LFunction) error {
 		op := a.pending
 		a.pending = nil
 		switch op.Kind {
-		case PendingSleep:
-			if op.Delay > 0 {
-				time.Sleep(op.Delay)
-			}
 		case PendingFormShow:
 			// Main coroutine suspended on form.show - return special status
 			// so the session actor can continue processing inbox messages.

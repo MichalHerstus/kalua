@@ -25,8 +25,6 @@ import (
 // Kept as a package var so tests can shrink it.
 var debounceDelay = 150 * time.Millisecond
 
-const refFileName = "kalua-api-reference.lua"
-
 // Server implements protocol.Server for the KALUA language.
 type Server struct {
 	protocol.Server // embedded empty interface; only the methods below are served

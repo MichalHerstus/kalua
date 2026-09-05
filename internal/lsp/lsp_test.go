@@ -486,8 +486,8 @@ func TestDefinition(t *testing.T) {
 	if len(locs) != 1 {
 		t.Fatalf("definition locations = %d, want 1", len(locs))
 	}
-	if !strings.HasSuffix(string(locs[0].URI), refFileName) {
-		t.Errorf("definition uri = %q, want suffix %q", string(locs[0].URI), refFileName)
+	if !strings.HasSuffix(string(locs[0].URI), ".lua") {
+		t.Errorf("definition uri = %q, want suffix .lua", string(locs[0].URI))
 	}
 	if locs[0].Range.Start.Line == 0 && locs[0].Range.Start.Character == 0 && locs[0].Range.End == locs[0].Range.Start {
 		t.Error("definition landed on an empty range")

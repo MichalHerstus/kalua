@@ -103,7 +103,12 @@ func registerFlow(e *Env) {
 		if ms <= 0 {
 			return 0
 		}
-		return e.App.ScheduleSleep(L, time.Duration(ms)*time.Millisecond)
+		if e.Sess == nil {
+			L.RaiseError("sleep: no session available")
+			return 0
+		}
+		e.Sess.ScheduleSleep(L, time.Duration(ms)*time.Millisecond)
+		return L.Yield(lua.LNil)
 	})
 
 	// k.quit() — requests clean app termination at next scheduler tick

@@ -2,6 +2,8 @@
 package common
 
 import (
+	"time"
+
 	"github.com/yuin/gopher-lua"
 )
 
@@ -23,6 +25,7 @@ type SessionInterface interface {
 	PostFilePickerResp(pickerID, value string)
 	StoreFormCoro(name string, co *lua.LState)
 	ResumeFormCoro(name string) bool
+	ScheduleSleep(co *lua.LState, delay time.Duration)
 }
 
 // DefaultConv converts an async result to a Lua value on the caller's state,

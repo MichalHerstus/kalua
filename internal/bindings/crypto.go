@@ -125,6 +125,10 @@ func registerCrypto(e *Env) {
 			if L.GetTop() >= 4 && L.Get(4) != lua.LNil {
 				iv = []byte(L.CheckString(4))
 			} else {
+				if len(raw) < aes.BlockSize {
+					L.RaiseError("crypt_symmetric error: ciphertext too short (need at least %d bytes for IV)", aes.BlockSize)
+					return 0
+				}
 				iv, raw = raw[:aes.BlockSize], raw[aes.BlockSize:]
 			}
 			out, err := aesCBCCrypt(key, iv, raw, true)

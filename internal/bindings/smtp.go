@@ -166,10 +166,10 @@ func registerSMTP(e *Env) {
 
 			// Build the MIME message.
 			var msg strings.Builder
-			msg.WriteString("From: " + from + "\r\n")
-			msg.WriteString("To: " + strings.Join(toList, ", ") + "\r\n")
+			msg.WriteString("From: " + sanitizeHeader(from) + "\r\n")
+			msg.WriteString("To: " + sanitizeHeader(strings.Join(toList, ", ")) + "\r\n")
 			if len(ccList) > 0 {
-				msg.WriteString("Cc: " + strings.Join(ccList, ", ") + "\r\n")
+				msg.WriteString("Cc: " + sanitizeHeader(strings.Join(ccList, ", ")) + "\r\n")
 			}
 			msg.WriteString("Subject: " + encodeSubject(subject) + "\r\n")
 
@@ -182,12 +182,24 @@ func registerSMTP(e *Env) {
 				msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 				msg.WriteString("\r\n")
 				msg.WriteString(body + "\r\n")
-				for _, path := range attachments {
-					name := filepath.Base(path)
-					data, err := os.ReadFile(path)
-					if err != nil {
-						return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
-					}
+for _, path := range attachments {
+				// Resolve path through sandbox
+				resolved, err := e.resolvePath(path)
+				if err != nil {
+					return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
+				}
+				fi, err := os.Stat(resolved)
+				if err != nil {
+					return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
+				}
+				if fi.Size() > e.maxFileSize {
+					return nil, fmt.Errorf("smtp error: attachment %s exceeds max file size (%d bytes)", path, e.maxFileSize)
+				}
+				name := filepath.Base(path)
+				data, err := os.ReadFile(resolved)
+				if err != nil {
+					return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
+				}
 					msg.WriteString("--" + boundary + "\r\n")
 					msg.WriteString("Content-Type: application/octet-stream; name=\"" + name + "\"\r\n")
 					msg.WriteString("Content-Disposition: attachment; filename=\"" + name + "\"\r\n")
@@ -265,6 +277,11 @@ func encodeSubject(s string) string {
 		return strings.ReplaceAll(s, "\r\n", " ")
 	}
 	return "=?UTF-8?B?" + base64NoWrap(s) + "?="
+}
+
+// sanitizeHeader strips CRLF from email header values to prevent header injection.
+func sanitizeHeader(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r", ""), "\n", "")
 }
 
 // base64Chunk renders base64 in 76-char lines for MIME bodies.

@@ -31,7 +31,7 @@ const (
 	inboxClipboardResp              // browser clipboard_get value
 	inboxFilePickerResp             // browser file picker result (JSON-encoded files)
 	inboxQuery                      // external read of Lua state (tests)
-	inboxClose                      // session teardown
+	inboxSleepDone                  // k.sleep completed
 )
 
 // asyncOp represents a suspended coroutine waiting for an async operation
@@ -92,6 +92,10 @@ type Session struct {
 	asyncOps map[string]*asyncOp
 	asyncMu  sync.Mutex
 
+	// Sleep operations - suspended coroutines waiting for k.sleep
+	sleepOps map[string]*lua.LState
+	sleepMu  sync.Mutex
+
 	// Client info from the browser's client_info message (screen size/locale).
 	clientMu     sync.RWMutex
 	clientW      int
@@ -145,6 +149,8 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 		formCoros: make(map[string]*lua.LState),
 		// Async operations - suspended coroutines waiting for completion
 		asyncOps: make(map[string]*asyncOp),
+		// Sleep operations - suspended coroutines waiting for k.sleep
+		sleepOps: make(map[string]*lua.LState),
 	}
 
 	// Set session on env for msgbox, clipboard, etc.
@@ -218,9 +224,8 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		if msg.query != nil && msg.reply != nil {
 			msg.reply <- msg.query(s.L)
 		}
-	case inboxClose:
-		s.teardown(logger)
-		s.teardown(logger)
+	case inboxSleepDone:
+		s.resumeSleep(msg.respID, logger)
 	}
 }
 
@@ -441,13 +446,17 @@ func (s *Session) RunAsync(co *lua.LState, cancel func(), fn func() (interface{}
 		}
 
 		// Post completion to inbox
-		s.inbox <- inboxMsg{
+		select {
+		case s.inbox <- inboxMsg{
 			typ: inboxAsyncDone,
 			data: map[string]interface{}{
 				"op_id":  opID,
 				"result": result,
 				"error":  errStr,
 			},
+		}:
+		case <-s.done:
+			// session closed; drop
 		}
 	}(opID)
 }
@@ -643,6 +652,31 @@ func (s *Session) resumeFilePickerResp(pickerID string, jsonResp string, logger 
 	s.flushOutbox()
 }
 
+// resumeSleep resumes a coroutine suspended by k.sleep.
+func (s *Session) resumeSleep(sleepID string, logger Logger) {
+	s.sleepMu.Lock()
+	co, exists := s.sleepOps[sleepID]
+	if exists {
+		delete(s.sleepOps, sleepID)
+	}
+	s.sleepMu.Unlock()
+
+	if !exists {
+		logger.Warnf("sleep response for unknown op: %s", sleepID)
+		return
+	}
+
+	st, err, _ := s.L.Resume(co, nil, lua.LNil)
+	if st == lua.ResumeError {
+		if s.env != nil && s.env.Logger != nil {
+			s.env.Logger.Errorf("sleep resume error: %v", err)
+		}
+		return
+	}
+
+	s.flushOutbox()
+}
+
 // parseFilePickerJSON converts a JSON array of file objects to a Lua table.
 // Each file object has: {name, size, type, data} where data is base64-encoded.
 func (s *Session) parseFilePickerJSON(jsonStr string) lua.LValue {
@@ -692,9 +726,18 @@ func (s *Session) Inbox() chan<- inboxMsg {
 	return s.inbox
 }
 
+// Done returns a channel that is closed when the session is closing.
+func (s *Session) Done() <-chan struct{} {
+	return s.done
+}
+
 // PostEvent posts a browser event to the session inbox.
 func (s *Session) PostEvent(form, ctrl, event string, value lua.LValue) {
-	s.inbox <- inboxMsg{typ: inboxWSEvent, form: form, ctrl: ctrl, event: event, value: value}
+	select {
+	case s.inbox <- inboxMsg{typ: inboxWSEvent, form: form, ctrl: ctrl, event: event, value: value}:
+	case <-s.done:
+		// session closed; drop
+	}
 }
 
 // PostEventAny posts a browser event carrying an arbitrary JSON-decoded value
@@ -738,10 +781,12 @@ func (s *Session) StartTimer(id string, ms int, repeats bool) {
 	if existing, ok := s.timers[id]; ok {
 		existing.Stop()
 	}
-	t := time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
+	var t *time.Timer
+	t = time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
 		s.PostTimer(id)
 		if repeats {
-			// Reschedule for repeats (simplified)
+			// Reschedule for repeats
+			t.Reset(time.Duration(ms) * time.Millisecond)
 		}
 	})
 	s.timers[id] = t
@@ -753,6 +798,28 @@ func (s *Session) StopTimer(id string) {
 		t.Stop()
 		delete(s.timers, id)
 	}
+}
+
+// ScheduleSleep schedules a k.sleep completion.
+// It stores the suspended coroutine and uses time.AfterFunc to post
+// an inboxSleepDone message when the delay elapses.
+func (s *Session) ScheduleSleep(co *lua.LState, delay time.Duration) {
+	sleepID := fmt.Sprintf("sleep_%d", time.Now().UnixNano())
+
+	s.sleepMu.Lock()
+	s.sleepOps[sleepID] = co
+	s.sleepMu.Unlock()
+
+	s.wg.Add(1)
+	go func(id string) {
+		defer s.wg.Done()
+		time.Sleep(delay)
+		select {
+		case s.inbox <- inboxMsg{typ: inboxSleepDone, respID: id}:
+		case <-s.done:
+			// session closed; drop
+		}
+	}(sleepID)
 }
 
 // PushForm pushes a form onto the stack (for k.form.show).
@@ -941,7 +1008,11 @@ func (s *Session) teardown(logger Logger) {
 		// TODO: fire close_form events
 		_ = name
 	}
-	s.outbox <- common.OutboxMsg{Type: "quit"}
+	select {
+	case s.outbox <- common.OutboxMsg{Type: "quit"}:
+	case <-s.done:
+		// session already closing; drop
+	}
 }
 
 // Logger interface for session logging.

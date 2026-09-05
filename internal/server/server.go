@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -169,8 +170,12 @@ func (s *Server) startHTTP(ctx context.Context) error {
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
 	s.httpServer = &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	s.wg.Add(1)
@@ -193,6 +198,12 @@ func (s *Server) startHTTP(ctx context.Context) error {
 }
 
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	// Security headers
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'self'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+
 	// Get next worker (round-robin), leased for this request
 	worker, release := s.leaseWorker()
 	if worker == nil {
@@ -201,12 +212,17 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	// Read request body
+	// Read request body with size limit
 	body := ""
 	if r.Body != nil {
-		buf := make([]byte, r.ContentLength+1)
-		n, _ := r.Body.Read(buf)
-		body = string(buf[:n])
+		limited := http.MaxBytesReader(w, r.Body, 16<<20) // 16 MiB
+		data, err := io.ReadAll(limited)
+		if err != nil {
+			s.cfg.Logger.Errorf("read body: %v", err)
+			http.Error(w, "body too large or read error", http.StatusBadRequest)
+			return
+		}
+		body = string(data)
 	}
 
 	// Build headers map
@@ -245,7 +261,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
 	// Upgrade to WebSocket
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{"*"},
+		OriginPatterns: []string{"http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"},
 	})
 	if err != nil {
 		s.cfg.Logger.Errorf("websocket accept: %v", err)

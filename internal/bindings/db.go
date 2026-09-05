@@ -121,9 +121,17 @@ func registerDB(e *Env) {
 	e.register("db_select", "database", func(L *lua.LState) int {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
+		if !isValidIdentifier(table) {
+			L.RaiseError("db_select: invalid table name %q", table)
+			return 0
+		}
 		fields := L.OptTable(3, L.NewTable())
 		where := L.OptTable(4, L.NewTable())
 		order := L.OptString(5, "")
+		if order != "" && !isValidIdentifier(order) {
+			L.RaiseError("db_select: invalid order column %q", order)
+			return 0
+		}
 
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
@@ -131,10 +139,13 @@ func registerDB(e *Env) {
 			return 0
 		}
 
-		// Build field list
+		// Build field list - allow SQL expressions but reject empty strings
 		var fieldList []string
 		fields.ForEach(func(k, v lua.LValue) {
-			fieldList = append(fieldList, v.String())
+			col := v.String()
+			if col != "" {
+				fieldList = append(fieldList, col)
+			}
 		})
 		if len(fieldList) == 0 {
 			fieldList = []string{"*"}
@@ -159,6 +170,10 @@ func registerDB(e *Env) {
 	e.register("db_insert", "database", func(L *lua.LState) int {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
+		if !isValidIdentifier(table) {
+			L.RaiseError("db_insert: invalid table name %q", table)
+			return 0
+		}
 		keyvals := L.CheckTable(3)
 
 		handle := getDBHandle(L, handleID)
@@ -174,6 +189,9 @@ func registerDB(e *Env) {
 
 		keyvals.ForEach(func(k, v lua.LValue) {
 			col := k.String()
+			if !isValidIdentifier(col) {
+				return
+			}
 			columns = append(columns, col)
 			placeholders = append(placeholders, handle.Placeholder(idx))
 			params = append(params, luaValueToGo(v))
@@ -190,6 +208,10 @@ func registerDB(e *Env) {
 	e.register("db_update", "database", func(L *lua.LState) int {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
+		if !isValidIdentifier(table) {
+			L.RaiseError("db_update: invalid table name %q", table)
+			return 0
+		}
 		keyvals := L.CheckTable(3)
 		where := L.OptTable(4, L.NewTable())
 
@@ -205,6 +227,9 @@ func registerDB(e *Env) {
 
 		keyvals.ForEach(func(k, v lua.LValue) {
 			col := k.String()
+			if !isValidIdentifier(col) {
+				return
+			}
 			setClauses = append(setClauses, fmt.Sprintf("%s = %s", col, handle.Placeholder(idx)))
 			params = append(params, luaValueToGo(v))
 			idx++
@@ -222,6 +247,10 @@ func registerDB(e *Env) {
 	e.register("db_delete", "database", func(L *lua.LState) int {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
+		if !isValidIdentifier(table) {
+			L.RaiseError("db_delete: invalid table name %q", table)
+			return 0
+		}
 		where := L.OptTable(3, L.NewTable())
 
 		handle := getDBHandle(L, handleID)
@@ -350,7 +379,13 @@ func registerDB(e *Env) {
 	// Returns a handle usable with k.sql/k.db_select/...
 	e.register("connect_sqlite", "database", func(L *lua.LState) int {
 		path := L.CheckString(1)
-		driver, cleanDSN := parseSQLiteDSN(path)
+		// Sandbox: resolve path through the environment's resolvePath
+		resolved, err := e.resolvePath(path)
+		if err != nil {
+			L.RaiseError("connect_sqlite: %v", err)
+			return 0
+		}
+		driver, cleanDSN := parseSQLiteDSN(resolved)
 		if driver == "" {
 			L.RaiseError("connect_sqlite: invalid path %q", path)
 			return 0
@@ -383,6 +418,10 @@ func registerDB(e *Env) {
 	e.register("db_kill_table", "database", func(L *lua.LState) int {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
+		if !isValidIdentifier(table) {
+			L.RaiseError("db_kill_table: invalid table name %q", table)
+			return 0
+		}
 		where := L.OptTable(3, L.NewTable())
 
 		handle := getDBHandle(L, handleID)
@@ -623,19 +662,36 @@ func parseDSN(dsn string) (driver, cleanDSN string) {
 func buildWhereClause(L *lua.LState, where *lua.LTable) (string, []interface{}) {
 	var clauses []string
 	var params []interface{}
-	idx := 1
 
 	where.ForEach(func(k, v lua.LValue) {
 		col := k.String()
+		// Sanitize column name: only allow alphanumeric and underscore
+		if !isValidIdentifier(col) {
+			// Invalid identifier; skip to prevent SQL injection
+			return
+		}
 		clauses = append(clauses, fmt.Sprintf("%s = ?", col)) // Use ? as generic placeholder
 		params = append(params, luaValueToGo(v))
-		idx++
 	})
 
 	if len(clauses) == 0 {
 		return "", params
 	}
 	return " WHERE " + join(clauses, " AND "), params
+}
+
+// isValidIdentifier checks if a string is a valid SQL identifier (alphanumeric + underscore)
+func isValidIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // getDBHandle retrieves a database handle by ID

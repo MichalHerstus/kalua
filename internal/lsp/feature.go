@@ -2,7 +2,6 @@ package lsp
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -417,12 +416,17 @@ func (s *Server) ensureReference() {
 			emit(info.Name, info.Signature)
 		}
 
-		path := filepath.Join(os.TempDir(), refFileName)
-		if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		path, err := os.CreateTemp("", "kalua-api-reference-*.lua")
+		if err != nil {
 			s.refErr = err
 			return
 		}
-		s.refPath = path
+		if err := os.WriteFile(path.Name(), []byte(b.String()), 0o600); err != nil {
+			s.refErr = err
+			_ = os.Remove(path.Name())
+			return
+		}
+		s.refPath = path.Name()
 		s.refLine = m
 	})
 }

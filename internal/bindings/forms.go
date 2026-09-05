@@ -2,6 +2,8 @@
 package bindings
 
 import (
+	"html"
+
 	"github.com/yuin/gopher-lua"
 
 	"kalua/internal/common"
@@ -625,22 +627,23 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 
 // renderForm renders a form to HTML using templ-like logic (simplified for now).
 func renderForm(L *lua.LState, formName string) string {
+	formNameEsc := escAttr(formName)
 	formTbl := L.GetGlobal(formName)
 	if formTbl == lua.LNil {
-		return `<div class="error">Form not found: ` + formName + `</div>`
+		return `<div class="error">Form not found: ` + escText(formName) + `</div>`
 	}
 	tbl, ok := formTbl.(*lua.LTable)
 	if !ok {
 		return `<div class="error">Invalid form</div>`
 	}
 
-	title := tbl.RawGetString("title").String()
-	layout := tbl.RawGetString("layout").String()
+	title := escText(tbl.RawGetString("title").String())
+	layout := escAttr(tbl.RawGetString("layout").String())
 	controls := tbl.RawGetString("controls")
 	order := tbl.RawGetString("order")
 
 	var html string
-	html += `<div id="f:` + formName + `" class="kalua-form"`
+	html += `<div id="f:` + formNameEsc + `" class="kalua-form"`
 	if layout != "" && layout != "vertical" {
 		html += ` layout="` + layout + `"`
 	}
@@ -676,94 +679,89 @@ func renderForm(L *lua.LState, formName string) string {
 	return html
 }
 
+// escText escapes a string for safe use as HTML text content.
+func escText(s string) string {
+	return html.EscapeString(s)
+}
+
+// escAttr escapes a string for safe use as an HTML attribute value.
+func escAttr(s string) string {
+	return html.EscapeString(s)
+}
+
+// renderAttrs builds the standard data-k-* attributes for a control.
+func renderAttrs(formName, name string) string {
+	return ` data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `"`
+}
+
+// renderEnabledVisible builds the enabled/disabled and visible/hidden attributes.
+func renderEnabledVisible(ctrl *lua.LTable) (enabled, visible string) {
+	enabledVal := ctrl.RawGetString("enabled")
+	if enabledVal != lua.LNil && enabledVal.String() == "false" {
+		enabled = ` disabled`
+	}
+	visibleVal := ctrl.RawGetString("visible")
+	if visibleVal != lua.LNil && visibleVal.String() == "false" {
+		visible = ` style="display:none"`
+	}
+	return
+}
+
 func renderControl(ctrl *lua.LTable) string {
 	ctrlType := ctrl.RawGetString("type").String()
-	name := ctrl.RawGetString("name").String()
-	formName := ctrl.RawGetString("form").String()
-	label := ctrl.RawGetString("label").String()
-	value := ctrl.RawGetString("value").String()
+	name := escAttr(ctrl.RawGetString("name").String())
+	formName := escAttr(ctrl.RawGetString("form").String())
+	label := escText(ctrl.RawGetString("label").String())
+	value := escAttr(ctrl.RawGetString("value").String())
 
 	id := "c:" + formName + ":" + name
 
+	enabled, visible := renderEnabledVisible(ctrl)
+	attrs := renderAttrs(formName, name)
+
 	switch ctrlType {
 	case "label":
-		return `<label class="kalua-label" id="` + id + `">` + label + `</label>`
+		return `<label class="kalua-label" id="` + escAttr(id) + `">` + label + `</label>`
 	case "textbox":
-		enabled := ""
-		enabledVal := ctrl.RawGetString("enabled")
-		if enabledVal != lua.LNil && enabledVal.String() == "false" {
-			enabled = ` disabled`
-		}
-		visible := ""
-		if ctrl.RawGetString("visible") != lua.LNil && ctrl.RawGetString("visible").String() == "false" {
-			visible = ` style="display:none"`
-		}
 		return `<div class="kalua-control"` + visible + `>
-			<label class="kalua-label" for="` + id + `">` + label + `</label>
-			<input type="text" class="kalua-input" id="` + id + `" name="` + name + `" value="` + value + `" data-k-form="` + formName + `" data-k-ctrl="` + name + `"` + enabled + `>
+			<label class="kalua-label" for="` + escAttr(id) + `">` + label + `</label>
+			<input type="text" class="kalua-input" id="` + escAttr(id) + `" name="` + name + `" value="` + value + `"` + attrs + enabled + `>
 		</div>`
 	case "button":
 		btnClass := "kalua-button kalua-button-primary"
 		if v := ctrl.RawGetString("class"); v != lua.LNil {
-			btnClass = v.String()
+			btnClass = escAttr(v.String())
 		}
-		enabled := ""
-		enabledVal := ctrl.RawGetString("enabled")
-		if enabledVal != lua.LNil && enabledVal.String() == "false" {
-			enabled = ` disabled`
-		}
-		visible := ""
-		if ctrl.RawGetString("visible") != lua.LNil && ctrl.RawGetString("visible").String() == "false" {
-			visible = ` style="display:none"`
-		}
-		return `<button type="button" class="` + btnClass + `" id="` + id + `" name="` + name + `" data-k-form="` + formName + `" data-k-ctrl="` + name + `" ` + enabled + visible + `>` + label + `</button>`
+		return `<button type="button" class="` + btnClass + `" id="` + escAttr(id) + `" name="` + name + `"` + attrs + ` ` + enabled + visible + `>` + label + `</button>`
 	case "combo", "list":
 		items := ctrl.RawGetString("items")
 		var options string
 		if itemsTbl, ok := items.(*lua.LTable); ok {
 			itemsTbl.ForEach(func(k, v lua.LValue) {
-				options += `<option value="` + k.String() + `">` + v.String() + `</option>`
+				options += `<option value="` + escAttr(k.String()) + `">` + escText(v.String()) + `</option>`
 			})
 		}
 		size := ""
 		if ctrlType == "list" {
 			size = ` size="5"`
 		}
-		enabled := ""
-		enabledVal := ctrl.RawGetString("enabled")
-		if enabledVal != lua.LNil && enabledVal.String() == "false" {
-			enabled = ` disabled`
-		}
-		visible := ""
-		if ctrl.RawGetString("visible") != lua.LNil && ctrl.RawGetString("visible").String() == "false" {
-			visible = ` style="display:none"`
-		}
 		return `<div class="kalua-control"` + visible + `>
-			<label class="kalua-label" for="` + id + `">` + label + `</label>
-			<select class="kalua-select" id="` + id + `" name="` + name + `" data-k-form="` + formName + `" data-k-ctrl="` + name + `"` + size + enabled + `>` + options + `</select>
+			<label class="kalua-label" for="` + escAttr(id) + `">` + label + `</label>
+			<select class="kalua-select" id="` + escAttr(id) + `" name="` + name + `"` + attrs + size + enabled + `>` + options + `</select>
 		</div>`
 	case "checkbox":
 		checked := ""
 		if value == "true" || value == "1" {
 			checked = ` checked`
 		}
-		enabled := ""
-		enabledVal := ctrl.RawGetString("enabled")
-		if enabledVal != lua.LNil && enabledVal.String() == "false" {
-			enabled = ` disabled`
-		}
-		visible := ""
-		if ctrl.RawGetString("visible") != lua.LNil && ctrl.RawGetString("visible").String() == "false" {
-			visible = ` style="display:none"`
-		}
-		hiddenValue := ctrl.RawGetString("hidden_value").String()
+		hiddenValue := escAttr(ctrl.RawGetString("hidden_value").String())
 		hiddenInput := ""
 		if hiddenValue != "" {
 			hiddenInput = `<input type="hidden" name="` + name + `_hidden" value="` + hiddenValue + `">`
 		}
 		return `<div class="kalua-control kalua-checkbox-item"` + visible + `>
-			<input type="checkbox" class="kalua-input" id="` + id + `" name="` + name + `" value="` + value + `" data-k-form="` + formName + `" data-k-ctrl="` + name + "`" + checked + enabled + `>
-			<label class="kalua-label" for="` + id + `">` + label + `</label>
+			<input type="checkbox" class="kalua-input" id="` + escAttr(id) + `" name="` + name + `" value="` + value + `"` + attrs + checked + enabled + `>
+			<label class="kalua-label" for="` + escAttr(id) + `">` + label + `</label>
 			` + hiddenInput + `
 		</div>`
 	case "radio":
@@ -771,27 +769,17 @@ func renderControl(ctrl *lua.LTable) string {
 		if value == "true" || value == "1" {
 			checked = ` checked`
 		}
-		enabled := ""
-		enabledVal := ctrl.RawGetString("enabled")
-		if enabledVal != lua.LNil && enabledVal.String() == "false" {
-			enabled = ` disabled`
-		}
-		visible := ""
-		if ctrl.RawGetString("visible") != lua.LNil && ctrl.RawGetString("visible").String() == "false" {
-			visible = ` style="display:none"`
-		}
-		hiddenValue := ctrl.RawGetString("hidden_value").String()
+		hiddenValue := escAttr(ctrl.RawGetString("hidden_value").String())
 		hiddenInput := ""
 		if hiddenValue != "" {
 			hiddenInput = `<input type="hidden" name="` + name + `_hidden" value="` + hiddenValue + `">`
 		}
 		return `<div class="kalua-control kalua-radio-item"` + visible + `>
-			<input type="radio" class="kalua-input" id="` + id + `" name="` + name + `" value="` + value + `" data-k-form="` + formName + `" data-k-ctrl="` + name + "`" + checked + enabled + `>
-			<label class="kalua-label" for="` + id + `">` + label + `</label>
+			<input type="radio" class="kalua-input" id="` + escAttr(id) + `" name="` + name + `" value="` + value + `"` + attrs + checked + enabled + `>
+			<label class="kalua-label" for="` + escAttr(id) + `">` + label + `</label>
 			` + hiddenInput + `
 		</div>`
 	case "table":
-		// Table rendering with columns and rows
 		columns := ctrl.RawGetString("columns")
 		rows := ctrl.RawGetString("rows")
 
@@ -799,7 +787,7 @@ func renderControl(ctrl *lua.LTable) string {
 		if columnsTbl, ok := columns.(*lua.LTable); ok {
 			thead = "<thead><tr>"
 			columnsTbl.ForEach(func(k, v lua.LValue) {
-				thead += `<th data-k-col="` + k.String() + `">` + v.String() + `</th>`
+				thead += `<th data-k-col="` + escAttr(k.String()) + `">` + escText(v.String()) + `</th>`
 			})
 			thead += "</tr></thead>"
 		} else {
@@ -811,9 +799,9 @@ func renderControl(ctrl *lua.LTable) string {
 			tbody = "<tbody>"
 			rowsTbl.ForEach(func(k, v lua.LValue) {
 				if rowTbl, ok := v.(*lua.LTable); ok {
-					tbody += "<tr data-k-row=\"" + k.String() + "\">"
+					tbody += "<tr data-k-row=\"" + escAttr(k.String()) + "\">"
 					rowTbl.ForEach(func(colK, colV lua.LValue) {
-						tbody += `<td data-k-col="` + colK.String() + `">` + colV.String() + `</td>`
+						tbody += `<td data-k-col="` + escAttr(colK.String()) + `">` + escText(colV.String()) + `</td>`
 					})
 					tbody += "</tr>"
 				}
@@ -823,20 +811,11 @@ func renderControl(ctrl *lua.LTable) string {
 			tbody = "<tbody></tbody>"
 		}
 
-		enabled := ""
-		enabledVal := ctrl.RawGetString("enabled")
-		if enabledVal != lua.LNil && enabledVal.String() == "false" {
-			enabled = ` disabled`
-		}
-		visible := ""
-		if ctrl.RawGetString("visible") != lua.LNil && ctrl.RawGetString("visible").String() == "false" {
-			visible = ` style="display:none"`
-		}
 		return `<div class="kalua-control"` + visible + `>
-			<table class="kalua-table" id="` + id + `" data-k-form="` + formName + `" data-k-ctrl="` + name + `" ` + enabled + `>` + thead + tbody + `</table>
+			<table class="kalua-table" id="` + escAttr(id) + `"` + attrs + enabled + `>` + thead + tbody + `</table>
 		</div>`
 	}
-	return `<div class="kalua-control">Unknown control: ` + ctrlType + `</div>`
+	return `<div class="kalua-control">Unknown control: ` + escText(ctrlType) + `</div>`
 }
 
 // sendOutbox sends a message to the session outbox.

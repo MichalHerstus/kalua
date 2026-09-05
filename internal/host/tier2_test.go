@@ -146,7 +146,7 @@ end
 }
 
 func TestRun_Tier2SQLite(t *testing.T) {
-	dir := t.TempDir()
+	dbDir := t.TempDir()
 	out, code := runTestScript(t, fmt.Sprintf(`function main()
   local db = k.connect_sqlite(%q)
   k.sql(db, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
@@ -158,7 +158,7 @@ func TestRun_Tier2SQLite(t *testing.T) {
   k.disconnect_sqlite(db)
   k.quit()
 end
-`, filepath.Join(dir, "t.db")))
+`, filepath.Join(dbDir, "t.db")), dbDir)
 	if code != ExitOK {
 		t.Errorf("Run = %d, want ExitOK\noutput:\n%s", code, out)
 	}

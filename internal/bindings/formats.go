@@ -127,8 +127,8 @@ func registerCSV(e *Env) {
 		path := L.CheckString(1)
 		opts := L.OptTable(2, L.NewTable())
 		return loadVia(e, L, path, opts, func(data []byte) (interface{}, error) {
-			return parseCSV(L, e, data, opts) // caller-side: never from worker
-		}, nil)
+			return parseCSVGo(data, opts)
+		}, csvGoToLua)
 	})
 
 	// k.csv_save(path, data[, opts]) (async)
@@ -219,6 +219,58 @@ func parseCSV(L *lua.LState, e *Env, data []byte, opts *lua.LTable) (*lua.LTable
 	return out, nil
 }
 
+// parseCSVGo parses CSV data into a pure Go structure.
+// Returns [][]string when header=false, or []map[string]string when header=true.
+func parseCSVGo(data []byte, opts *lua.LTable) (interface{}, error) {
+	header, sep, quote := csvOpts(opts)
+	r := csv.NewReader(bytes.NewReader(stripBOM(data)))
+	r.Comma = sep
+	r.LazyQuotes = true
+	if quote != '"' && quote != 0 {
+		r.LazyQuotes = true
+	}
+	raw, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		if header {
+			return []map[string]string{}, nil
+		}
+		return [][]string{}, nil
+	}
+	colNames := make([]string, 0)
+	if header {
+		for _, c := range raw[0] {
+			colNames = append(colNames, c)
+		}
+		raw = raw[1:]
+	}
+	if header {
+		result := make([]map[string]string, 0, len(raw))
+		for _, row := range raw {
+			rowMap := make(map[string]string, len(colNames))
+			for i, cell := range row {
+				name := ""
+				if i < len(colNames) {
+					name = colNames[i]
+				} else {
+					name = strconv.Itoa(i + 1)
+				}
+				rowMap[name] = cell
+			}
+			result = append(result, rowMap)
+		}
+		return result, nil
+	}
+	// No header: return list of string slices
+	result := make([][]string, 0, len(raw))
+	for _, row := range raw {
+		result = append(result, row)
+	}
+	return result, nil
+}
+
 // csvString serializes a Lua table to CSV. With header=true, the first row
 // (a table of column names) names the output columns and each following row is
 // a field→map lookup; otherwise every row is a sequence.
@@ -272,6 +324,34 @@ func csvString(e *Env, data *lua.LTable, opts *lua.LTable) (string, error) {
 	return strings.Join(rows, "\n") + "\n", nil
 }
 
+// csvGoToLua converts the Go data returned by parseCSVGo into a Lua table.
+// The input can be [][]string (no header) or []map[string]string (with header).
+func csvGoToLua(L *lua.LState, v interface{}) lua.LValue {
+	out := L.NewTable()
+	if v == nil {
+		return out
+	}
+	switch data := v.(type) {
+	case []map[string]string:
+		for _, rowMap := range data {
+			rowTbl := L.NewTable()
+			for k, v := range rowMap {
+				rowTbl.RawSetString(k, lua.LString(v))
+			}
+			out.RawSetInt(out.Len()+1, rowTbl)
+		}
+	case [][]string:
+		for _, row := range data {
+			rowTbl := L.NewTable()
+			for i, cell := range row {
+				rowTbl.RawSetInt(i+1, lua.LString(cell))
+			}
+			out.RawSetInt(out.Len()+1, rowTbl)
+		}
+	}
+	return out
+}
+
 func encodeCSVRow(cells []string, sep, quote rune) string {
 	var sb strings.Builder
 	for i, c := range cells {
@@ -323,8 +403,8 @@ func registerINI(e *Env) {
 	e.register("ini_load", "formats", func(L *lua.LState) int {
 		path := L.CheckString(1)
 		return loadVia(e, L, path, nil, func(data []byte) (interface{}, error) {
-			return parseINI(L, data)
-		}, nil)
+			return parseINIGo(data)
+		}, iniGoToLua)
 	})
 
 	e.register("ini_save", "formats", func(L *lua.LState) int {
@@ -352,23 +432,23 @@ func registerINI(e *Env) {
 			if err != nil {
 				return nil, fmt.Errorf("file error: cannot read %s: %w", path, err)
 			}
-			tbl, err := parseINI(L, stripBOM(data))
+			root, err := parseINIGo(stripBOM(data))
 			if err != nil {
 				return nil, err
 			}
-			v := tbl.RawGetString(section)
-			if v == lua.LNil {
-				return "", nil
-			}
-			secTbl, ok := v.(*lua.LTable)
+			rootMap, ok := root.(map[string]map[string]string)
 			if !ok {
 				return "", nil
 			}
-			val := secTbl.RawGetString(key)
-			if val == lua.LNil {
+			secMap, ok := rootMap[section]
+			if !ok {
 				return "", nil
 			}
-			return val.String(), nil
+			val, ok := secMap[key]
+			if !ok {
+				return "", nil
+			}
+			return val, nil
 		}, nil)
 	})
 
@@ -383,18 +463,28 @@ func registerINI(e *Env) {
 			if err != nil {
 				return nil, err
 			}
-			root := L.NewTable()
+			root := make(map[string]map[string]string)
 			if data, err := os.ReadFile(resolved); err == nil {
-				root, _ = parseINI(L, stripBOM(data))
+				if parsed, err := parseINIGo(stripBOM(data)); err == nil {
+					if rootMap, ok := parsed.(map[string]map[string]string); ok {
+						root = rootMap
+					}
+				}
 			}
-			v := root.RawGetString(section)
-			secTbl, ok := v.(*lua.LTable)
-			if !ok {
-				secTbl = L.NewTable()
-				root.RawSetString(section, secTbl)
+			if _, ok := root[section]; !ok {
+				root[section] = make(map[string]string)
 			}
-			secTbl.RawSetString(key, lua.LString(value))
-			text, err := iniString(e, root)
+			root[section][key] = value
+			// Convert Go map to Lua table for iniString
+			luaRoot := L.NewTable()
+			for secName, pairs := range root {
+				secTbl := L.NewTable()
+				for k, v := range pairs {
+					secTbl.RawSetString(k, lua.LString(v))
+				}
+				luaRoot.RawSetString(secName, secTbl)
+			}
+			text, err := iniString(e, luaRoot)
 			if err != nil {
 				return nil, err
 			}
@@ -436,6 +526,59 @@ func parseINI(L *lua.LState, data []byte) (*lua.LTable, error) {
 		current.RawSetString(k, lua.LString(v))
 	}
 	return root, nil
+}
+
+// parseINIGo parses INI text into a pure Go structure:
+// map[string]map[string]string with "_root" for no-section keys.
+func parseINIGo(data []byte) (interface{}, error) {
+	root := make(map[string]map[string]string)
+	rootTbl := make(map[string]string)
+	root["_root"] = rootTbl
+
+	current := rootTbl
+	lines := strings.Split(string(stripBOM(data)), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			sec := strings.TrimSpace(line[1 : len(line)-1])
+			if _, ok := root[sec]; !ok {
+				root[sec] = make(map[string]string)
+			}
+			current = root[sec]
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq < 0 {
+			continue
+		}
+		k := strings.TrimSpace(line[:eq])
+		v := strings.TrimSpace(line[eq+1:])
+		current[k] = v
+	}
+	return root, nil
+}
+
+// iniGoToLua converts the Go data returned by parseINIGo into a Lua table.
+func iniGoToLua(L *lua.LState, v interface{}) lua.LValue {
+	out := L.NewTable()
+	if v == nil {
+		return out
+	}
+	data, ok := v.(map[string]map[string]string)
+	if !ok {
+		return out
+	}
+	for section, pairs := range data {
+		secTbl := L.NewTable()
+		for k, v := range pairs {
+			secTbl.RawSetString(k, lua.LString(v))
+		}
+		out.RawSetString(section, secTbl)
+	}
+	return out
 }
 
 // iniString serializes a Lua table as INI. Section tables are emitted under
