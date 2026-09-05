@@ -317,10 +317,22 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 }
 
 // handleTabulatorAjaxRequest services the browser's remote-pagination page ask.
-// It runs the tabulator_ajax_request handler in a fresh coroutine, captures the
-// handler's Lua return value ({data, last_page} or {data, last_row}), and sends
-// a tabulator_remote_data message back so the browser can render the page.
+// Two paths:
+//  1. DB-linked table (control has a db handle + query): pageed in-process by
+//     the Go pager (bindings.FetchTablePage) — no Lua handler needed.
+//  2. Otherwise: runs the tabulator_ajax_request Lua handler in a fresh
+//     coroutine, captures its return value ({data, last_page} or
+//     {data, last_row}), and sends tabulator_remote_data back.
 func (s *Session) handleTabulatorAjaxRequest(msg inboxMsg, logger Logger) {
+	// Try the DB-linked pager first.
+	if ctrl := s.controlTable(msg.form, msg.ctrl); ctrl != nil {
+		if link, ok := bindings.TableLinkFromControl(s.L, ctrl); ok {
+			if s.dispatchDBTablePage(link, msg, logger) {
+				return
+			}
+		}
+	}
+
 	// Convert the JSON-decoded request {page,size,sort,filter} to a Lua value.
 	val := lua.LNil
 	if msg.raw != nil {
@@ -388,6 +400,69 @@ func (s *Session) handleTabulatorAjaxRequest(msg inboxMsg, logger Logger) {
 		}
 	}
 
+	s.sendRemoteData(remote, msg)
+	s.flushOutbox()
+}
+
+// controlTable looks up a form's control definition table.
+func (s *Session) controlTable(form, ctrl string) *lua.LTable {
+	formTbl := s.L.GetGlobal(form)
+	if formTbl == lua.LNil {
+		return nil
+	}
+	fTbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return nil
+	}
+	controls := fTbl.RawGetString("controls")
+	if controls == lua.LNil {
+		return nil
+	}
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return nil
+	}
+	c := controlsTbl.RawGetString(ctrl)
+	if c == lua.LNil {
+		return nil
+	}
+	cTbl, ok := c.(*lua.LTable)
+	if !ok {
+		return nil
+	}
+	return cTbl
+}
+
+// dispatchDBTablePage pages a DB-linked table in-process. Returns true when the
+// control was a DB-linked table (even on error, which is surfaced as a banner);
+// false means "not a DB-linked table, use the Lua-handler path".
+func (s *Session) dispatchDBTablePage(link *bindings.TableLink, msg inboxMsg, logger Logger) bool {
+	req := parseTablePageReq(msg.raw)
+	res, err := bindings.FetchTablePage(s.L, link, req)
+	if err != nil {
+		logger.Errorf("tabulator DB page error: %v", err)
+		s.SendOutbox(common.OutboxMsg{Type: "error", Msg: "table page error: " + err.Error()})
+		return true
+	}
+
+	var payload remotePagePayload
+	if res != nil {
+		// Serialize the Go row maps (column → value) for the browser.
+		raw, mErr := json.Marshal(res.Rows)
+		if mErr != nil {
+			raw = []byte("[]")
+		}
+		payload = remotePagePayload{Data: json.RawMessage(raw), LastPage: res.LastPage}
+	} else {
+		payload = remotePagePayload{Data: json.RawMessage("[]")}
+	}
+	s.sendRemoteData(payload, msg)
+	s.flushOutbox()
+	return true
+}
+
+// sendRemoteData pushes a tabulator_remote_data message for a page reply.
+func (s *Session) sendRemoteData(remote remotePagePayload, msg inboxMsg) {
 	s.SendOutbox(common.OutboxMsg{
 		Type:     "tabulator_remote_data",
 		Form:     msg.form,
@@ -395,7 +470,6 @@ func (s *Session) handleTabulatorAjaxRequest(msg inboxMsg, logger Logger) {
 		Selector: "#c:" + msg.form + ":" + msg.ctrl,
 		Data:     remote.toJSON(),
 	})
-	s.flushOutbox()
 }
 
 // remotePagePayload is the tabulator_remote_data response the Lua
@@ -405,6 +479,64 @@ type remotePagePayload struct {
 	Data     interface{} `json:"data"`
 	LastPage int         `json:"last_page,omitempty"`
 	LastRow  int         `json:"last_row,omitempty"`
+}
+
+// parseTablePageReq decodes the browser's tabulator_ajax_request value (a
+// JSON-decoded map[string]interface{}) into a bindings.TablePageReq.
+func parseTablePageReq(raw interface{}) bindings.TablePageReq {
+	var req bindings.TablePageReq
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return req
+	}
+	req.Page = ifaceInt(m["page"])
+	req.Size = ifaceInt(m["size"])
+
+	if sortRaw, ok := m["sort"].([]interface{}); ok {
+		for _, s := range sortRaw {
+			if sm, ok := s.(map[string]interface{}); ok {
+				req.Sort = append(req.Sort, bindings.SortSpec{
+					Field: ifaceStr(sm["field"]),
+					Dir:   ifaceStr(sm["dir"]),
+				})
+			}
+		}
+	}
+	if filtRaw, ok := m["filter"].([]interface{}); ok {
+		for _, f := range filtRaw {
+			if fm, ok := f.(map[string]interface{}); ok {
+				req.Filter = append(req.Filter, bindings.FilterSpec{
+					Field: ifaceStr(fm["field"]),
+					Op:    ifaceStr(fm["type"]),
+					Value: ifaceStr(fm["value"]),
+				})
+			}
+		}
+	}
+	return req
+}
+
+func ifaceInt(v interface{}) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i)
+		}
+	}
+	return 0
+}
+
+func ifaceStr(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 // pagePayloadFromTable converts a Lua table return value into the fields of a

@@ -184,6 +184,70 @@ func inferColumn(field string, value lua.LValue) map[string]interface{} {
 | 5: Checker & LSP | 1 |
 | 6: CSS & Polish | 1 |
 
+## DB-Linked Tables (Kalipso "Connect to Database" parity)
+
+Kalipso lets a table widget be bound directly to a DB table/view via a SELECT
+statement with fields assigned to columns. KALUA implements the same with the
+Tabulator widget backed by a **built-in Go pager** (no per-table Lua handler
+needed). Server-side sort/filter (Decision A) so page count stays correct.
+
+### New Options for `k.ctrl.table(form, name, opts)` (all optional → zero regression)
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `db` | `handle` | Connection handle from `k.connect_db` / `k.connect_sqlite` |
+| `query` | `string` | Base `SELECT` statement (table/view/raw SQL) |
+| `columns` | `table[]` | **Optional** field→column override; else auto-mapped from the query result columns |
+| `page_size` | `number` | Rows per page (Tabulator `paginationSize`; default from opts) |
+| `count_query` | `string` | **Optional** `SELECT COUNT(*) ...`; derived from `query` (`SELECT COUNT(*) FROM (query)`) when omitted |
+| `where` | `table` | **Optional** base filter `{col=val}` ANDed into every page (reuses `db_select` builder) |
+| `order_by` | `string` | **Optional** base ordering `"col [ASC|DESC]"` prepended to user sort |
+
+### New Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `k.table.refresh` | `(form, name)` | Re-run the linked query, show page 1 |
+| `k.table.set_db_source` | `(form, name, {db, query, columns?, page_size?, count_query?, where?, order_by?})` | Swap the DB source at runtime; next page request uses it |
+
+### Behavior
+
+- **Dispatching**: on `tabulator_ajax_request`, if the control carries a `db`
+  handle the session services the page in-process via the Go pager; otherwise
+  the existing Lua `tabulator_ajax_request` handler path runs (unchanged).
+- **Auto-columns**: when `columns` is absent the pager maps the query result's
+  column names to Tabulator fields; type inference stays client-side.
+- **Sorting**: header sort → `ORDER BY <whitelisted field> [ASC|DESC]`,
+  prepended by base `order_by` when present.
+- **Filtering**: header filter `{field, type, value}` → safe operator map
+  (`= != < <= > >= like in`); values are bound parameters. Non-whitelisted
+  fields are dropped.
+- **Whitelist (security)**: only mapped/result columns may appear in
+  `ORDER BY`/`WHERE` — same discipline as the Phase-B2/B6 SQL-identifier fix.
+  `query` is author-supplied (trusted, like `k.sql`); the appended paging/
+  sort/filter is generated exclusively from whitelisted fields + bound params.
+- **Count**: `last_page` from `COUNT(*)` (`count_query`, or derived subquery).
+- **Refresh**: `tabulator_refresh` → client re-triggers the remote loader for
+  page 1.
+
+### WebSocket Message Types
+
+| Direction | Type | Payload |
+|-----------|------|---------|
+| Go → Browser | `tabulator_refresh` | `{selector}` |
+
+### Implementation Phases
+
+| # | Work | Files |
+|---|------|-------|
+| B1 | `addControl` stores `db/query/db_columns/page_size/count_query/db_where/db_order_by` | `internal/bindings/forms.go` |
+| B2 | `FetchTablePage(e, ctrl, req)` pager (COUNT + page + safe sort/filter) | `internal/bindings/db.go` |
+| B3 | Dispatch DB-linked pages in `handleTabulatorAjaxRequest`; error → banner (no crash) | `internal/session/session.go` |
+| B4 | `k.table.refresh` + `k.table.set_db_source` (+ `registerKnown`/`api_doc.go`/`api.md`) | `internal/bindings/tabulator.go` |
+| B5 | Client: handle `tabulator_refresh` (page-1 reload) | `internal/web/assets/app.js` |
+| B6 | Tests: pager unit (paging/sort/whitelist/filter/count) + session e2e (sqlite) | `tabulator_test.go`, session e2e |
+| B7 | Demo: sqlite table + seed + DB-linked tabulator + refresh | `testdata/apps/tabulator_demo.lua` |
+
 ---
 
 # 2. Looper Control Evaluation & Plan

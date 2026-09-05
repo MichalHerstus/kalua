@@ -437,7 +437,22 @@
             case 'tabulator_remote_data':
                 tabulatorRemoteData(msg);
                 break;
+            case 'tabulator_refresh':
+                tabulatorRefresh(msg.selector);
+                break;
         }
+    }
+
+    // tabulatorRefresh re-triggers a DB-linked table's remote loader so page 1
+    // is re-fetched from the Go host (used by k.table.refresh / set_db_source).
+    function tabulatorRefresh(selector) {
+        const inst = tabulatorInstances.get(selector);
+        if (!inst) return;
+        // Clear local sort/filter and jump back to page 1; the dataLoader
+        // re-requests page 1 from the host.
+        inst.setSort(false);
+        inst.setFilter(false);
+        inst.setPage(1);
     }
 
     // tabulatorRemoteData resolves the pending remote-pagination dataLoader

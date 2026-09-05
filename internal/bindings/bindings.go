@@ -132,6 +132,8 @@ var registerKnown = map[string]string{
 	"table.get_data":            "controls",
 	"table.get_selected_rows":   "controls",
 	"table.set_remote_data":     "controls",
+	"table.refresh":             "controls",
+	"table.set_db_source":       "controls",
 	"connect_db":                "database",
 	"disconnect_db":             "database",
 	"sql":                       "database",

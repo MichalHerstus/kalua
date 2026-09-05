@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,6 +108,91 @@ type outboxWire struct {
 	Data     string
 	Form     string
 	Ctrl     string
+}
+
+// TestRealTabulatorDBLinked runs a session whose Lua app connects a sqlite DB
+// and links a tabulator table to it (db= + query=). The Go pager serves the
+// browser's page ask directly (no Lua tabulator_ajax_request handler), slicing
+// and sorting server-side.
+func TestRealTabulatorDBLinked(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "test.db")
+	script := filepath.Join(tmp, "app.lua")
+	src := `
+function main()
+  local db = k.connect_sqlite(%q)
+  k.sql(db, "CREATE TABLE items (id INTEGER, name TEXT, qty INTEGER)")
+  for i = 1, 30 do
+    k.sql(db, "INSERT INTO items (id, name, qty) VALUES (?, ?, ?)", i, "item" .. i, (i * 10) %% 97)
+  end
+
+  k.form.new("f", {title="t"})
+  k.ctrl.table("f", "tbl", {
+    tabulator = true,
+    db = db,
+    query = "SELECT id, name, qty FROM items",
+    page_size = 10,
+  })
+  k.form.show("f")
+end
+`
+	if err := os.WriteFile(script, []byte(fmt.Sprintf(src, dbPath)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New("t1", script, bindings.Options{AllowFS: []string{tmp}}, tLogger{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	out := make(chan outboxWire, 32)
+	go func() {
+		for msg := range s.Outbox() {
+			out <- outboxWire{Type: msg.Type, Selector: msg.Selector, Data: msg.Data, Form: msg.Form, Ctrl: msg.Ctrl}
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Browser asks page 3 of sorted desc by id.
+	s.PostTabulatorAjaxRequest("f", "tbl", map[string]interface{}{
+		"page": 3, "size": 10,
+		"sort":   []interface{}{map[string]interface{}{"field": "id", "dir": "DESC"}},
+		"filter": []interface{}{},
+	})
+
+	deadline := time.After(4 * time.Second)
+	var got string
+	for {
+		select {
+		case w := <-out:
+			if w.Type != "tabulator_remote_data" {
+				continue
+			}
+			got = w.Data
+			goto done
+		case <-deadline:
+			t.Fatalf("timed out waiting for tabulator_remote_data")
+		}
+	}
+done:
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &payload); err != nil {
+		t.Fatalf("remote data JSON: %v", err)
+	}
+	rows, _ := payload["data"].([]interface{})
+	lastPage, _ := payload["last_page"].(float64)
+	if int(lastPage) != 3 {
+		t.Errorf("last_page = %v, want 3", lastPage)
+	}
+	if len(rows) != 10 {
+		t.Fatalf("page 3 row count = %d, want 10", len(rows))
+	}
+	// DESC by id: over 30 rows (ids 30..1), page 3 = ids 10..1 → first row id=10.
+	first, _ := rows[0].(map[string]interface{})
+	if first["id"].(float64) != 10 {
+		t.Errorf("desc page 3 first id = %v, want 10", first["id"])
+	}
 }
 
 var _ = bindings.Options{} // keep import used if the file is ever slimmed

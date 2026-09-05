@@ -166,11 +166,17 @@ Gets the currently selected column.
 **`k.table.get_selected_rows(form, name)`**  
 Returns the selected row indices (1-based).
 
+**`k.table.refresh(form, name)`**  
+Re-runs a DB-linked tabulator table's query and shows page 1.
+
 **`k.table.set_column_value(form, name, row, column, value)`**  
 Sets a cell value in a table control.
 
 **`k.table.set_data(form, name, dataTable)`**  
 Bulk replaces all row data (Tabulator mode pushes tabulator_update).
+
+**`k.table.set_db_source(form, name, opts)`**  
+Swaps a DB-linked tabulator table's source {db,query,columns?,page_size?,count_query?,where?,order_by?} and refreshes.
 
 **`k.table.set_remote_data(form, name, {data,last_page,last_row})`**  
 Pushes server-side pagination data to a tabulator table =  {data=rows, last_page=n} or {data=rows, last_row=n}.

@@ -631,6 +631,15 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("tabulatorOptions", opts.RawGetString("tabulatorOptions"))
 		ctrlTbl.RawSetString("columns", opts.RawGetString("columns"))
 		ctrlTbl.RawSetString("data", opts.RawGetString("data"))
+
+		// DB-linked table options (Kalipso "connect to DB" parity)
+		ctrlTbl.RawSetString("db", opts.RawGetString("db"))
+		ctrlTbl.RawSetString("query", opts.RawGetString("query"))
+		ctrlTbl.RawSetString("db_columns", opts.RawGetString("db_columns"))
+		ctrlTbl.RawSetString("page_size", opts.RawGetString("page_size"))
+		ctrlTbl.RawSetString("count_query", opts.RawGetString("count_query"))
+		ctrlTbl.RawSetString("db_where", opts.RawGetString("where"))
+		ctrlTbl.RawSetString("db_order_by", opts.RawGetString("order_by"))
 	}
 
 	controlsTbl.RawSetString(name, ctrlTbl)

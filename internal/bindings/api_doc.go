@@ -85,7 +85,9 @@ var apiDocs = map[string]Info{
 	"table.set_data":            {Name: "table.set_data", Group: "controls", Signature: "k.table.set_data(form, name, dataTable)", Docs: "Bulk replaces all row data (Tabulator mode pushes tabulator_update)."},
 	"table.get_data":            {Name: "table.get_data", Group: "controls", Signature: "k.table.get_data(form, name)", Docs: "Returns all current data of a table control."},
 	"table.get_selected_rows":   {Name: "table.get_selected_rows", Group: "controls", Signature: "k.table.get_selected_rows(form, name)", Docs: "Returns the selected row indices (1-based)."},
-	"table.set_remote_data":     {Name: "table.set_remote_data", Group: "controls", Signature: "k.table.set_remote_data(form, name, {data,last_page,last_row})", Docs: "Pushes server-side pagination data to a tabulator table =  {data=rows, last_page=n} or {data=rows, last_row=n}."},
+"table.set_remote_data":   {Name: "table.set_remote_data", Group: "controls", Signature: "k.table.set_remote_data(form, name, {data,last_page,last_row})", Docs: "Pushes server-side pagination data to a tabulator table =  {data=rows, last_page=n} or {data=rows, last_row=n}."},
+	"table.refresh":         {Name: "table.refresh", Group: "controls", Signature: "k.table.refresh(form, name)", Docs: "Re-runs a DB-linked tabulator table's query and shows page 1."},
+	"table.set_db_source":   {Name: "table.set_db_source", Group: "controls", Signature: "k.table.set_db_source(form, name, opts)", Docs: "Swaps a DB-linked tabulator table's source {db,query,columns?,page_size?,count_query?,where?,order_by?} and refreshes."},
 
 	// database
 	"connect_db":    {Name: "connect_db", Group: "database", Signature: "k.connect_db(dsn)", Docs: "Opens a database connection (DSN scheme: sqlite://, mysql://, postgres://, sqlserver://) and returns a handle."},

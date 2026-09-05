@@ -143,6 +143,83 @@ func registerTableOps(e *Env) {
 		})
 		return 0
 	})
+
+	// k.table.refresh(form, name) - re-run a DB-linked table's query (page 1)
+	e.register("table.refresh", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			return 0
+		}
+		if ctrl.RawGetString("type").String() != "table" {
+			L.RaiseError("control %s is not a table", name)
+			return 0
+		}
+
+		sendOutbox(e, common.OutboxMsg{
+			Type:     "tabulator_refresh",
+			Form:     formName,
+			Ctrl:     name,
+			Selector: "#c:" + formName + ":" + name,
+		})
+		return 0
+	})
+
+	// k.table.set_db_source(form, name, opts) - swap a DB-linked table's source
+	e.register("table.set_db_source", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			return 0
+		}
+		if ctrl.RawGetString("type").String() != "table" {
+			L.RaiseError("control %s is not a table", name)
+			return 0
+		}
+		if !isTabulator(ctrl) {
+			L.RaiseError("control %s is not a tabulator table", name)
+			return 0
+		}
+
+		if v := opts.RawGetString("db"); v != lua.LNil {
+			ctrl.RawSetString("db", v)
+		}
+		if v := opts.RawGetString("query"); v != lua.LNil {
+			ctrl.RawSetString("query", v)
+		}
+		if v := opts.RawGetString("columns"); v != lua.LNil {
+			ctrl.RawSetString("db_columns", v)
+		}
+		if v := opts.RawGetString("page_size"); v != lua.LNil {
+			ctrl.RawSetString("page_size", v)
+		}
+		if v := opts.RawGetString("count_query"); v != lua.LNil {
+			ctrl.RawSetString("count_query", v)
+		}
+		if v := opts.RawGetString("where"); v != lua.LNil {
+			ctrl.RawSetString("db_where", v)
+		}
+		if v := opts.RawGetString("order_by"); v != lua.LNil {
+			ctrl.RawSetString("db_order_by", v)
+		}
+		if v := opts.RawGetString("tabulatorOptions"); v != lua.LNil {
+			ctrl.RawSetString("tabulatorOptions", v)
+		}
+
+		// Refresh immediately so the new source is visible.
+		sendOutbox(e, common.OutboxMsg{
+			Type:     "tabulator_refresh",
+			Form:     formName,
+			Ctrl:     name,
+			Selector: "#c:" + formName + ":" + name,
+		})
+		return 0
+	})
 }
 
 // remotePage is the tabulator_remote_data payload.

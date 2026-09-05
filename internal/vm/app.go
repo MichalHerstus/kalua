@@ -16,7 +16,7 @@ import (
 type PendingKind int
 
 const (
-	PendingNone     PendingKind = iota
+	PendingNone PendingKind = iota
 	PendingSleep
 	PendingFormShow
 	PendingDBQuery
@@ -46,8 +46,8 @@ type PendingOp struct {
 // LState access for an App happens on the goroutine calling Run, so no locking
 // is required — the same rule the phase-2 session actor depends on.
 type App struct {
-	L       *lua.LState
-	cancel  func()
+	L      *lua.LState
+	cancel func()
 
 	quitting bool
 
@@ -130,6 +130,13 @@ func (a *App) Run(fn *lua.LFunction) error {
 
 		op := a.pending
 		a.pending = nil
+		if op == nil {
+			// The coroutine yielded without a recognized pending op — typically
+			// an async binding (RunAsync) that suspends main() while a worker
+			// goroutine finishes. Return a suspend status so the session actor
+			// loop takes over and resumes the coroutine on async completion.
+			return ErrSuspended
+		}
 		switch op.Kind {
 		case PendingFormShow:
 			// Main coroutine suspended on form.show - return special status
