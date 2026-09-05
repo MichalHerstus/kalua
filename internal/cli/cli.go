@@ -71,23 +71,29 @@ func runCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "run: requires a script argument")
 		return int(host.ExitUsage)
 	}
-	script := args[0]
-	flagArgs := args[1:]
+	// Handle -h/--help (also when it appears as a flag anywhere).
+	if hasHelpFlag(args) {
+		fs := flag.NewFlagSet("run", flag.ContinueOnError)
+		fs.SetOutput(os.Stdout)
+		addRunFlags(fs)
+		fs.PrintDefaults()
+		return int(host.ExitOK)
+	}
 
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
 	var (
-		port          = fs.Int("port", 0, "HTTP port (0 = ephemeral)")
-		noBrowser     = fs.Bool("no-browser", false, "Do not open browser")
-		sessionLimit  = fs.Int("session-limit", 8, "Max concurrent browser tabs")
-		verbose       = fs.Bool("v", false, "Verbose logging")
-		testMode      = fs.Bool("test", false, "Run in test mode (headless, no server)")
-		replOnError   = fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
-		debugMode     = fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
-		dbFlag        = multiFlag{}
-		argFlag       = multiFlag{}
-		allowFSFlag   = multiFlag{}
+		port         = fs.Int("port", 0, "HTTP port (0 = ephemeral)")
+		noBrowser    = fs.Bool("no-browser", false, "Do not open browser")
+		sessionLimit = fs.Int("session-limit", 8, "Max concurrent browser tabs")
+		verbose      = fs.Bool("v", false, "Verbose logging")
+		testMode     = fs.Bool("test", false, "Run in test mode (headless, no server)")
+		replOnError  = fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
+		debugMode    = fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
+		dbFlag       = multiFlag{}
+		argFlag      = multiFlag{}
+		allowFSFlag  = multiFlag{}
 	)
 	fs.Var(&dbFlag, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 	fs.Var(&dbFlag, "d", "Shorthand for --db")
@@ -99,7 +105,13 @@ func runCmd(args []string) int {
 	fs.BoolVar(noBrowser, "n", false, "Shorthand for --no-browser")
 	fs.IntVar(sessionLimit, "l", 8, "Shorthand for --session-limit")
 
-	if err := fs.Parse(flagArgs); err != nil {
+	// Parse flags before AND after the positional script.
+	script, err := parseArgsScript(fs, args)
+	if err != nil {
+		return int(host.ExitUsage)
+	}
+	if script == "" {
+		fmt.Fprintln(os.Stderr, "run: requires a script argument")
 		return int(host.ExitUsage)
 	}
 
@@ -225,7 +237,7 @@ func serveCmd(args []string) int {
 		return int(host.ExitUsage)
 	}
 	// Handle -h/--help for serve command
-	if args[0] == "-h" || args[0] == "--help" {
+	if hasHelpFlag(args) {
 		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 		fs.SetOutput(os.Stdout)
 		fs.String("host", "127.0.0.1", "Host to bind to")
@@ -242,23 +254,21 @@ func serveCmd(args []string) int {
 		fs.PrintDefaults()
 		return int(host.ExitOK)
 	}
-	script := args[0]
-	flagArgs := args[1:]
 
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-var (
-		hostFlag     = fs.String("host", "127.0.0.1", "Host to bind to")
-		port         = fs.Int("port", 8080, "HTTP port")
-		workers      = fs.Int("workers", 4, "Number of worker processes")
-		mode         = fs.String("mode", "http", "Server mode: http, ws, tcp, or comma-separated combination")
-		verbose      = fs.Bool("v", false, "Verbose logging")
-		debugMode    = fs.Bool("debug", false, "Enable EmmyLua debugger per worker (Tier 2, not yet implemented)")
-		debugWorker  = fs.Bool("debug-worker", false, "Attach debugger to each worker (Tier 2, not yet implemented)")
-		dbFlag       = multiFlag{}
-		argFlag      = multiFlag{}
-		allowFSFlag  = multiFlag{}
+	var (
+		hostFlag    = fs.String("host", "127.0.0.1", "Host to bind to")
+		port        = fs.Int("port", 8080, "HTTP port")
+		workers     = fs.Int("workers", 4, "Number of worker processes")
+		mode        = fs.String("mode", "http", "Server mode: http, ws, tcp, or comma-separated combination")
+		verbose     = fs.Bool("v", false, "Verbose logging")
+		debugMode   = fs.Bool("debug", false, "Enable EmmyLua debugger per worker (Tier 2, not yet implemented)")
+		debugWorker = fs.Bool("debug-worker", false, "Attach debugger to each worker (Tier 2, not yet implemented)")
+		dbFlag      = multiFlag{}
+		argFlag     = multiFlag{}
+		allowFSFlag = multiFlag{}
 	)
 	fs.Var(&dbFlag, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 	fs.Var(&dbFlag, "d", "Shorthand for --db")
@@ -270,7 +280,13 @@ var (
 	fs.IntVar(workers, "w", 4, "Shorthand for --workers")
 	fs.StringVar(mode, "m", "http", "Shorthand for --mode")
 
-	if err := fs.Parse(flagArgs); err != nil {
+	// Parse flags before AND after the positional script.
+	script, perr := parseArgsScript(fs, args)
+	if perr != nil {
+		return int(host.ExitUsage)
+	}
+	if script == "" {
+		fmt.Fprintln(os.Stderr, "serve: requires a script argument")
 		return int(host.ExitUsage)
 	}
 
@@ -354,3 +370,57 @@ function main()
   k.quit()
 end
 `
+
+// addRunFlags registers the run-mode flags (used for --help output). The
+// values are discarded; only the definitions/usage text matter.
+func addRunFlags(fs *flag.FlagSet) {
+	fs.Int("port", 0, "HTTP port (0 = ephemeral)")
+	fs.Bool("no-browser", false, "Do not open browser")
+	fs.Bool("n", false, "Shorthand for --no-browser")
+	fs.Int("session-limit", 8, "Max concurrent browser tabs")
+	fs.Int("l", 8, "Shorthand for --session-limit")
+	fs.Bool("v", false, "Verbose logging")
+	fs.Bool("test", false, "Run in test mode (headless, no server)")
+	fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
+	fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
+	fs.Var(&multiFlag{}, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
+	fs.Var(&multiFlag{}, "d", "Shorthand for --db")
+	fs.Var(&multiFlag{}, "arg", "Seed ARGS table: K=V (repeatable)")
+	fs.Var(&multiFlag{}, "a", "Shorthand for --arg")
+	fs.Var(&multiFlag{}, "allow-fs", "Allow filesystem access outside cwd (repeatable)")
+	fs.Var(&multiFlag{}, "f", "Shorthand for --allow-fs")
+}
+
+// hasHelpFlag reports whether -h or --help appears anywhere in args.
+func hasHelpFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseArgsScript parses args in two passes so flags may appear before or after
+// the positional script. It returns the script (the first non-flag argument)
+// and nil on success. The script-free case distinguishes "no script at all"
+// from "script given" via the empty-string result.
+func parseArgsScript(fs *flag.FlagSet, args []string) (string, error) {
+	// Pass 1: consume any leading flags and find the first positional.
+	if err := fs.Parse(args); err != nil {
+		return "", err
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return "", nil
+	}
+	script := rest[0]
+
+	// Pass 2: any flags appearing after the script.
+	if len(rest) > 1 {
+		if err := fs.Parse(rest[1:]); err != nil {
+			return "", err
+		}
+	}
+	return script, nil
+}
