@@ -540,6 +540,9 @@ func registerControls(e *Env) {
 		})
 		return 0
 	})
+
+	// Tabulator table data operations
+	registerTableOps(e)
 }
 
 // addControl adds a control to a form definition.
@@ -620,6 +623,14 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 				}
 			}
 		}
+	}
+
+	// Tabulator options for table control
+	if ctrlType == "table" {
+		ctrlTbl.RawSetString("tabulator", opts.RawGetString("tabulator"))
+		ctrlTbl.RawSetString("tabulatorOptions", opts.RawGetString("tabulatorOptions"))
+		ctrlTbl.RawSetString("columns", opts.RawGetString("columns"))
+		ctrlTbl.RawSetString("data", opts.RawGetString("data"))
 	}
 
 	controlsTbl.RawSetString(name, ctrlTbl)
@@ -780,40 +791,7 @@ func renderControl(ctrl *lua.LTable) string {
 			` + hiddenInput + `
 		</div>`
 	case "table":
-		columns := ctrl.RawGetString("columns")
-		rows := ctrl.RawGetString("rows")
-
-		var thead string
-		if columnsTbl, ok := columns.(*lua.LTable); ok {
-			thead = "<thead><tr>"
-			columnsTbl.ForEach(func(k, v lua.LValue) {
-				thead += `<th data-k-col="` + escAttr(k.String()) + `">` + escText(v.String()) + `</th>`
-			})
-			thead += "</tr></thead>"
-		} else {
-			thead = `<thead><tr><th>` + label + `</th></tr></thead>`
-		}
-
-		var tbody string
-		if rowsTbl, ok := rows.(*lua.LTable); ok {
-			tbody = "<tbody>"
-			rowsTbl.ForEach(func(k, v lua.LValue) {
-				if rowTbl, ok := v.(*lua.LTable); ok {
-					tbody += "<tr data-k-row=\"" + escAttr(k.String()) + "\">"
-					rowTbl.ForEach(func(colK, colV lua.LValue) {
-						tbody += `<td data-k-col="` + escAttr(colK.String()) + `">` + escText(colV.String()) + `</td>`
-					})
-					tbody += "</tr>"
-				}
-			})
-			tbody += "</tbody>"
-		} else {
-			tbody = "<tbody></tbody>"
-		}
-
-		return `<div class="kalua-control"` + visible + `>
-			<table class="kalua-table" id="` + escAttr(id) + `"` + attrs + enabled + `>` + thead + tbody + `</table>
-		</div>`
+		return renderTable(ctrl, formName, name, id, label, value, visible, enabled, attrs)
 	}
 	return `<div class="kalua-control">Unknown control: ` + escText(ctrlType) + `</div>`
 }

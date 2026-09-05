@@ -411,3 +411,21 @@ body {
         margin: 16px;
     }
 }
+/* Tabulator table control */
+.kalua-tabulator-wrapper {
+    position: relative;
+    width: 100%;
+    min-height: 120px;
+}
+
+/* Reset the accent row colors to the KALUA palette so the simple theme
+   matches the rest of the UI. */
+.kalua-tabulator-wrapper .tabulator .tabulator-header {
+    background-color: #f0f2f5;
+}
+.kalua-tabulator-wrapper .tabulator-row.tabulator-selectable:hover {
+    background-color: #e8eef7;
+}
+.kalua-tabulator-wrapper .tabulator-row.tabulator-selected {
+    background-color: #d6e4f5;
+}

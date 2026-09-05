@@ -317,6 +317,14 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		id := getString(msg, "id")
 		value := getString(msg, "value")
 		sess.PostFilePickerResp(id, value)
+	case "tabulator_data_resp":
+		id := getString(msg, "id")
+		value := getString(msg, "value")
+		sess.PostTabulatorDataResp(id, value)
+	case "tabulator_selection_resp":
+		id := getString(msg, "id")
+		rows := getIntSlice(msg, "rows")
+		sess.PostTabulatorSelectionResp(id, rows)
 	case "client_info":
 		w := getInt(msg, "w")
 		h := getInt(msg, "h")
@@ -346,4 +354,25 @@ func getInt(m map[string]interface{}, key string) int {
 		}
 	}
 	return 0
+}
+
+func getIntSlice(m map[string]interface{}, key string) []int {
+	raw, ok := m[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]int, 0, len(raw))
+	for _, v := range raw {
+		switch n := v.(type) {
+		case float64:
+			out = append(out, int(n))
+		case int:
+			out = append(out, n)
+		case json.Number:
+			if i, err := n.Int64(); err == nil {
+				out = append(out, int(i))
+			}
+		}
+	}
+	return out
 }

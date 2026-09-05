@@ -82,6 +82,9 @@ var apiDocs = map[string]Info{
 	"table.get_column_value":    {Name: "table.get_column_value", Group: "controls", Signature: "k.table.get_column_value(form, name, row, column)", Docs: "Gets a cell value from a table control."},
 	"table.get_selected_column": {Name: "table.get_selected_column", Group: "controls", Signature: "k.table.get_selected_column(form, name)", Docs: "Gets the currently selected column."},
 	"table.set_selected_column": {Name: "table.set_selected_column", Group: "controls", Signature: "k.table.set_selected_column(form, name, column)", Docs: "Sets the selected column."},
+	"table.set_data":            {Name: "table.set_data", Group: "controls", Signature: "k.table.set_data(form, name, dataTable)", Docs: "Bulk replaces all row data (Tabulator mode pushes tabulator_update)."},
+	"table.get_data":            {Name: "table.get_data", Group: "controls", Signature: "k.table.get_data(form, name)", Docs: "Returns all current data of a table control."},
+	"table.get_selected_rows":   {Name: "table.get_selected_rows", Group: "controls", Signature: "k.table.get_selected_rows(form, name)", Docs: "Returns the selected row indices (1-based)."},
 
 	// database
 	"connect_db":    {Name: "connect_db", Group: "database", Signature: "k.connect_db(dsn)", Docs: "Opens a database connection (DSN scheme: sqlite://, mysql://, postgres://, sqlserver://) and returns a handle."},

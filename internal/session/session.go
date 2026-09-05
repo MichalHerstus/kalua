@@ -32,6 +32,8 @@ const (
 	inboxFilePickerResp             // browser file picker result (JSON-encoded files)
 	inboxQuery                      // external read of Lua state (tests)
 	inboxSleepDone                  // k.sleep completed
+	inboxTabulatorDataResp          // browser answered k.table.get_data
+	inboxTabulatorSelectionResp     // browser answered k.table.get_selected_rows
 )
 
 // asyncOp represents a suspended coroutine waiting for an async operation
@@ -54,8 +56,9 @@ type inboxMsg struct {
 
 	// respID and resp identify a browser round-trip response (msgbox choice,
 	// clipboard_get value) so the actor can resume the suspended coroutine.
-	respID string
-	resp   string
+	respID     string
+	resp       string
+	selectRows []int
 
 	// query is a unit of work to run on the actor goroutine (inboxQuery).
 	query func(*lua.LState) lua.LValue
@@ -226,6 +229,10 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		}
 	case inboxSleepDone:
 		s.resumeSleep(msg.respID, logger)
+	case inboxTabulatorDataResp:
+		s.resumeTabulatorDataResp(msg.respID, msg.resp, logger)
+	case inboxTabulatorSelectionResp:
+		s.resumeTabulatorSelectionResp(msg.respID, msg.selectRows, logger)
 	}
 }
 
@@ -545,6 +552,60 @@ func (s *Session) RequestClipboardGet(co *lua.LState, cancel func()) {
 	})
 }
 
+// RequestTabulatorGetData asks the browser for all current table data and
+// suspends the coroutine until the browser delivers it (tabulator_data_resp).
+// The resolved Lua value is a table of row tables (1-based).
+func (s *Session) RequestTabulatorGetData(co *lua.LState, cancel func(), form, ctrl string) {
+	reqID := fmt.Sprintf("getdata_%d", time.Now().UnixNano())
+
+	s.asyncMu.Lock()
+	s.asyncOps[reqID] = &asyncOp{co: co, cancel: cancel}
+	s.asyncMu.Unlock()
+
+	s.SendOutbox(common.OutboxMsg{
+		Type: "tabulator_get_data",
+		Form: form,
+		Ctrl: ctrl,
+		ID:   reqID,
+	})
+}
+
+// RequestTabulatorGetSelection asks the browser for the selected row indices
+// and suspends the coroutine until it is delivered (tabulator_selection_resp).
+// The resolved Lua value is a 1-based table of row numbers.
+func (s *Session) RequestTabulatorGetSelection(co *lua.LState, cancel func(), form, ctrl string) {
+	reqID := fmt.Sprintf("getsel_%d", time.Now().UnixNano())
+
+	s.asyncMu.Lock()
+	s.asyncOps[reqID] = &asyncOp{co: co, cancel: cancel}
+	s.asyncMu.Unlock()
+
+	s.SendOutbox(common.OutboxMsg{
+		Type: "tabulator_get_selection",
+		Form: form,
+		Ctrl: ctrl,
+		ID:   reqID,
+	})
+}
+
+// PostTabulatorDataResp forwards the browser's tabulator_data_resp value to the
+// actor inbox so the suspended coroutine can be resumed on the actor goroutine.
+func (s *Session) PostTabulatorDataResp(reqID, value string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxTabulatorDataResp, respID: reqID, resp: value}:
+	case <-s.done:
+	}
+}
+
+// PostTabulatorSelectionResp forwards the browser's tabulator_selection_resp
+// to the actor inbox so the suspended coroutine can be resumed.
+func (s *Session) PostTabulatorSelectionResp(reqID string, rows []int) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxTabulatorSelectionResp, respID: reqID, selectRows: rows}:
+	case <-s.done:
+	}
+}
+
 // PostClipboardResp is called from the web bridge goroutine when the browser
 // delivers clipboard text. It forwards the value to the actor inbox so the
 // resume happens on the actor goroutine (s.L is not thread-safe).
@@ -674,6 +735,75 @@ func (s *Session) resumeSleep(sleepID string, logger Logger) {
 		return
 	}
 
+	s.flushOutbox()
+}
+
+// resumeTabulatorDataResp resumes the coroutine suspended by k.table.get_data
+// with the browser-supplied row data (a JSON array converted to a Lua table).
+func (s *Session) resumeTabulatorDataResp(reqID, jsonStr string, logger Logger) {
+	s.asyncMu.Lock()
+	op, exists := s.asyncOps[reqID]
+	if exists {
+		delete(s.asyncOps, reqID)
+	}
+	s.asyncMu.Unlock()
+
+	if !exists {
+		logger.Warnf("tabulator data response for unknown op: %s", reqID)
+		return
+	}
+
+	val := lua.LNil
+	if jsonStr != "" {
+		var decoded interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &decoded); err == nil {
+			val = s.toLuaValue(decoded)
+		}
+	}
+
+	st, err, _ := s.L.Resume(op.co, nil, val)
+	if st == lua.ResumeError {
+		if s.env != nil && s.env.Logger != nil {
+			s.env.Logger.Errorf("tabulator data resume error: %v", err)
+		}
+		return
+	}
+	if st != lua.ResumeOK && op.cancel != nil {
+		op.cancel()
+	}
+	s.flushOutbox()
+}
+
+// resumeTabulatorSelectionResp resumes the coroutine suspended by
+// k.table.get_selected_rows with a 1-based table of row numbers.
+func (s *Session) resumeTabulatorSelectionResp(reqID string, rows []int, logger Logger) {
+	s.asyncMu.Lock()
+	op, exists := s.asyncOps[reqID]
+	if exists {
+		delete(s.asyncOps, reqID)
+	}
+	s.asyncMu.Unlock()
+
+	if !exists {
+		logger.Warnf("tabulator selection response for unknown op: %s", reqID)
+		return
+	}
+
+	tbl := s.L.NewTable()
+	for i, r := range rows {
+		tbl.RawSetInt(i+1, lua.LNumber(r))
+	}
+
+	st, err, _ := s.L.Resume(op.co, nil, tbl)
+	if st == lua.ResumeError {
+		if s.env != nil && s.env.Logger != nil {
+			s.env.Logger.Errorf("tabulator selection resume error: %v", err)
+		}
+		return
+	}
+	if st != lua.ResumeOK && op.cancel != nil {
+		op.cancel()
+	}
 	s.flushOutbox()
 }
 

@@ -26,6 +26,10 @@ type SessionInterface interface {
 	StoreFormCoro(name string, co *lua.LState)
 	ResumeFormCoro(name string) bool
 	ScheduleSleep(co *lua.LState, delay time.Duration)
+	RequestTabulatorGetData(co *lua.LState, cancel func(), form, ctrl string)
+	RequestTabulatorGetSelection(co *lua.LState, cancel func(), form, ctrl string)
+	PostTabulatorDataResp(reqID, value string)
+	PostTabulatorSelectionResp(reqID string, rows []int)
 }
 
 // DefaultConv converts an async result to a Lua value on the caller's state,

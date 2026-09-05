@@ -157,11 +157,20 @@ Removes the row at index.
 **`k.table.get_column_value(form, name, row, column)`**  
 Gets a cell value from a table control.
 
+**`k.table.get_data(form, name)`**  
+Returns all current data of a table control.
+
 **`k.table.get_selected_column(form, name)`**  
 Gets the currently selected column.
 
+**`k.table.get_selected_rows(form, name)`**  
+Returns the selected row indices (1-based).
+
 **`k.table.set_column_value(form, name, row, column, value)`**  
 Sets a cell value in a table control.
+
+**`k.table.set_data(form, name, dataTable)`**  
+Bulk replaces all row data (Tabulator mode pushes tabulator_update).
 
 **`k.table.set_selected_column(form, name, column)`**  
 Sets the selected column.

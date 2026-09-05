@@ -15,4 +15,5 @@ type OutboxMsg struct {
 	Stack    string `json:"stack,omitempty"`
 	Accept   string `json:"accept,omitempty"`
 	Multiple bool   `json:"multiple,omitempty"`
+	Data     string `json:"data,omitempty"`
 }

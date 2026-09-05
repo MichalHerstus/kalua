@@ -181,6 +181,109 @@
         input.click();
     }
 
+    // ---- Tabulator table support ----
+    // Instances are keyed by the element id (selector "#c:form:ctrl").
+    const tabulatorInstances = new Map();
+
+    // initTabulators scans a DOM scope for table containers with
+    // data-k-tabulator-options and initializes a Tabulator instance for each
+    // that is not already managed.
+    function initTabulators(scope) {
+        if (typeof Tabulator === 'undefined') return;
+        const els = scope.querySelectorAll('.kalua-tabulator-table:not([data-k-tabulator-ready])');
+        els.forEach(function(el) {
+            createTabulator(el);
+        });
+    }
+
+    // createTabulator reads the data-k-tabulator-* attributes on a container
+    // and instantiates Tabulator. Columns are taken from data-k-tabulator-columns
+    // (JSON array of {field,title,...}) or inferred from the first row of data.
+    function createTabulator(el) {
+        var opts = {};
+        try { opts = JSON.parse(el.dataset.kTabulatorOptions || '{}'); } catch (e) {}
+        var cols = [];
+        try { cols = JSON.parse(el.dataset.kTabulatorColumns || '[]'); } catch (e) {}
+        var data = [];
+        try { data = JSON.parse(el.dataset.kTabulatorData || '[]'); } catch (e) {}
+
+        if (!cols || cols.length === 0) {
+            cols = inferColumns(data);
+        }
+
+        var form = el.dataset.kForm;
+        var ctrl = el.dataset.kCtrl;
+
+        opts.columns = cols;
+        opts.data = data || [];
+        opts.layout = opts.layout || 'fitColumns';
+        opts.selectable = opts.selectable !== false;
+        opts.selectableRangeMode = opts.selectableRangeMode || 'click';
+
+        // Bridge selection changes to the host as tabulator_selection_change.
+        if (typeof opts.rowSelectionChanged !== 'function') {
+            opts.rowSelectionChanged = function(selectedData, selectedRows) {
+                var rows = [];
+                if (selectedRows) {
+                    selectedRows.forEach(function(r) {
+                        var idx = r ? r.getPosition(true) : 0;
+                        rows.push(idx + 1); // 1-based
+                    });
+                }
+                sendEvent(form, ctrl, 'tabulator_selection_change', { rows: rows, data: selectedData || [] });
+            };
+        }
+
+        var inst = new Tabulator(el, opts);
+        tabulatorInstances.set('#' + el.id, inst);
+        el.setAttribute('data-k-tabulator-ready', 'true');
+        return inst;
+    }
+
+    // inferColumns derives Tabulator column definitions from the first row.
+    function inferColumns(data) {
+        var cols = [];
+        if (!data || data.length === 0) return cols;
+        var first = data[0];
+        Object.keys(first).forEach(function(key) {
+            var val = first[key];
+            var col = { field: key, title: key };
+            if (typeof val === 'number') {
+                col.sorter = 'number';
+                col.editor = 'number';
+                col.hozAlign = 'right';
+            } else if (typeof val === 'boolean') {
+                col.formatter = 'tickCross';
+                col.editor = 'tickCross';
+                col.hozAlign = 'center';
+            } else {
+                col.sorter = 'string';
+                col.editor = 'input';
+            }
+            cols.push(col);
+        });
+        return cols;
+    }
+
+    // destroyTabulators destroys all Tabulator instances in a DOM scope
+    // (used on form close / update replacement).
+    function destroyTabulators(scope) {
+        const els = scope.querySelectorAll('.kalua-tabulator-table');
+        els.forEach(function(el) {
+            const key = '#' + el.id;
+            const inst = tabulatorInstances.get(key);
+            if (inst) {
+                inst.destroy();
+                tabulatorInstances.delete(key);
+            }
+            el.removeAttribute('data-k-tabulator-ready');
+        });
+    }
+
+    function tabulatorBySelector(selector) {
+        return tabulatorInstances.get(selector);
+    }
+
     // Message handling
     function handleMessage(msg) {
         switch (msg.type) {
@@ -226,12 +329,91 @@
             case 'focus':
                 handleFocusControl(msg.form, msg.ctrl);
                 break;
+            case 'tabulator_update':
+                tabulatorUpdate(msg.selector, msg.data);
+                break;
+            case 'tabulator_destroy':
+                tabulatorDestroy(msg.selector || ('#f:' + msg.form));
+                break;
+            case 'tabulator_get_data':
+                tabulatorGetData(msg.id, msg.selector, msg.form, msg.ctrl);
+                break;
+            case 'tabulator_get_selection':
+                tabulatorGetSelection(msg.id, msg.selector, msg.form, msg.ctrl);
+                break;
         }
+    }
+
+    // tabulatorUpdate replaces the data of an existing instance (or re-creates
+    // the instance from scratch when the container was replaced).
+    function tabulatorUpdate(selector, dataJSON) {
+        const el = document.querySelector(selector);
+        if (!el) return;
+        const inst = tabulatorInstances.get(selector);
+        let data = [];
+        try { data = JSON.parse(dataJSON || '[]'); } catch (e) {}
+        if (inst) {
+            inst.setData(data);
+        } else {
+            el.dataset.kTabulatorData = dataJSON || '[]';
+            if (typeof Tabulator !== 'undefined') createTabulator(el);
+        }
+    }
+
+    // tabulatorDestroy destroys the instance(s) matching a selector or a form
+    // scope (called on close_form / form stack pop).
+    function tabulatorDestroy(selector) {
+        const el = typeof selector === 'string' && selector.charAt(0) === '#'
+            ? document.querySelector(selector) : null;
+        if (el) {
+            const inst = tabulatorInstances.get('#' + el.id);
+            if (inst) {
+                inst.destroy();
+                tabulatorInstances.delete('#' + el.id);
+            }
+            el.removeAttribute('data-k-tabulator-ready');
+        } else if (!selector || selector.charAt(0) === '#') {
+            // Whole-form destroy: iterate managed instances and remove those
+            // inside the form element.
+            const formEl = selector ? document.getElementById(selector.substring(2)) : null;
+            tabulatorInstances.forEach(function(inst, key) {
+                const owner = document.querySelector(key);
+                if (owner && (!formEl || formEl.contains(owner))) {
+                    inst.destroy();
+                    tabulatorInstances.delete(key);
+                    owner.removeAttribute('data-k-tabulator-ready');
+                }
+            });
+        }
+    }
+
+    // tabulatorGetData answers k.table.get_data requests with all current row data.
+    function tabulatorGetData(id, selector, form, ctrl) {
+        const inst = selector && tabulatorInstances.get(selector);
+        const data = inst ? inst.getData() : [];
+        // Convert to 1-based rows of string-keyed objects for the Lua side.
+        send({ type: 'tabulator_data_resp', id: id, value: JSON.stringify(data) });
+    }
+
+    // tabulatorGetSelection answers k.table.get_selected_rows requests.
+    function tabulatorGetSelection(id, selector, form, ctrl) {
+        const inst = selector && tabulatorInstances.get(selector);
+        let rows = [];
+        if (inst) {
+            const sel = inst.getSelectedRows();
+            if (sel) {
+                sel.forEach(function(r) {
+                    rows.push(r.getPosition(true) + 1); // 1-based
+                });
+            }
+        }
+        send({ type: 'tabulator_selection_resp', id: id, rows: rows });
     }
 
     // Form rendering
     function renderForm(html) {
         stage.innerHTML = html;
+        initTabulators(stage);
         // Focus first focusable element
         const firstFocusable = stage.querySelector('input, select, button, textarea');
         if (firstFocusable) {
@@ -242,16 +424,22 @@
     function updateControl(selector, html) {
         const el = document.querySelector(selector);
         if (el) {
+            // Destroy any Tabulator instance living inside the replaced element.
+            destroyTabulators(el);
             el.outerHTML = html;
+            const fresh = document.querySelector(selector);
+            if (fresh) initTabulators(fresh.parentElement || stage);
         }
     }
 
     function closeForm(name, top) {
         if (top) {
+            destroyTabulators(stage);
             stage.innerHTML = '';
         } else {
             const formEl = document.getElementById('f:' + name);
             if (formEl) {
+                destroyTabulators(formEl);
                 formEl.remove();
             }
         }

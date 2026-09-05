@@ -104,7 +104,8 @@ func registerFlow(e *Env) {
 			return 0
 		}
 		if e.Sess == nil {
-			L.RaiseError("sleep: no session available")
+			// Headless (test / serve) mode: block synchronously.
+			time.Sleep(time.Duration(ms) * time.Millisecond)
 			return 0
 		}
 		e.Sess.ScheduleSleep(L, time.Duration(ms)*time.Millisecond)
