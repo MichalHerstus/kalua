@@ -1,30 +1,21 @@
 # Tabulator Assets
 
-Download Tabulator v6.2+ from https://github.com/olifolkerd/tabulator/releases/tag/6.2
+Tabulator v6.2.5 (MIT) embedded for the `k.ctrl.table` data grid.
 
-Required files (place in this directory):
-- tabulator.min.js
-- tabulator.min.css
-- themes/simple/simple.min.css
+Included files:
+- `tabulator.min.js` — Tabulator v6.2.5 (UMD, defines global `Tabulator`)
+- `tabulator.min.css` — base Tabulator styles
+- `themes/simple/simple.min.css` — Simple theme
 
-## Quick Download (run in this directory):
+Downloaded from jsDelivr:
+- https://cdn.jsdelivr.net/npm/tabulator-tables@6.2.5/dist/js/tabulator.min.js
+- https://cdn.jsdelivr.net/npm/tabulator-tables@6.2.5/dist/css/tabulator.min.css
+- https://cdn.jsdelivr.net/npm/tabulator-tables@6.2.5/dist/css/tabulator_simple.min.css
 
-```bash
-# Download Tabulator v6.2
-wget https://github.com/olifolkerd/tabulator/releases/download/v6.2/tabulator.min.js
-wget https://github.com/olifolkerd/tabulator/releases/download/v6.2/tabulator.min.css
-wget https://github.com/olifolkerd/tabulator/releases/download/v6.2/themes/simple/simple.min.css -P themes/simple/
+To upgrade to a newer version, re-download the three files from the matching
+jsDelivr paths and rebuild: `go build -o KALUA ./cmd/KALUA` (files are embedded
+via `//go:embed assets/*`).
 
-# Or use npm if preferred:
-# npm install tabulator-tables@6.2
-# cp node_modules/tabulator-tables/dist/js/tabulator.min.js .
-# cp node_modules/tabulator-tables/dist/css/tabulator.min.css .
-# cp node_modules/tabulator-tables/dist/css/themes/simple.min.css themes/simple/
-```
-
-## Files to embed via go:embed:
-- tabulator.min.js
-- tabulator.min.css
-- themes/simple/simple.min.css
-
-After downloading, rebuild: `go build -o KALUA ./cmd/KALUA`
+If the library fails to load in the browser, `app.js` falls back to rendering a
+plain HTML `<table>` from the `data-k-tabulator-*` attributes so tabulator=true
+controls never show an empty grid.

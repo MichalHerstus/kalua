@@ -187,10 +187,17 @@
 
     // initTabulators scans a DOM scope for table containers with
     // data-k-tabulator-options and initializes a Tabulator instance for each
-    // that is not already managed.
+    // that is not already managed. When the Tabulator library is not loaded
+    // (missing asset), a plain <table> fallback is rendered so data is never
+    // silently invisible.
     function initTabulators(scope) {
-        if (typeof Tabulator === 'undefined') return;
         const els = scope.querySelectorAll('.kalua-tabulator-table:not([data-k-tabulator-ready])');
+        if (typeof Tabulator === 'undefined') {
+            els.forEach(function(el) {
+                renderFallbackTable(el);
+            });
+            return;
+        }
         els.forEach(function(el) {
             createTabulator(el);
         });
@@ -263,6 +270,58 @@
             cols.push(col);
         });
         return cols;
+    }
+
+    // renderFallbackTable renders a plain HTML <table> from the
+    // data-k-tabulator-* attributes when the Tabulator library itself is not
+    // available, so tabulator=true controls degrade to the classic grid.
+    function renderFallbackTable(el) {
+        var cols = [];
+        try { cols = JSON.parse(el.dataset.kTabulatorColumns || '[]'); } catch (e) {}
+        var data = [];
+        try { data = JSON.parse(el.dataset.kTabulatorData || '[]'); } catch (e) {}
+
+        if (!cols || cols.length === 0) {
+            cols = inferColumns(data);
+        }
+        if (cols.length === 0 && (!data || data.length === 0)) {
+            el.innerHTML = '<div class="kalua-tabulator-empty">No data</div>';
+            el.setAttribute('data-k-tabulator-ready', 'true');
+            return;
+        }
+
+        var table = document.createElement('table');
+        table.className = 'kalua-table';
+
+        var thead = document.createElement('thead');
+        var headRow = document.createElement('tr');
+        cols.forEach(function(col) {
+            var th = document.createElement('th');
+            th.innerHTML = escapeHtml(col.title !== undefined ? col.title : col.field);
+            headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+
+        var tbody = document.createElement('tbody');
+        (data || []).forEach(function(row) {
+            var tr = document.createElement('tr');
+            cols.forEach(function(col) {
+                var td = document.createElement('td');
+                var v = row[col.field];
+                if (typeof v === 'boolean') {
+                    v = v ? '\u2713' : '';
+                }
+                td.innerHTML = escapeHtml(v === null || v === undefined ? '' : String(v));
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+
+        el.innerHTML = '';
+        el.appendChild(table);
+        el.setAttribute('data-k-tabulator-ready', 'true');
     }
 
     // destroyTabulators destroys all Tabulator instances in a DOM scope
@@ -356,7 +415,13 @@
             inst.setData(data);
         } else {
             el.dataset.kTabulatorData = dataJSON || '[]';
-            if (typeof Tabulator !== 'undefined') createTabulator(el);
+            if (typeof Tabulator !== 'undefined') {
+                createTabulator(el);
+            } else {
+                // Fallback mode: rebuild the plain table so data updates show.
+                el.removeAttribute('data-k-tabulator-ready');
+                renderFallbackTable(el);
+            }
         }
     }
 
