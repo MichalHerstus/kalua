@@ -1,6 +1,6 @@
 # KALUA
 
-A Go runtime that embeds a sandboxed gopher-lua VM to run Kalipso-style `.lua` apps as web apps. Single generic binary interprets any Lua script.
+A Go runtime that embeds a sandboxed gopher-lua VM to run Kalipso-style `.lua` apps as web apps. Single generic binary interprets any Lua script. Kalua (aka "KAlipso in LUA") include wide set of functions inspired by Sysdev Mobile **Kalipso lowcode platform**, like k.form, k.ctrl, etc.
 
 ## Quick Start
 
