@@ -972,4 +972,89 @@ then commit.
 
 (End of file)
 
+---
+
+## 13. Codebase Optimization — Phases C & D (Dead Code + Duplication)
+
+*(Plan mode, 2026-09-05. Derived from a full-repo analysis of the 44 non-test Go files:
+dead-code / duplicate / security / efficiency review. Phases A+B (crash/correctness +
+security hardening) were implemented and shipped independently, 2026-09-05; Phase E
+(efficiency/perf) is tracked as a separate follow-up, NOT in this section.)*
+
+### 13.1 Goal & non-goals
+
+Bring the codebase to a clean, single-source-of-truth state before further feature work:
+remove dead code (Phase C) and collapse duplicated logic (Phase D). Behavior-preserving only;
+no new features, no API surface changes, no performance work.
+
+- **In scope:** unreachable functions/fields/branches; duplicated registries, coercion
+  entry points, converters, render helpers, handle registries, error-handling blocks.
+- **Non-goals:** efficiency/perf optimizations (Phase E, separate plan), gopher-lua VM
+  changes, public `k.*` API changes, new functionality. Everything must keep
+  `go test ./...` and `make check-api` green.
+
+### 13.2 Phase C — Dead code sweep (mechanical, low risk)
+
+High-confidence unreachable items to delete (no external callers, incl. tests):
+
+| # | Item | Location | Notes |
+|---|------|----------|-------|
+| C1 | `checkTableAccess`, `checkNestedTableAccess` | `checker/checker.go` | Superseded by `checkNestedAttrAccess`; zero callers |
+| C2 | `(*Server).WithTLS` + `TLSConfig` | `server/server.go` | TLS never wired; removes the `crypto/tls` import |
+| C3 | `(*Logger).SetLevel` | `host/log.go` | Level only set via `NewLogger` |
+| C4 | `(*App).Quitting`, `(*App).SuspendedForm` | `vm/app.go` | Replaced by direct `a.quitting` read / session formStack |
+| C5 | `PendingDBQuery`, `DBOperation`, `PendingOp.DBOp`, `App.ScheduleSleep`, `PendingSleep` | `vm/app.go` | Legacy async-DB design; sleep now routed via `Session.ScheduleSleep` (§A6) |
+| C6 | `SandboxGlobals` | `vm/vm.go` | Doc-only, zero references |
+| C7 | `WSConn.Writer`, `WSWriter`, `WSConn.Read/Write/Close`, `TCPConn.Read/Write/Close`, `TCPHub.Broadcast` | `server/ws.go`, `server/tcp.go` | Raw conns/pump used everywhere |
+| C8 | `workerCh` channel | `server/server.go` | Queueing design never implemented |
+| C9 | `Env.known` field | `bindings/bindings.go`, `serve.go` | Written, never read |
+| C10 | `smtpHandle.host`, `socketHandle.mode`, `xmlNode.Parent` | `bindings/` | Set, never used |
+| C11 | `--db` flag / `RunConfig.DBs` / `server.Config.DBs` | `cli.go`, `host/run.go`, `server/server.go` | **Decision: retain as-is.** Flag is currently a silent no-op in both modes (fields never consumed); wiring is deferred — no removal, no doc change now |
+| C12 | Serve-mode `k.sleep` no-op stub; `--debug`/`--debug-worker` stub flags | `serve.go`, `cli.go` | Remove + doc note (Tier 2 EmmyLua debugger may reintroduce later) |
+| C13 | Duplicate `registerSMTP/Pop3/FTP/Soap` calls | `bindings/bindings.go` | Regression from Phase 9; idempotent, but remove the 4 throw-away calls |
+
+**Acceptance (C):** `go build ./... && go test ./...` green; `rg` confirms zero references for
+each removed identifier; generated `api.md` unchanged (or regenerated if a removal touched docs).
+
+### 13.3 Phase D — Deduplication (one concern at a time)
+
+| # | Duplication (N copies) | Consolidation target |
+|---|------------------------|----------------------|
+| D1 | k.* registry enumerated 3×: `registerKnown`, `apiDocs`, registration literals | single navigable registry + `Namespaces()` accessor used by apiref/LSP/checker; `TestApiDocSync` stays as backstop |
+| D2 | Namespace list 3×: `namespaceNames`, `apiref` map, `lsp/feature.go` | export one `bindings.Namespaces()` |
+| D3 | Coercion entries: `K.tonum`/`tonum`/`val` (identical), `K.tostr`/`tostr` | one `tonum`/`tostr` binding factory |
+| D4 | Lua→Go converters: `v()` vs `luaValueToGo` | one converter |
+| D5 | Date parsers: `parseDateStr`/`parseLocalDateStr` + ~10 layout literals in `funcs.go` | `parseDateIn(s, loc)` + `dateLayout`/`datetimeLayout` consts |
+| D6 | JSON: `parseJSON` vs `unmarshalJSONGo`; `convertJSONGo`/`toLuaValue`/`GoValueToLua`; `luaTreeToGo` vs `writeJSON`; `tableNames` vs `tableStringKeys` | share one decode + one traversal; fold the 3 Lua converters |
+| D7 | Coroutine-resume error blocks 3–6× in `session.go` (`resumeAsyncResp`/`resumeFilePickerResp`/…) | one `s.resumeOp(respID, val, kind, logger)` |
+| D8 | `postMortemDump` 2× + `k.debug.stack` 3rd variant | shared stack-walker (e.g. `internal/vm`) |
+| D9 | Handle registries 6× (db/files/comm/smtp/pop3/ftp): map+mutex+lookup+closeAll | tiny generic `handleRegistry[T]` |
+| D10 | `disconnect_db` vs `closeDB`; `db_kill_table` body vs `db_delete`; `connect_db` vs `connect_sqlite` open→ping→store | reuse shared helpers |
+| D11 | XML node→table 2 shapes: `nodeToTable` (`{name,attrs,content,children}`) vs `nodeTable` (`{_name,_attrs,_children,_text}`) | keep documented `{_name,_attrs,_children,_text}` only |
+| D12 | CLI flag registration 3× (runCmd, serveCmd help block dead, serveCmd) | `addCommonFlags(fs)`; remove dead help-block flagset |
+| D13 | `k.print` 2 impls + `join`/`joinArgs` 2 helpers | one `strings.Join`-based helper |
+| D14 | HTML render helpers (resolved during B1: `escText`/`escAttr`/`renderAttrs`/`renderEnabledVisible`) ✅ | keep; extend to remaining `renderForm` paths |
+| D15 | `getString` vs `getStringFromMap`; `sortedDocs`/`sortedKSets`/`sortedExprs` | one helper each |
+
+### 13.4 Phase D acceptance
+
+- `go test ./...`, `go vet ./...`, `make check-api`, `make gen-api` (regenerate + commit `api.md` if it changes).
+- No behavior change: `TestApiDocSync`, existing binding/coercion/LSP tests are the drift guard.
+- Each D item lands as its own commit so regressions bisect cleanly.
+
+### 13.5 Sequencing
+
+1. C — dead code removal (C1–C10, C12, C13); `--db` touched only per the C11 decision note.
+2. D6/D5/D3/D4/D14 — coercion/JSON/date core.
+3. D1/D2 — registry single-source.
+4. D7/D8/D9/D10/D11/D12/D13/D15 — per-package consolidation.
+
+### 13.6 Status
+
+**Pending (plan only).** Phases A+B (crash/correctness + security hardening) shipped
+2026-09-05; this section tracks the follow-up cleanup. **Implemented markers updated as
+items land. Phase E (efficiency/perf) is a separate, unplanned follow-up.**
+
+---
+
 (End of file)
