@@ -149,3 +149,34 @@ func TestRemotePageFromLua(t *testing.T) {
 		t.Errorf("remotePayloadJSON = %s, want data + last_page", out)
 	}
 }
+
+// TestRenderDBLinkedAutoPaging pins that a DB-linked table (db+query) auto-
+// emits paginationMode:"remote" + paginationSize so the client installs the
+// dataLoader that pages through the Go host.
+func TestRenderDBLinkedAutoPaging(t *testing.T) {
+	L := setupTestState(t)
+
+	// DB-linked table with page_size but no tabulatorOptions.
+	ctrl := L.NewTable()
+	ctrl.RawSetString("tabulator", lua.LString("true"))
+	ctrl.RawSetString("db", lua.LString("db_1"))
+	ctrl.RawSetString("query", lua.LString("SELECT id FROM items"))
+	ctrl.RawSetString("page_size", lua.LNumber(7))
+
+	html := renderTable(ctrl, "frm", "tbl", "c:frm:tbl", "", "", "", "", "")
+	// HTML-escaped quotes.
+	if !strings.Contains(html, "paginationMode&#34;:&#34;remote&#34;") {
+		t.Errorf("DB-linked table missing remote paginationMode: %s", html)
+	}
+	if !strings.Contains(html, "paginationSize&#34;:7") {
+		t.Errorf("DB-linked table missing page_size-derived paginationSize: %s", html)
+	}
+
+	// Non-DB table must NOT get forced remote pagination.
+	plain := L.NewTable()
+	plain.RawSetString("tabulator", lua.LString("true"))
+	html2 := renderTable(plain, "frm", "t", "c:frm:t", "", "", "", "", "")
+	if strings.Contains(html2, "paginationMode") {
+		t.Errorf("non-DB table got forced pagination: %s", html2)
+	}
+}

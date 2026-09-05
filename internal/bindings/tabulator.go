@@ -270,6 +270,38 @@ func isTabulator(ctrl *lua.LTable) bool {
 	return t != lua.LNil && t.String() == "true"
 }
 
+// isDBLinked reports whether a table control carries a DB link (db handle +
+// base SELECT), i.e. the Go pager should serve its pages.
+func isDBLinked(ctrl *lua.LTable) bool {
+	db := ctrl.RawGetString("db")
+	q := ctrl.RawGetString("query")
+	return db != lua.LNil && db.String() != "" && q != lua.LNil && q.String() != ""
+}
+
+// forceRemotePaging merges remote pagination into a Tabulator options JSON
+// string. DB-linked tables always page server-side, so paginationMode is forced
+// to "remote" and paginationSize defaults to the control's page_size. Existing
+// explicit values win.
+func forceRemotePaging(optionsJSON string, ctrl *lua.LTable) string {
+	var opts map[string]interface{}
+	if err := json.Unmarshal([]byte(optionsJSON), &opts); err != nil || opts == nil {
+		opts = map[string]interface{}{}
+	}
+	opts["paginationMode"] = "remote"
+	if _, has := opts["paginationSize"]; !has {
+		if v := ctrl.RawGetString("page_size"); v != lua.LNil {
+			if n := int(lua.LVAsNumber(v)); n > 0 {
+				opts["paginationSize"] = n
+			}
+		}
+	}
+	out, err := json.Marshal(opts)
+	if err != nil {
+		return optionsJSON
+	}
+	return string(out)
+}
+
 // renderTable renders a table control, dispatching to the traditional or the
 // Tabulator renderer. Accessed via renderControl's "table" case.
 func renderTable(ctrl *lua.LTable, formName, name, id, label, value, visible, enabled, attrs string) string {
@@ -289,6 +321,11 @@ func renderTabulatorTable(ctrl *lua.LTable, formName, name, id, label, visible, 
 		} else if to.String() != "" {
 			optionsJSON = to.String()
 		}
+	}
+	// DB-linked tables must page through the Go host; force remote pagination
+	// (and size) so the client installs the dataLoader that drives it.
+	if isDBLinked(ctrl) {
+		optionsJSON = forceRemotePaging(optionsJSON, ctrl)
 	}
 
 	columnsJSON := "[]"
