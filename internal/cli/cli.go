@@ -84,7 +84,7 @@ func runCmd(args []string) int {
 	fs.SetOutput(os.Stderr)
 
 	var (
-		port         = fs.Int("port", 0, "HTTP port (0 = ephemeral)")
+		port         = fs.Int("port", 9000, "HTTP port (default 9000)")
 		noBrowser    = fs.Bool("no-browser", false, "Do not open browser")
 		sessionLimit = fs.Int("session-limit", 8, "Max concurrent browser tabs")
 		verbose      = fs.Bool("v", false, "Verbose logging")
@@ -101,7 +101,7 @@ func runCmd(args []string) int {
 	fs.Var(&argFlag, "a", "Shorthand for --arg")
 	fs.Var(&allowFSFlag, "allow-fs", "Allow filesystem access outside cwd (repeatable)")
 	fs.Var(&allowFSFlag, "f", "Shorthand for --allow-fs")
-	fs.IntVar(port, "p", 0, "Shorthand for --port")
+	fs.IntVar(port, "p", 9000, "Shorthand for --port")
 	fs.BoolVar(noBrowser, "n", false, "Shorthand for --no-browser")
 	fs.IntVar(sessionLimit, "l", 8, "Shorthand for --session-limit")
 
@@ -374,7 +374,7 @@ end
 // addRunFlags registers the run-mode flags (used for --help output). The
 // values are discarded; only the definitions/usage text matter.
 func addRunFlags(fs *flag.FlagSet) {
-	fs.Int("port", 0, "HTTP port (0 = ephemeral)")
+	fs.Int("port", 9000, "HTTP port (default 9000)")
 	fs.Bool("no-browser", false, "Do not open browser")
 	fs.Bool("n", false, "Shorthand for --no-browser")
 	fs.Int("session-limit", 8, "Max concurrent browser tabs")

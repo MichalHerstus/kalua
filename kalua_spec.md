@@ -559,7 +559,7 @@ NFC, Sensors, RFID Tag Found…) have no KALUA counterpart.
 ## 6. CLI specification
 
 ```
-KALUA run    <app.lua> [--port 8080|0] [--no-browser] [--session-limit N] [--test] [--verbose] [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]...
+KALUA run    <app.lua> [--port 9000] [--no-browser] [--session-limit N] [--test] [--verbose] [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]...
 KALUA serve  <app.lua> [--port 8080] [--workers N] [--mode http|ws|tcp] [--verbose] [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]...
 KALUA check  <app.lua>                  # reports syntax/global misuse
 KALUA new    <name>                     # scaffolds a minimal app.lua
@@ -568,8 +568,9 @@ KALUA repl   [repl.lua] [--port 0] [--no-browser] [--verbose]    # interactive b
 KALUA version
 ```
 
-- `run` serves the app as a web app and opens the default browser. `--port 0` (default)
-  picks a free ephemeral port; `--port N` binds a fixed port; `--no-browser` suppresses the
+- `run` serves the app as a web app and opens the default browser. `--port 9000`
+  (default) binds the Fixed port; `--port 0` picks a free ephemeral port;
+  `--no-browser` suppresses the
   auto-open (also used by tests). `--session-limit` caps concurrent tabs (default 8).
   `--test` runs headless without any HTTP server (used by the test suite).
 - `serve` starts a headless HTTP/WebSocket/TCP API server (`handle_http`/`handle_ws`/
@@ -850,7 +851,7 @@ CLI: `KALUA run app.lua --verbose --repl-on-error` (Phase A)
 ### 11.7 Updated CLI Spec (Section 6 Addition)
 
 ```
-KALUA run    <app.lua> [--port 8080|0] [--no-browser] [--session-limit N] [--verbose] [--repl-on-error] [--debug] [--debug-port 9966] [--db NAME=DSN]... [--arg K=V]...
+KALUA run    <app.lua> [--port 9000] [--no-browser] [--session-limit N] [--verbose] [--repl-on-error] [--debug] [--debug-port 9966] [--db NAME=DSN]... [--arg K=V]...
 KALUA serve  <app.lua> [--port 8080] [--workers N] [--mode http|ws|tcp] [--debug] [--debug-worker 1] [--debug-port 9966] [--verbose] [--db NAME=DSN]... [--arg K=V]...
 KALUA check  <app.lua>                  # reports syntax/global misuse
 KALUA version
