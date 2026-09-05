@@ -2,6 +2,7 @@
 package bindings
 
 import (
+	"encoding/json"
 	"html"
 	"strconv"
 	"strings"
@@ -74,6 +75,7 @@ func registerForms(e *Env) {
 			Type: "close_form",
 			Form: name,
 		})
+		emitChartDestroys(e, L, name)
 
 		return 0
 	})
@@ -92,6 +94,7 @@ func registerForms(e *Env) {
 					Type: "close_form",
 					Form: closed,
 				})
+				emitChartDestroys(e, L, closed)
 			}
 		}
 
@@ -221,6 +224,24 @@ func registerControls(e *Env) {
 		name := L.CheckString(2)
 		opts := L.OptTable(3, L.NewTable())
 		addControl(L, formName, name, "looper", opts)
+		return 0
+	})
+
+	// k.ctrl.chart(form, name, options)
+	e.register("ctrl.chart", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "chart", opts)
+		return 0
+	})
+
+	// k.ctrl.image(form, name, options)
+	e.register("ctrl.image", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "image", opts)
 		return 0
 	})
 
@@ -440,7 +461,8 @@ func registerControls(e *Env) {
 		return 0
 	})
 
-	// k.ctrl.set_value(form, name, value)
+	// k.ctrl.set_value(form, name, value). For image controls the value maps to
+	// the src attribute (spec §4.3 Dynamic Update).
 	e.register("ctrl.set_value", "controls", func(L *lua.LState) int {
 		formName := L.CheckString(1)
 		name := L.CheckString(2)
@@ -451,6 +473,9 @@ func registerControls(e *Env) {
 			return 0
 		}
 		ctrl.RawSetString("value", value)
+		if ctrl.RawGetString("type").String() == "image" {
+			ctrl.RawSetString("src", value)
+		}
 
 		// Re-render and send update
 		html := renderControl(ctrl)
@@ -473,6 +498,12 @@ func registerControls(e *Env) {
 		if ctrl == nil {
 			L.Push(lua.LNil)
 			return 1
+		}
+		if ctrl.RawGetString("type").String() == "image" {
+			if v := ctrl.RawGetString("src"); v != lua.LNil {
+				L.Push(v)
+				return 1
+			}
 		}
 		L.Push(ctrl.RawGetString("value"))
 		return 1
@@ -557,6 +588,9 @@ func registerControls(e *Env) {
 
 	// Looper data operations (DB-linked loopers)
 	registerLooperOps(e)
+
+	// Chart data operations (Chart.js)
+	registerChartOps(e)
 }
 
 // addControl adds a control to a form definition.
@@ -612,8 +646,9 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 	ctrlTbl.RawSetString("items", opts.RawGetString("items"))
 	ctrlTbl.RawSetString("hidden_value", opts.RawGetString("hidden_value"))
 
-	// For button with onclick, register as click handler
-	if ctrlType == "button" {
+	// For button with onclick, register as click handler. Image controls are
+	// clickable too (clickable=true option) and share the same handler table.
+	if ctrlType == "button" || ctrlType == "image" {
 		onclick := opts.RawGetString("onclick")
 		if onclick != lua.LNil {
 			if lfn, ok := onclick.(*lua.LFunction); ok {
@@ -665,6 +700,54 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("count_query", opts.RawGetString("count_query"))
 		ctrlTbl.RawSetString("db_where", opts.RawGetString("where"))
 		ctrlTbl.RawSetString("db_order_by", opts.RawGetString("order_by"))
+	}
+
+	// Chart options (Chart.js)
+	if ctrlType == "chart" {
+		ctrlTbl.RawSetString("chart_type", opts.RawGetString("type"))
+		ctrlTbl.RawSetString("labels", opts.RawGetString("labels"))
+		ctrlTbl.RawSetString("datasets", opts.RawGetString("datasets"))
+		ctrlTbl.RawSetString("options", opts.RawGetString("options"))
+		ctrlTbl.RawSetString("width", opts.RawGetString("width"))
+		ctrlTbl.RawSetString("height", opts.RawGetString("height"))
+		ctrlTbl.RawSetString("responsive", opts.RawGetString("responsive"))
+		ctrlTbl.RawSetString("maintainAspectRatio", opts.RawGetString("maintainAspectRatio"))
+		ctrlTbl.RawSetString("legend", opts.RawGetString("legend"))
+		ctrlTbl.RawSetString("legendPosition", opts.RawGetString("legendPosition"))
+		ctrlTbl.RawSetString("animation", opts.RawGetString("animation"))
+		ctrlTbl.RawSetString("stacked", opts.RawGetString("stacked"))
+	}
+
+	// Textbox extended options (kforms_enhancements.md §4.1): multiline
+	// (textarea) and datetime (flatpickr) modes.
+	if ctrlType == "textbox" {
+		ctrlTbl.RawSetString("multiline", opts.RawGetString("multiline"))
+		ctrlTbl.RawSetString("rows", opts.RawGetString("rows"))
+		ctrlTbl.RawSetString("cols", opts.RawGetString("cols"))
+		ctrlTbl.RawSetString("datetime", opts.RawGetString("datetime"))
+		dt := opts.RawGetString("datetime")
+		if dtTbl, ok := dt.(*lua.LTable); ok {
+			for _, k := range []string{"mode", "format", "min", "max", "step"} {
+				ctrlTbl.RawSetString("datetime_"+k, dtTbl.RawGetString(k))
+			}
+		} else if dt != lua.LNil && dt != lua.LFalse {
+			ctrlTbl.RawSetString("datetime_mode", lua.LString("datetime"))
+		}
+	}
+
+	// Label multiline option (kforms_enhancements.md §4.2).
+	if ctrlType == "label" {
+		ctrlTbl.RawSetString("multiline", opts.RawGetString("multiline"))
+	}
+
+	// Image control options (kforms_enhancements.md §4.3).
+	if ctrlType == "image" {
+		ctrlTbl.RawSetString("src", opts.RawGetString("src"))
+		ctrlTbl.RawSetString("alt", opts.RawGetString("alt"))
+		ctrlTbl.RawSetString("width", opts.RawGetString("width"))
+		ctrlTbl.RawSetString("height", opts.RawGetString("height"))
+		ctrlTbl.RawSetString("fit", opts.RawGetString("fit"))
+		ctrlTbl.RawSetString("clickable", opts.RawGetString("clickable"))
 	}
 
 	controlsTbl.RawSetString(name, ctrlTbl)
@@ -766,8 +849,36 @@ func renderControl(ctrl *lua.LTable) string {
 
 	switch ctrlType {
 	case "label":
+		// Multiline labels render as a pre-wrap div so \n is preserved.
+		if ctrl.RawGetString("multiline").String() == "true" {
+			return `<div class="kalua-label kalua-label-multiline" id="` + escAttr(id) + `"` + visible + `>` + label + `</div>`
+		}
 		return `<label class="kalua-label" id="` + escAttr(id) + `">` + label + `</label>`
 	case "textbox":
+		if ctrl.RawGetString("multiline").String() == "true" {
+			rows := 4
+			if v := ctrl.RawGetString("rows"); v != lua.LNil {
+				if n := int(lua.LVAsNumber(v)); n > 0 {
+					rows = n
+				}
+			}
+			cols := 50
+			if v := ctrl.RawGetString("cols"); v != lua.LNil {
+				if n := int(lua.LVAsNumber(v)); n > 0 {
+					cols = n
+				}
+			}
+			return `<div class="kalua-control"` + visible + `>
+				<label class="kalua-label" for="` + escAttr(id) + `">` + label + `</label>
+				<textarea class="kalua-textarea" id="` + escAttr(id) + `" name="` + name + `" rows="` + strconv.Itoa(rows) + `" cols="` + strconv.Itoa(cols) + `"` + attrs + enabled + `>` + escText(ctrl.RawGetString("value").String()) + `</textarea>
+			</div>`
+		}
+		if datetime := ctrl.RawGetString("datetime"); datetime != lua.LNil && datetime != lua.LFalse {
+			return `<div class="kalua-control"` + visible + `>
+				<label class="kalua-label" for="` + escAttr(id) + `">` + label + `</label>
+				<input type="text" class="kalua-input kalua-datetime" id="` + escAttr(id) + `" name="` + name + `" value="` + value + `" data-k-datetime-options="` + datetimeOptionsAttr(ctrl) + `"` + attrs + enabled + `>
+			</div>`
+		}
 		return `<div class="kalua-control"` + visible + `>
 			<label class="kalua-label" for="` + escAttr(id) + `">` + label + `</label>
 			<input type="text" class="kalua-input" id="` + escAttr(id) + `" name="` + name + `" value="` + value + `"` + attrs + enabled + `>
@@ -828,6 +939,10 @@ func renderControl(ctrl *lua.LTable) string {
 		return renderTable(ctrl, formName, name, id, label, value, visible, enabled, attrs)
 	case "looper":
 		return renderLooper(ctrl, formName, name, id, visible)
+	case "chart":
+		return renderChart(ctrl, formName, name, id, visible)
+	case "image":
+		return renderImage(ctrl, formName, name, id, visible)
 	}
 	return `<div class="kalua-control">Unknown control: ` + escText(ctrlType) + `</div>`
 }
@@ -955,6 +1070,163 @@ func looperLinkProp(linkTbl *lua.LTable, key string) string {
 		return ""
 	}
 	return v.String()
+}
+
+// renderImage renders the §4.3 image control. When clickable, the <img> carries
+// the data-k-form/data-k-ctrl attrs so the client reports clicks (value = src).
+func renderImage(ctrl *lua.LTable, formName, name, id, visible string) string {
+	src := ctrl.RawGetString("src")
+	srcTxt := ""
+	if src != lua.LNil {
+		srcTxt = src.String()
+	}
+	alt := ctrl.RawGetString("alt")
+	altTxt := ""
+	if alt != lua.LNil {
+		altTxt = alt.String()
+	}
+	fit := ctrl.RawGetString("fit")
+	fitTxt := "contain"
+	if fit != lua.LNil && fit.String() != "" {
+		fitTxt = fit.String()
+	}
+	var style string
+	if w := ctrl.RawGetString("width"); w != lua.LNil && w.String() != "" {
+		style += "width:" + cssLength(w.String()) + ";"
+	}
+	if h := ctrl.RawGetString("height"); h != lua.LNil && h.String() != "" {
+		style += "height:" + cssLength(h.String()) + ";"
+	}
+	style += "object-fit:" + cssLength(fitTxt) + ";"
+
+	data := ""
+	if ctrl.RawGetString("clickable").String() == "true" {
+		data = ` data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `"`
+	}
+
+	return `<div class="kalua-control kalua-image-container"` + visible + `>
+		<img class="kalua-image" id="` + escAttr(id) + `" src="` + escAttr(srcTxt) + `" alt="` + escAttr(altTxt) + `" style="` + style + `"` + data + `>
+	</div>`
+}
+
+// cssLength maps a numeric value to a px length and passes %, auto, keywords
+// through unchanged.
+func cssLength(s string) string {
+	if s == "" || s == "auto" {
+		return s
+	}
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return s + "px"
+	}
+	return s
+}
+
+// datetimeOptionsAttr builds the flatpickr config JSON embedded in the
+// data-k-datetime-options attribute for a §4.1 datetime textbox. It reads the
+// flattened datetime_* keys (populated by addControl) and falls back to reading
+// the datetime table directly for robustness.
+func datetimeOptionsAttr(ctrl *lua.LTable) string {
+	flattened := ctrl.RawGetString("datetime_mode") != lua.LNil
+	dt := func(key string) string {
+		if flattened {
+			if v := ctrl.RawGetString("datetime_" + key); v != lua.LNil {
+				return v.String()
+			}
+			return ""
+		}
+		dtTbl, ok := ctrl.RawGetString("datetime").(*lua.LTable)
+		if !ok {
+			return ""
+		}
+		if v := dtTbl.RawGetString(key); v != lua.LNil {
+			return v.String()
+		}
+		return ""
+	}
+	dtNum := func(key string) int {
+		if flattened {
+			if v := ctrl.RawGetString("datetime_" + key); v != lua.LNil {
+				return int(lua.LVAsNumber(v))
+			}
+			return 0
+		}
+		dtTbl, ok := ctrl.RawGetString("datetime").(*lua.LTable)
+		if !ok {
+			return 0
+		}
+		if v := dtTbl.RawGetString(key); v != lua.LNil {
+			return int(lua.LVAsNumber(v))
+		}
+		return 0
+	}
+
+	mode := dt("mode")
+	if mode == "" {
+		mode = "datetime"
+	}
+	format := dt("format")
+	min := dt("min")
+	max := dt("max")
+	step := dtNum("step")
+
+	cfg := map[string]interface{}{}
+	switch mode {
+	case "date":
+		cfg["enableTime"] = false
+		cfg["noCalendar"] = false
+		cfg["dateFormat"] = "Y-m-d"
+	case "time":
+		cfg["enableTime"] = true
+		cfg["noCalendar"] = true
+		cfg["dateFormat"] = "H:i"
+	default:
+		cfg["enableTime"] = true
+		cfg["noCalendar"] = false
+		cfg["dateFormat"] = "Y-m-d H:i"
+	}
+	if format != "" {
+		cfg["dateFormat"] = flatpickrFormat(format)
+	}
+	if min != "" {
+		cfg["minDate"] = min
+	}
+	if max != "" {
+		cfg["maxDate"] = max
+	}
+	if step > 0 {
+		cfg["minuteIncrement"] = step
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return ""
+	}
+	return escAttr(string(b))
+}
+
+// flatpickrFormat translates a Kalipso display format ("YYYY-MM-DD HH:MM") to
+// the flatpickr token dialect (Y-m-d H:i). A space splits date and time parts;
+// a ":" marks a time-only format.
+func flatpickrFormat(s string) string {
+	if date, time, ok := strings.Cut(s, " "); ok {
+		return flatpickrDate(date) + " " + flatpickrTime(time)
+	}
+	if strings.Contains(s, ":") {
+		return flatpickrTime(s)
+	}
+	return flatpickrDate(s)
+}
+
+func flatpickrDate(s string) string {
+	s = strings.ReplaceAll(s, "YYYY", "Y")
+	s = strings.ReplaceAll(s, "MM", "m")
+	s = strings.ReplaceAll(s, "DD", "d")
+	return s
+}
+
+func flatpickrTime(s string) string {
+	s = strings.ReplaceAll(s, "HH", "H")
+	s = strings.ReplaceAll(s, "MM", "i")
+	return s
 }
 
 // sendOutbox sends a message to the session outbox.

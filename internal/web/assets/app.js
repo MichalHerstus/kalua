@@ -400,6 +400,196 @@ function createTabulator(el) {
         return tabulatorInstances.get(selector);
     }
 
+    // ---- Chart.js control support ----
+    // Instances are keyed by the selector "#c:form:ctrl" (the canvas's form/ctrl
+    // data attributes). The config (type/data/options) is stored server-side in
+    // data-k-chart-config.
+    const chartInstances = new Map();
+
+    // initCharts scans a DOM scope for chart canvases and creates a Chart
+    // instance for each that is not already managed.
+    function initCharts(scope) {
+        if (typeof Chart === 'undefined') return;
+        const canvases = scope.querySelectorAll('.kalua-chart-canvas:not([data-k-chart-ready])');
+        canvases.forEach(function(canvas) {
+            const form = canvas.dataset.kForm;
+            const ctrl = canvas.dataset.kCtrl;
+            const key = '#c:' + form + ':' + ctrl;
+            if (chartInstances.has(key)) return;
+
+            let config = null;
+            try {
+                config = JSON.parse(canvas.getAttribute('data-k-chart-config') || '{}');
+            } catch (e) { return; }
+            if (!config.options) config.options = {};
+
+            // Click / hover → report element + value to the host.
+            const makePointHandler = function(eventName) {
+                return function(event, elements, chart) {
+                    if (!elements || !elements.length) return;
+                    const el = elements[0];
+                    sendEvent(form, ctrl, eventName, {
+                        dataset_index: el.datasetIndex + 1,
+                        index: el.index + 1,
+                        value: chartElementValue(chart, el)
+                    });
+                };
+            };
+            config.options.onClick = makePointHandler('chart_click');
+            config.options.onHover = makePointHandler('chart_hover');
+
+            // Legend click → report dataset index, then keep the default
+            // show/hide-dataset toggle behavior.
+            config.options.plugins = config.options.plugins || {};
+            config.options.plugins.legend = config.options.plugins.legend || {};
+            if (!config.options.plugins.legend.onClick) {
+                config.options.plugins.legend.onClick = function(e, legendItem, legend) {
+                    const chart = legend.chart;
+                    const di = legendItem.datasetIndex;
+                    sendEvent(form, ctrl, 'chart_legend_click', { dataset_index: di + 1 });
+                    const meta = chart.getDatasetMeta(di);
+                    meta.hidden = meta.hidden === null ? !chart.data.datasets[di].hidden : null;
+                    chart.update();
+                };
+            }
+
+            const chart = new Chart(canvas.getContext('2d'), config);
+            chartInstances.set(key, chart);
+            canvas.setAttribute('data-k-chart-ready', 'true');
+        });
+    }
+
+    // chartElementValue resolves the data value under a clicked/hovered element.
+    function chartElementValue(chart, el) {
+        const ds = chart.data.datasets[el.datasetIndex];
+        if (!ds) return null;
+        const v = ds.data[el.index];
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+            return v.x !== undefined ? v.x : null;
+        }
+        return v === undefined ? null : v;
+    }
+
+    function chartBySelector(selector) {
+        return chartInstances.get(selector);
+    }
+
+    // destroyCharts destroys all Chart instances whose canvas lives in scope
+    // (used on form close / update replacement).
+    function destroyCharts(scope) {
+        if (typeof Chart === 'undefined') return;
+        const canvases = scope.querySelectorAll('.kalua-chart-canvas[data-k-chart-ready]');
+        canvases.forEach(function(canvas) {
+            const key = '#c:' + (canvas.dataset.kForm || '') + ':' + (canvas.dataset.kCtrl || '');
+            const inst = chartInstances.get(key);
+            if (inst) {
+                inst.destroy();
+                chartInstances.delete(key);
+            }
+            canvas.removeAttribute('data-k-chart-ready');
+        });
+    }
+
+    function destroyChartBySelector(selector) {
+        const inst = chartInstances.get(selector);
+        if (inst) {
+            inst.destroy();
+            chartInstances.delete(selector);
+        }
+    }
+
+    // chartUpdate replaces the chart's data (and optionally options) and
+    // re-renders without animation.
+    function chartUpdate(selector, dataJson, optionsJson) {
+        const chart = chartBySelector(selector);
+        if (!chart) return;
+        try {
+            if (dataJson) chart.data = JSON.parse(dataJson);
+            if (optionsJson) mergeChartOptions(chart.options, JSON.parse(optionsJson));
+            chart.update('none');
+        } catch (e) {}
+    }
+
+    // chartOptions deep-merges new Chart.js options into the live chart.
+    function chartOptions(selector, optionsJson) {
+        const chart = chartBySelector(selector);
+        if (!chart) return;
+        try {
+            mergeChartOptions(chart.options, JSON.parse(optionsJson));
+            chart.update();
+        } catch (e) {}
+    }
+
+    // mergeChartOptions overlays source onto target at the leaf level so
+    // partial option updates (e.g. {scales:{y:{beginAtZero:true}}}) keep the
+    // rest of the chart options intact.
+    function mergeChartOptions(target, source) {
+        if (!source) return target;
+        Object.keys(source).forEach(function(key) {
+            const sv = source[key];
+            const tv = target[key];
+            if (tv && typeof tv === 'object' && sv && typeof sv === 'object' &&
+                !Array.isArray(tv) && !Array.isArray(sv)) {
+                mergeChartOptions(tv, sv);
+            } else {
+                target[key] = sv;
+            }
+        });
+        return target;
+    }
+
+    function chartResize(selector, sizeJson) {
+        const el = document.querySelector(selector);
+        if (el && sizeJson) {
+            const size = {};
+            try { Object.assign(size, JSON.parse(sizeJson)); } catch (e) {}
+            if (size.width) el.style.width = size.width + 'px';
+            if (size.height) el.style.height = size.height + 'px';
+        }
+        const chart = chartBySelector(selector);
+        if (chart) chart.resize();
+    }
+
+    // chartGetImage renders the canvas to a base64 PNG data URL and answers
+    // the suspended k.chart.get_image coroutine.
+    function chartGetImage(id, selector) {
+        const chart = chartBySelector(selector);
+        let value = '';
+        if (chart) {
+            try { value = chart.toBase64Image('image/png'); } catch (e) {}
+        }
+        send({ type: 'chart_image_resp', id: id, value: value });
+    }
+
+    // Date/time pickers (flatpickr, §4.1). Instances are keyed by selector so
+    // re-rendered controls destroy the old picker before the element is swapped.
+    const datePickerInstances = new Map();
+
+    function initDatePickers(scope) {
+        scope.querySelectorAll('input.kalua-datetime[data-k-form][data-k-ctrl]').forEach(function(el) {
+            const selector = '#' + el.id;
+            if (datePickerInstances.has(selector)) return;
+            if (typeof flatpickr === 'undefined') return;
+            const options = { allowInput: true };
+            if (el.dataset.kDatetimeOptions) {
+                try { Object.assign(options, JSON.parse(el.dataset.kDatetimeOptions)); } catch (e) {}
+            }
+            let fp = null;
+            try { fp = flatpickr(el, options); } catch (e) {}
+            if (fp) datePickerInstances.set(selector, fp);
+        });
+    }
+
+    function destroyDatePickers(scope) {
+        scope.querySelectorAll('input.kalua-datetime[data-k-form][data-k-ctrl]').forEach(function(el) {
+            const fp = datePickerInstances.get('#' + el.id);
+            if (fp) {
+                try { fp.destroy(); } catch (e) {}
+                datePickerInstances.delete('#' + el.id);
+            }
+        });
+    }
+
     // Message handling
     function handleMessage(msg) {
         switch (msg.type) {
@@ -468,6 +658,21 @@ function createTabulator(el) {
                 break;
             case 'looper_refresh':
                 looperRefresh(msg.selector || ('#c:' + msg.form + ':' + msg.ctrl));
+                break;
+            case 'chart_update':
+                chartUpdate(msg.selector, msg.data);
+                break;
+            case 'chart_options':
+                chartOptions(msg.selector, msg.data);
+                break;
+            case 'chart_resize':
+                chartResize(msg.selector, msg.data);
+                break;
+            case 'chart_destroy':
+                destroyChartBySelector(msg.selector);
+                break;
+            case 'chart_get_image':
+                chartGetImage(msg.id, msg.selector);
                 break;
         }
     }
@@ -767,6 +972,8 @@ function createTabulator(el) {
         stage.innerHTML = html;
         initTabulators(stage);
         initLoopers(stage);
+        initCharts(stage);
+        initDatePickers(stage);
         // Focus first focusable element
         const firstFocusable = stage.querySelector('input, select, button, textarea');
         if (firstFocusable) {
@@ -777,23 +984,32 @@ function createTabulator(el) {
     function updateControl(selector, html) {
         const el = document.querySelector(selector);
         if (el) {
-            // Destroy any Tabulator instance living inside the replaced element.
+            // Destroy any Tabulator / Chart / flatpickr instance living inside
+            // the replaced element.
             destroyTabulators(el);
+            destroyCharts(el);
+            destroyDatePickers(el);
             el.outerHTML = html;
             const fresh = document.querySelector(selector);
             if (fresh) initTabulators(fresh.parentElement || stage);
             if (fresh) initLoopers(fresh.parentElement || stage);
+            if (fresh) initCharts(fresh.parentElement || stage);
+            if (fresh) initDatePickers(fresh.parentElement || stage);
         }
     }
 
     function closeForm(name, top) {
         if (top) {
             destroyTabulators(stage);
+            destroyCharts(stage);
+            destroyDatePickers(stage);
             stage.innerHTML = '';
         } else {
             const formEl = document.getElementById('f:' + name);
             if (formEl) {
                 destroyTabulators(formEl);
+                destroyCharts(formEl);
+                destroyDatePickers(formEl);
                 formEl.remove();
             }
         }
@@ -997,6 +1213,9 @@ function createTabulator(el) {
     }
 
     function getControlValue(el) {
+        if (el.tagName === 'IMG') {
+            return el.getAttribute('src') || '';
+        }
         if (el.tagName === 'INPUT') {
             if (el.type === 'checkbox') {
                 return el.checked;

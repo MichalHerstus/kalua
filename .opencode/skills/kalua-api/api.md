@@ -106,8 +106,38 @@ Shows a form (modal) and suspends the script until it closes.
 
 ### Controls
 
+**`k.chart`**  
+Chart control operations: k.chart.set_data/add_dataset/...
+
+**`k.chart.add_dataset(form, name, dataset)`**  
+Appends a dataset {label, data, backgroundColor?, borderColor?, fill?, tension?, ...} to a chart.
+
+**`k.chart.get_image(form, name)`**  
+Renders the chart canvas to a base64 PNG data URL.
+
+**`k.chart.remove_dataset(form, name, index)`**  
+Removes a dataset by 1-based index.
+
+**`k.chart.resize(form, name, width, height)`**  
+Resizes the chart canvas to the given pixel dimensions.
+
+**`k.chart.set_data(form, name, {labels, datasets})`**  
+Bulk replaces a chart's labels and datasets.
+
+**`k.chart.set_labels(form, name, labels)`**  
+Replaces the chart's X-axis labels (array).
+
+**`k.chart.set_options(form, name, options)`**  
+Merges Chart.js options (scales, plugins, ...) into the chart.
+
+**`k.chart.update_dataset(form, name, index, dataset)`**  
+Replaces the dataset at 1-based index.
+
 **`k.ctrl.button(form, name, optsTable)`**  
 Adds a button control. opts may set label, class, onclick, enabled.
+
+**`k.ctrl.chart(form, name, optsTable)`**  
+Adds a Chart.js control. opts: {type=line|bar|hbar|pie|doughnut|scatter|radar|area, title, width=400, height=300, labels, datasets, options, responsive=true, maintainAspectRatio=false, legend=true, legendPosition=top, animation=true, stacked=false}. Events chart_click/chart_hover/chart_legend_click via k.form.on.
 
 **`k.ctrl.checkbox(form, name, optsTable)`**  
 Adds a checkbox control.
@@ -121,8 +151,11 @@ Gets an arbitrary control property.
 **`k.ctrl.get_value(form, name)`**  
 Returns a control's current value.
 
+**`k.ctrl.image(form, name, optsTable)`**  
+Adds an image control (<img>). opts: {src (required), alt, width, height (px or %), fit="cover|contain|fill|scale-down|none" (default contain), clickable?, onclick?}. k.ctrl.set_value(form, name, new_src) updates the image (kforms_enhancements.md §4.3).
+
 **`k.ctrl.label(form, name, optsTable)`**  
-Adds a label control to a form.
+Adds a label control. opts: {text, multiline?:boolean}. multiline renders a pre-wrap div preserving \n (kforms_enhancements.md §4.2).
 
 **`k.ctrl.list(form, name, optsTable)`**  
 Adds a multi-row select list. opts.items is a table of choices.
@@ -149,7 +182,7 @@ Sets a control's value and re-renders it.
 Adds a table control; rows manipulated via k.table.*.
 
 **`k.ctrl.textbox(form, name, optsTable)`**  
-Adds a textbox control. opts may set label, value, enabled, visible.
+Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolean, rows?:number, cols?:number, datetime?:boolean|table}. multiline renders a <textarea>. datetime enables a flatpickr picker: mode="date"|"time"|"datetime", format, min, max, step (kforms_enhancements.md §4.1).
 
 **`k.looper`**  
 Looper control operations: k.looper.link_db/set_db_source/refresh/...

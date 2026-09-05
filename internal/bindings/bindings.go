@@ -129,6 +129,17 @@ var registerKnown = map[string]string{
 	"looper.add_line":           "controls",
 	"looper.set_line":           "controls",
 	"looper.delete_line":        "controls",
+	"ctrl.chart":                "controls",
+	"chart":                     "controls", // namespace
+	"ctrl.image":                "controls",
+	"chart.set_data":            "controls",
+	"chart.add_dataset":         "controls",
+	"chart.remove_dataset":      "controls",
+	"chart.update_dataset":      "controls",
+	"chart.set_labels":          "controls",
+	"chart.set_options":         "controls",
+	"chart.get_image":           "controls",
+	"chart.resize":              "controls",
 	"table":                     "controls", // namespace
 	"table.add_line":            "controls",
 	"table.delete_line":         "controls",

@@ -30,6 +30,8 @@ type SessionInterface interface {
 	RequestTabulatorGetSelection(co *lua.LState, cancel func(), form, ctrl string)
 	PostTabulatorDataResp(reqID, value string)
 	PostTabulatorSelectionResp(reqID string, rows []int)
+	RequestChartGetImage(co *lua.LState, cancel func(), form, ctrl string)
+	PostChartImageResp(reqID, value string)
 }
 
 // DefaultConv converts an async result to a Lua value on the caller's state,

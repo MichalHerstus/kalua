@@ -59,8 +59,8 @@ var apiDocs = map[string]Info{
 
 	// controls
 	"ctrl":              {Name: "ctrl", Group: "controls", Signature: "k.ctrl", Docs: "Control constructors: k.ctrl.label/textbox/button/..."},
-	"ctrl.label":        {Name: "ctrl.label", Group: "controls", Signature: "k.ctrl.label(form, name, optsTable)", Docs: "Adds a label control to a form."},
-	"ctrl.textbox":      {Name: "ctrl.textbox", Group: "controls", Signature: "k.ctrl.textbox(form, name, optsTable)", Docs: "Adds a textbox control. opts may set label, value, enabled, visible."},
+	"ctrl.label":        {Name: "ctrl.label", Group: "controls", Signature: "k.ctrl.label(form, name, optsTable)", Docs: "Adds a label control. opts: {text, multiline?:boolean}. multiline renders a pre-wrap div preserving \\n (kforms_enhancements.md §4.2)."},
+	"ctrl.textbox":      {Name: "ctrl.textbox", Group: "controls", Signature: "k.ctrl.textbox(form, name, optsTable)", Docs: "Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolean, rows?:number, cols?:number, datetime?:boolean|table}. multiline renders a <textarea>. datetime enables a flatpickr picker: mode=\"date\"|\"time\"|\"datetime\", format, min, max, step (kforms_enhancements.md §4.1)."},
 	"ctrl.button":       {Name: "ctrl.button", Group: "controls", Signature: "k.ctrl.button(form, name, optsTable)", Docs: "Adds a button control. opts may set label, class, onclick, enabled."},
 	"ctrl.combo":        {Name: "ctrl.combo", Group: "controls", Signature: "k.ctrl.combo(form, name, optsTable)", Docs: "Adds a combo (dropdown) control. opts.items is a table of choices."},
 	"ctrl.list":         {Name: "ctrl.list", Group: "controls", Signature: "k.ctrl.list(form, name, optsTable)", Docs: "Adds a multi-row select list. opts.items is a table of choices."},
@@ -74,6 +74,8 @@ var apiDocs = map[string]Info{
 	"ctrl.set_focus":    {Name: "ctrl.set_focus", Group: "controls", Signature: "k.ctrl.set_focus(form, name)", Docs: "Moves focus to a control in the browser."},
 	"ctrl.refresh":      {Name: "ctrl.refresh", Group: "controls", Signature: "k.ctrl.refresh(form, name)", Docs: "Re-renders a single control and pushes the update."},
 	"ctrl.looper":       {Name: "ctrl.looper", Group: "controls", Signature: "k.ctrl.looper(form, name, optsTable)", Docs: "Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}."},
+	"ctrl.chart":        {Name: "ctrl.chart", Group: "controls", Signature: "k.ctrl.chart(form, name, optsTable)", Docs: "Adds a Chart.js control. opts: {type=line|bar|hbar|pie|doughnut|scatter|radar|area, title, width=400, height=300, labels, datasets, options, responsive=true, maintainAspectRatio=false, legend=true, legendPosition=top, animation=true, stacked=false}. Events chart_click/chart_hover/chart_legend_click via k.form.on."},
+	"ctrl.image":        {Name: "ctrl.image", Group: "controls", Signature: "k.ctrl.image(form, name, optsTable)", Docs: "Adds an image control (<img>). opts: {src (required), alt, width, height (px or %), fit=\"cover|contain|fill|scale-down|none\" (default contain), clickable?, onclick?}. k.ctrl.set_value(form, name, new_src) updates the image (kforms_enhancements.md §4.3)."},
 
 	// looper operations
 	"looper":               {Name: "looper", Group: "controls", Signature: "k.looper", Docs: "Looper control operations: k.looper.link_db/set_db_source/refresh/..."},
@@ -83,6 +85,17 @@ var apiDocs = map[string]Info{
 	"looper.add_line":      {Name: "looper.add_line", Group: "controls", Signature: "k.looper.add_line(form, name, valuesTable)", Docs: "Raises a runtime error on DB-linked loopers (rows come from the linked query)."},
 	"looper.set_line":      {Name: "looper.set_line", Group: "controls", Signature: "k.looper.set_line(form, name, index, valuesTable)", Docs: "Raises a runtime error on DB-linked loopers (rows come from the linked query)."},
 	"looper.delete_line":   {Name: "looper.delete_line", Group: "controls", Signature: "k.looper.delete_line(form, name, index)", Docs: "Raises a runtime error on DB-linked loopers (rows come from the linked query)."},
+
+	// chart operations
+	"chart":                {Name: "chart", Group: "controls", Signature: "k.chart", Docs: "Chart control operations: k.chart.set_data/add_dataset/..."},
+	"chart.set_data":       {Name: "chart.set_data", Group: "controls", Signature: "k.chart.set_data(form, name, {labels, datasets})", Docs: "Bulk replaces a chart's labels and datasets."},
+	"chart.add_dataset":    {Name: "chart.add_dataset", Group: "controls", Signature: "k.chart.add_dataset(form, name, dataset)", Docs: "Appends a dataset {label, data, backgroundColor?, borderColor?, fill?, tension?, ...} to a chart."},
+	"chart.remove_dataset": {Name: "chart.remove_dataset", Group: "controls", Signature: "k.chart.remove_dataset(form, name, index)", Docs: "Removes a dataset by 1-based index."},
+	"chart.update_dataset": {Name: "chart.update_dataset", Group: "controls", Signature: "k.chart.update_dataset(form, name, index, dataset)", Docs: "Replaces the dataset at 1-based index."},
+	"chart.set_labels":     {Name: "chart.set_labels", Group: "controls", Signature: "k.chart.set_labels(form, name, labels)", Docs: "Replaces the chart's X-axis labels (array)."},
+	"chart.set_options":    {Name: "chart.set_options", Group: "controls", Signature: "k.chart.set_options(form, name, options)", Docs: "Merges Chart.js options (scales, plugins, ...) into the chart."},
+	"chart.get_image":      {Name: "chart.get_image", Group: "controls", Signature: "k.chart.get_image(form, name)", Docs: "Renders the chart canvas to a base64 PNG data URL."},
+	"chart.resize":         {Name: "chart.resize", Group: "controls", Signature: "k.chart.resize(form, name, width, height)", Docs: "Resizes the chart canvas to the given pixel dimensions."},
 
 	// table operations
 	"table":                     {Name: "table", Group: "controls", Signature: "k.table", Docs: "Table control operations: k.table.add_line/delete_line/..."},
@@ -390,7 +403,7 @@ var Globals = []string{"ARGS", "CTRL", "main"}
 
 // namespaceNames are registry entries that are pure namespaces with no
 // implementation of their own; the sync test exempts them from Info.
-var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true, "shared": true, "ws": true, "tcp": true, "xml": true}
+var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true, "looper": true, "chart": true, "shared": true, "ws": true, "tcp": true, "xml": true}
 
 // Docs returns a copy of the k.* documentation map (name → Info).
 func Docs() map[string]Info {

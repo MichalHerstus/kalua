@@ -473,3 +473,84 @@ body {
 .kalua-looper-sentinel {
     height: 1px;
 }
+
+/* Chart control (Chart.js) */
+.kalua-chart-container {
+    position: relative;
+    width: 100%;
+    min-height: 200px;
+}
+
+.kalua-chart-container canvas {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+}
+
+.kalua-control > .kalua-chart-container {
+    flex: 1;
+}
+
+/* Textbox multiline / datetime (§4.1) */
+.kalua-textarea {
+    width: 100%;
+    min-height: 60px;
+    resize: vertical;
+    box-sizing: border-box;
+}
+
+.kalua-input.kalua-datetime {
+    cursor: pointer;
+}
+
+/* flatpickr theme tuned to KALUA */
+.flatpickr-calendar {
+    font-size: 13px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.flatpickr-day.selected,
+.flatpickr-day.selected:hover,
+.flatpickr-day.today.selected {
+    background: #1976d2;
+    border-color: #1976d2;
+}
+
+.flatpickr-months .flatpickr-prev-month:hover svg,
+.flatpickr-months .flatpickr-next-month:hover svg {
+    fill: #1976d2;
+}
+
+.flatpickr-day.today {
+    border-color: #1976d2;
+}
+
+.flatpickr-time input:hover,
+.flatpickr-time input:focus {
+    background: rgba(25, 118, 210, 0.08);
+}
+
+/* Label multiline (§4.2) */
+.kalua-label-multiline {
+    display: block;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* Image control (§4.3) */
+.kalua-image-container {
+    display: block;
+}
+
+.kalua-image {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    display: block;
+}
+
+.kalua-image[data-k-form][data-k-ctrl] {
+    cursor: pointer;
+}

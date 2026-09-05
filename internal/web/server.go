@@ -345,6 +345,10 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		form := getString(msg, "form")
 		ctrl := getString(msg, "ctrl")
 		sess.PostLooperRefreshRequest(form, ctrl)
+	case "chart_image_resp":
+		id := getString(msg, "id")
+		value := getString(msg, "value")
+		sess.PostChartImageResp(id, value)
 	case "client_info":
 		w := getInt(msg, "w")
 		h := getInt(msg, "h")

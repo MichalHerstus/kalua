@@ -781,7 +781,7 @@ Enhance existing controls and add a new image control:
 
 ---
 
-## 3.1 Textbox Enhancements
+## 4.1 Textbox Enhancements
 
 ### New Options for `k.ctrl.textbox(form, name, opts)`
 
@@ -815,7 +815,7 @@ Enhance existing controls and add a new image control:
 
 ---
 
-## 3.2 Label Enhancement
+## 4.2 Label Enhancement
 
 ### New Option for `k.ctrl.label(form, name, opts)`
 
@@ -838,7 +838,7 @@ Enhance existing controls and add a new image control:
 
 ---
 
-## 3.3 Image Control (New)
+## 4.3 Image Control (New)
 
 ### New Constructor: `k.ctrl.image(form, name, opts)`
 

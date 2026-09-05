@@ -37,6 +37,7 @@ const (
 	inboxTabulatorAjaxRequest                // browser asked for a remote page of rows
 	inboxLooperScrollRequest                 // browser asked for the next looper batch of rows
 	inboxLooperRefreshRequest                // browser re-triggered a looper fetch
+	inboxChartImageResp                      // browser answered k.chart.get_image
 )
 
 // asyncOp represents a suspended coroutine waiting for an async operation
@@ -242,6 +243,8 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.handleLooperScrollRequest(msg, logger)
 	case inboxLooperRefreshRequest:
 		s.handleLooperRefreshRequest(msg, logger)
+	case inboxChartImageResp:
+		s.resumeChartImageResp(msg.respID, msg.resp, logger)
 	}
 }
 
@@ -265,8 +268,20 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		}
 	}
 
+	// Chart interaction events: the browser sends chart_click/chart_hover/
+	// chart_legend_click with a value table {dataset_index, index, value}.
+	// Unpack them into chart_click(dataset_index, index, value) /
+	// chart_legend_click(dataset_index); the table is not a set of control
+	// values, so skip the control-value update.
+	chartDispatch := false
+	if (msg.event == "chart_click" || msg.event == "chart_hover" || msg.event == "chart_legend_click") && s.isChartControl(msg.form, msg.ctrl) {
+		if vt, ok := value.(*lua.LTable); ok {
+			chartDispatch = vt.RawGetString("dataset_index") != lua.LNil
+		}
+	}
+
 	// Update control value in form definition from browser event
-	if !looperDispatch && value != lua.LNil {
+	if !looperDispatch && !chartDispatch && value != lua.LNil {
 		s.updateControlValue(msg.form, msg.ctrl, value)
 	}
 
@@ -324,6 +339,12 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 			ctrlName = lua.LString("")
 		}
 		resumeArgs = []lua.LValue{ctrlName, vt.RawGetString("line_idx")}
+	case chartDispatch && msg.event == "chart_legend_click":
+		vt := value.(*lua.LTable)
+		resumeArgs = []lua.LValue{vt.RawGetString("dataset_index")}
+	case chartDispatch:
+		vt := value.(*lua.LTable)
+		resumeArgs = []lua.LValue{vt.RawGetString("dataset_index"), vt.RawGetString("index"), vt.RawGetString("value")}
 	default:
 		resumeArgs = []lua.LValue{value}
 	}
@@ -1130,6 +1151,66 @@ func (s *Session) PostLooperRefreshRequest(form, ctrl string) {
 	}
 }
 
+// RequestChartGetImage asks the browser to render the chart canvas to a base64
+// PNG data URL and suspends the coroutine until it is delivered
+// (chart_image_resp). The resolved Lua value is the PNG data URL string.
+func (s *Session) RequestChartGetImage(co *lua.LState, cancel func(), form, ctrl string) {
+	reqID := fmt.Sprintf("chartimg_%d", time.Now().UnixNano())
+
+	s.asyncMu.Lock()
+	s.asyncOps[reqID] = &asyncOp{co: co, cancel: cancel}
+	s.asyncMu.Unlock()
+
+	s.SendOutbox(common.OutboxMsg{
+		Type: "chart_get_image",
+		Form: form,
+		Ctrl: ctrl,
+		ID:   reqID,
+	})
+}
+
+// PostChartImageResp forwards the browser's chart_image_resp value (the chart
+// canvas rendered to a PNG data URL) to the actor inbox.
+func (s *Session) PostChartImageResp(reqID, value string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxChartImageResp, respID: reqID, resp: value}:
+	case <-s.done:
+	}
+}
+
+// resumeChartImageResp resumes the coroutine suspended by k.chart.get_image
+// with the PNG data URL string from the browser.
+func (s *Session) resumeChartImageResp(reqID, dataURL string, logger Logger) {
+	s.asyncMu.Lock()
+	op, exists := s.asyncOps[reqID]
+	if exists {
+		delete(s.asyncOps, reqID)
+	}
+	s.asyncMu.Unlock()
+
+	if !exists {
+		logger.Warnf("chart image response for unknown op: %s", reqID)
+		return
+	}
+
+	val := lua.LNil
+	if dataURL != "" {
+		val = lua.LString(dataURL)
+	}
+
+	st, err, _ := s.L.Resume(op.co, nil, val)
+	if st == lua.ResumeError {
+		if s.env != nil && s.env.Logger != nil {
+			s.env.Logger.Errorf("chart image resume error: %v", err)
+		}
+		return
+	}
+	if st != lua.ResumeOK && op.cancel != nil {
+		op.cancel()
+	}
+	s.flushOutbox()
+}
+
 // PostClipboardResp is called from the web bridge goroutine when the browser
 // delivers clipboard text. It forwards the value to the actor inbox so the
 // resume happens on the actor goroutine (s.L is not thread-safe).
@@ -1555,6 +1636,26 @@ func (s *Session) isLooperControl(formName, ctrlName string) bool {
 		return false
 	}
 	return ctrlTbl.RawGetString("type").String() == "looper"
+}
+
+// isChartControl reports whether (formName, ctrlName) is a chart control.
+func (s *Session) isChartControl(formName, ctrlName string) bool {
+	formTbl := s.L.GetGlobal(formName)
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	return ctrlTbl.RawGetString("type").String() == "chart"
 }
 
 // updateControlValue updates a control's value in the form definition.
