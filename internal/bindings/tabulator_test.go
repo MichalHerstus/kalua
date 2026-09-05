@@ -95,3 +95,57 @@ func TestRenderTraditionalTableStillWorks(t *testing.T) {
 		t.Errorf("traditional table missing row data: %s", html)
 	}
 }
+
+// TestRenderTabulatorOptionsJSON pins that tabulatorOptions and explicit
+// columns (Lua tables) are serialized to real JSON, not "table: 0x...".
+func TestRenderTabulatorOptionsJSON(t *testing.T) {
+	L := setupTestState(t)
+	ctrl := L.NewTable()
+	ctrl.RawSetString("tabulator", lua.LString("true"))
+	opts := L.NewTable()
+	opts.RawSetString("paginationMode", lua.LString("remote"))
+	opts.RawSetString("paginationSize", lua.LNumber(10))
+	ctrl.RawSetString("tabulatorOptions", opts)
+	cols := L.NewTable()
+	col := L.NewTable()
+	col.RawSetString("field", lua.LString("name"))
+	col.RawSetString("title", lua.LString("Name"))
+	col.RawSetString("sorter", lua.LString("string"))
+	cols.RawSetInt(1, col)
+	ctrl.RawSetString("columns", cols)
+
+	html := renderTable(ctrl, "frm", "tbl", "c:frm:tbl", "", "", "", "", "")
+	if strings.Contains(html, "table: 0x") {
+		t.Fatalf("renderTable emitted a raw Lua table string: %s", html)
+	}
+	if !strings.Contains(html, "paginationMode") || !strings.Contains(html, "remote") {
+		t.Errorf("tabulator options JSON missing paginationMode: %s", html)
+	}
+	if !strings.Contains(html, "&#34;field&#34;:&#34;name&#34;") || !strings.Contains(html, "&#34;title&#34;:&#34;Name&#34;") {
+		t.Errorf("columns JSON missing field/title: %s", html)
+	}
+}
+
+// TestRemotePageFromLua pins the k.table.set_remote_data payload conversion.
+func TestRemotePageFromLua(t *testing.T) {
+	L := setupTestState(t)
+	tbl := L.NewTable()
+	data := L.NewTable()
+	r := L.NewTable()
+	r.RawSetString("id", lua.LNumber(1))
+	data.RawSetInt(1, r)
+	tbl.RawSetString("data", data)
+	tbl.RawSetString("last_page", lua.LNumber(2))
+
+	p := remotePageFromLua(tbl)
+	if p.LastPage != 2 {
+		t.Errorf("last_page = %d, want 2", p.LastPage)
+	}
+	out := remotePayloadJSON(p)
+	if strings.Contains(out, "table: 0x") {
+		t.Errorf("remotePayloadJSON emitted raw Lua string: %s", out)
+	}
+	if !strings.Contains(out, `"last_page":2`) || !strings.Contains(out, `"id":1`) {
+		t.Errorf("remotePayloadJSON = %s, want data + last_page", out)
+	}
+}

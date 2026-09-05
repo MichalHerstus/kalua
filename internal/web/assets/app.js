@@ -184,6 +184,10 @@
     // ---- Tabulator table support ----
     // Instances are keyed by the element id (selector "#c:form:ctrl").
     const tabulatorInstances = new Map();
+    // Pending remote-pagination requests: selector -> {resolve, reject, timer}.
+    // Tabulator fires one dataLoader request at a time per table, so a single
+    // slot per selector is sufficient.
+    const ajaxResolvers = new Map();
 
     // initTabulators scans a DOM scope for table containers with
     // data-k-tabulator-options and initializes a Tabulator instance for each
@@ -238,6 +242,36 @@
                     });
                 }
                 sendEvent(form, ctrl, 'tabulator_selection_change', { rows: rows, data: selectedData || [] });
+            };
+        }
+
+        // Remote pagination: when paginationMode === 'remote', intercept every
+        // data request (initial load, page change, sort, filter) with a
+        // WebSocket round-trip instead of Tabulator's built-in ajaxURL fetch.
+        var remoteMode = opts.paginationMode === 'remote' || opts.pagination === 'remote';
+        if (remoteMode && typeof opts.dataLoader !== 'function') {
+            opts.dataLoader = function(params) {
+                return new Promise(function(resolve, reject) {
+                    var q = {
+                        page: (params && params.page) || 1,
+                        size: (params && params.size) || opts.paginationSize || 10,
+                        sort: (params && params.sort) || [],
+                        filter: (params && params.filter !== undefined && params.filter !== null)
+                            ? params.filter.map(function(f) {
+                                return { field: f.field, type: f.type, value: f.value };
+                              })
+                            : []
+                    };
+                    // Key the resolver slot by the table's selector so the
+                    // tabulator_remote_data response can find it.
+                    var selector = '#c:' + form + ':' + ctrl;
+                    var timer = setTimeout(function() {
+                        ajaxResolvers.delete(selector);
+                        reject(new Error('tabulator_ajax_request timeout'));
+                    }, 15000);
+                    ajaxResolvers.set(selector, { resolve: resolve, reject: reject, timer: timer });
+                    send({ type: 'tabulator_ajax_request', form: form, ctrl: ctrl, value: q });
+                });
             };
         }
 
@@ -400,6 +434,40 @@
             case 'tabulator_get_selection':
                 tabulatorGetSelection(msg.id, msg.selector, msg.form, msg.ctrl);
                 break;
+            case 'tabulator_remote_data':
+                tabulatorRemoteData(msg);
+                break;
+        }
+    }
+
+    // tabulatorRemoteData resolves the pending remote-pagination dataLoader
+    // promise for a table with the page the Go host returned. payload layout:
+    // { data: [...], last_page?: N, last_row?: N }.
+    function tabulatorRemoteData(msg) {
+        var selector = msg.selector || ('#c:' + msg.form + ':' + msg.ctrl);
+        var payload = {};
+        try { payload = JSON.parse(msg.data || '{}'); } catch (e) {}
+        var data = payload.data || [];
+        var lastPage = payload.last_page || 0;
+        var lastRow = payload.last_row || 0;
+
+        var slot = ajaxResolvers.get(selector);
+        if (slot) {
+            clearTimeout(slot.timer);
+            ajaxResolvers.delete(selector);
+            // Tabulator v6 loader accepts {data, last_page} or {data, last_row}.
+            var result = { data: data };
+            if (lastPage > 0) result.last_page = lastPage;
+            if (lastRow > 0) result.last_row = lastRow;
+            slot.resolve(result);
+        } else {
+            // No pending request (e.g. an app-initiated push via
+            // k.table.set_remote_data): replace data directly.
+            const inst = tabulatorInstances.get(selector);
+            if (inst) {
+                inst.setData(data);
+                if (lastPage > 0) inst.setMaxPage(lastPage);
+            }
         }
     }
 

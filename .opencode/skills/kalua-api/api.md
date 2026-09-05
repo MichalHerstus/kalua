@@ -172,6 +172,9 @@ Sets a cell value in a table control.
 **`k.table.set_data(form, name, dataTable)`**  
 Bulk replaces all row data (Tabulator mode pushes tabulator_update).
 
+**`k.table.set_remote_data(form, name, {data,last_page,last_row})`**  
+Pushes server-side pagination data to a tabulator table =  {data=rows, last_page=n} or {data=rows, last_row=n}.
+
 **`k.table.set_selected_column(form, name, column)`**  
 Sets the selected column.
 

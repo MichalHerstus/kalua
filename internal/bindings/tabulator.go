@@ -8,6 +8,7 @@
 package bindings
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/yuin/gopher-lua"
@@ -109,6 +110,81 @@ func registerTableOps(e *Env) {
 		L.Push(ctrl.RawGetString("selected_column"))
 		return 1
 	})
+
+	// k.table.set_remote_data(form, name, {data=..., last_page=..., last_row=...})
+	// pushes server-side pagination data to the browser. The table typically
+	// stays in sync via tabulator_ajax_request round-trips; this is the
+	// app-initiating variant used to seed or replace the current page.
+	e.register("table.set_remote_data", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			return 0
+		}
+		if ctrl.RawGetString("type").String() != "table" {
+			L.RaiseError("control %s is not a table", name)
+			return 0
+		}
+		if !isTabulator(ctrl) {
+			L.RaiseError("control %s is not a tabulator table", name)
+			return 0
+		}
+
+		remote := remotePageFromLua(opts)
+		sendOutbox(e, common.OutboxMsg{
+			Type:     "tabulator_remote_data",
+			Form:     formName,
+			Ctrl:     name,
+			Selector: "#c:" + formName + ":" + name,
+			Data:     remotePayloadJSON(remote),
+		})
+		return 0
+	})
+}
+
+// remotePage is the tabulator_remote_data payload.
+type remotePage struct {
+	Data     string
+	LastPage int
+	LastRow  int
+}
+
+// remotePageFromLua extracts {data, last_page, last_row} from a Lua table.
+func remotePageFromLua(tbl *lua.LTable) remotePage {
+	var r remotePage
+	if d := tbl.RawGetString("data"); d != lua.LNil {
+		if dTbl, ok := d.(*lua.LTable); ok {
+			r.Data = luaTableToJSON(dTbl)
+		} else {
+			r.Data = luaValueJSON(d)
+		}
+	}
+	if v := tbl.RawGetString("last_page"); v != lua.LNil {
+		r.LastPage = int(lua.LVAsNumber(v))
+	}
+	if v := tbl.RawGetString("last_row"); v != lua.LNil {
+		r.LastRow = int(lua.LVAsNumber(v))
+	}
+	return r
+}
+
+// remotePayloadJSON serializes a remotePage for the tabulator_remote_data
+// WebSocket message.
+func remotePayloadJSON(r remotePage) string {
+	data := r.Data
+	if data == "" {
+		data = "[]"
+	}
+	type wire struct {
+		Data     json.RawMessage `json:"data"`
+		LastPage int             `json:"last_page,omitempty"`
+		LastRow  int             `json:"last_row,omitempty"`
+	}
+	out, _ := json.Marshal(wire{Data: json.RawMessage(data), LastPage: r.LastPage, LastRow: r.LastRow})
+	return string(out)
 }
 
 // isTabulator reports whether a table control has tabulator=true enabled.
@@ -131,7 +207,11 @@ func renderTable(ctrl *lua.LTable, formName, name, id, label, value, visible, en
 func renderTabulatorTable(ctrl *lua.LTable, formName, name, id, label, visible, enabled string) string {
 	optionsJSON := `{"layout":"fitColumns","selectable":true,"selectableRangeMode":"click"}`
 	if to := ctrl.RawGetString("tabulatorOptions"); to != lua.LNil {
-		optionsJSON = to.String()
+		if toTbl, ok := to.(*lua.LTable); ok {
+			optionsJSON = luaTableToJSON(toTbl)
+		} else if to.String() != "" {
+			optionsJSON = to.String()
+		}
 	}
 
 	columnsJSON := "[]"
@@ -139,7 +219,11 @@ func renderTabulatorTable(ctrl *lua.LTable, formName, name, id, label, visible, 
 		if colsTbl, ok := cols.(*lua.LTable); ok {
 			var colStrs []string
 			colsTbl.ForEach(func(_ lua.LValue, v lua.LValue) {
-				colStrs = append(colStrs, v.String())
+				if colTbl, ok := v.(*lua.LTable); ok {
+					colStrs = append(colStrs, luaTableToJSON(colTbl))
+				} else if v.String() != "" {
+					colStrs = append(colStrs, `"`+jsonEscape(v.String())+`"`)
+				}
 			})
 			columnsJSON = "[" + strings.Join(colStrs, ",") + "]"
 		}
@@ -199,6 +283,12 @@ func renderTraditionalTable(ctrl *lua.LTable, formName, name, id, label, value, 
 	return `<div class="kalua-control"` + visible + `>
 		<table class="kalua-table" id="` + escAttr(id) + `"` + attrs + enabled + `>` + thead + tbody + `</table>
 	</div>`
+}
+
+// TableToJSON exports luaTableToJSON for cross-package use (e.g. the session
+// actor serializing a tabulator_ajax_request handler's Lua return value).
+func TableToJSON(tbl *lua.LTable) string {
+	return luaTableToJSON(tbl)
 }
 
 // luaTableToJSON converts a Lua table to a JSON string. Sequential 1..N

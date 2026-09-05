@@ -325,6 +325,11 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		id := getString(msg, "id")
 		rows := getIntSlice(msg, "rows")
 		sess.PostTabulatorSelectionResp(id, rows)
+	case "tabulator_ajax_request":
+		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
+		value := msg["value"]
+		sess.PostTabulatorAjaxRequest(form, ctrl, value)
 	case "client_info":
 		w := getInt(msg, "w")
 		h := getInt(msg, "h")

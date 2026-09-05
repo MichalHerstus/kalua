@@ -23,17 +23,18 @@ import (
 type inboxMsgType int
 
 const (
-	inboxNone          inboxMsgType = iota
-	inboxWSEvent                    // event from browser (click, input, etc.)
-	inboxTimer                      // timer fired
-	inboxAsyncDone                  // blocking operation completed (DB, HTTP, etc.)
-	inboxMsgboxChoice               // user answered a k.msgbox
-	inboxClipboardResp              // browser clipboard_get value
-	inboxFilePickerResp             // browser file picker result (JSON-encoded files)
-	inboxQuery                      // external read of Lua state (tests)
-	inboxSleepDone                  // k.sleep completed
-	inboxTabulatorDataResp          // browser answered k.table.get_data
-	inboxTabulatorSelectionResp     // browser answered k.table.get_selected_rows
+	inboxNone                   inboxMsgType = iota
+	inboxWSEvent                             // event from browser (click, input, etc.)
+	inboxTimer                               // timer fired
+	inboxAsyncDone                           // blocking operation completed (DB, HTTP, etc.)
+	inboxMsgboxChoice                        // user answered a k.msgbox
+	inboxClipboardResp                       // browser clipboard_get value
+	inboxFilePickerResp                      // browser file picker result (JSON-encoded files)
+	inboxQuery                               // external read of Lua state (tests)
+	inboxSleepDone                           // k.sleep completed
+	inboxTabulatorDataResp                   // browser answered k.table.get_data
+	inboxTabulatorSelectionResp              // browser answered k.table.get_selected_rows
+	inboxTabulatorAjaxRequest                // browser asked for a remote page of rows
 )
 
 // asyncOp represents a suspended coroutine waiting for an async operation
@@ -138,16 +139,16 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:     id,
-		L:      L,
-		app:    app,
-		env:    env,
+		id:      id,
+		L:       L,
+		app:     app,
+		env:     env,
 		verbose: opts.Verbose,
-		inbox:  make(chan inboxMsg, 64),
-		outbox: make(chan common.OutboxMsg, 64),
-		cancel: cancel,
-		done:   make(chan struct{}),
-		timers: make(map[string]*time.Timer),
+		inbox:   make(chan inboxMsg, 64),
+		outbox:  make(chan common.OutboxMsg, 64),
+		cancel:  cancel,
+		done:    make(chan struct{}),
+		timers:  make(map[string]*time.Timer),
 		// Form show coroutines
 		formCoros: make(map[string]*lua.LState),
 		// Async operations - suspended coroutines waiting for completion
@@ -233,6 +234,8 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.resumeTabulatorDataResp(msg.respID, msg.resp, logger)
 	case inboxTabulatorSelectionResp:
 		s.resumeTabulatorSelectionResp(msg.respID, msg.selectRows, logger)
+	case inboxTabulatorAjaxRequest:
+		s.handleTabulatorAjaxRequest(msg, logger)
 	}
 }
 
@@ -311,6 +314,136 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 
 	// Flush outbox after handler
 	s.flushOutbox()
+}
+
+// handleTabulatorAjaxRequest services the browser's remote-pagination page ask.
+// It runs the tabulator_ajax_request handler in a fresh coroutine, captures the
+// handler's Lua return value ({data, last_page} or {data, last_row}), and sends
+// a tabulator_remote_data message back so the browser can render the page.
+func (s *Session) handleTabulatorAjaxRequest(msg inboxMsg, logger Logger) {
+	// Convert the JSON-decoded request {page,size,sort,filter} to a Lua value.
+	val := lua.LNil
+	if msg.raw != nil {
+		val = s.toLuaValue(msg.raw)
+	}
+
+	// Look up the handler: form.handlers[ctrl]["tabulator_ajax_request"].
+	formTbl := s.L.GetGlobal(msg.form)
+	if formTbl == lua.LNil {
+		return
+	}
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return
+	}
+	handlers := tbl.RawGetString("handlers")
+	if handlers == lua.LNil {
+		return
+	}
+	handlersTbl, ok := handlers.(*lua.LTable)
+	if !ok {
+		return
+	}
+	ctrlHandlers := handlersTbl.RawGetString(msg.ctrl)
+	if ctrlHandlers == lua.LNil {
+		return
+	}
+	ctrlTbl, ok := ctrlHandlers.(*lua.LTable)
+	if !ok {
+		return
+	}
+	handler := ctrlTbl.RawGetString("tabulator_ajax_request")
+	if handler == lua.LNil {
+		return
+	}
+	fn, ok := handler.(*lua.LFunction)
+	if !ok {
+		return
+	}
+
+	co, cancel := s.L.NewThread()
+	st, err, rets := s.L.Resume(co, fn, val)
+	if st == lua.ResumeError {
+		if cancel != nil {
+			cancel()
+		}
+		logger.Errorf("tabulator_ajax_request handler error: %v", err)
+		if s.verbose {
+			logger.Errorf("%s", postMortemDump(s.L))
+		} else {
+			logger.Errorf("%s", getStack(s.L))
+		}
+		s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)}
+		return
+	}
+	if st != lua.ResumeOK && cancel != nil {
+		cancel()
+	}
+
+	// Collect the handler return value and send the remote page to the browser.
+	remote := remotePagePayload{Data: json.RawMessage("[]")}
+	if len(rets) > 0 && rets[0] != lua.LNil {
+		if retTbl, ok := rets[0].(*lua.LTable); ok {
+			remote = pagePayloadFromTable(retTbl)
+		}
+	}
+
+	s.SendOutbox(common.OutboxMsg{
+		Type:     "tabulator_remote_data",
+		Form:     msg.form,
+		Ctrl:     msg.ctrl,
+		Selector: "#c:" + msg.form + ":" + msg.ctrl,
+		Data:     remote.toJSON(),
+	})
+	s.flushOutbox()
+}
+
+// remotePagePayload is the tabulator_remote_data response the Lua
+// tabulator_ajax_request handler returns: {data=..., last_page=...} or
+// {data=..., last_row=...}. It is serialized to JSON for the browser.
+type remotePagePayload struct {
+	Data     interface{} `json:"data"`
+	LastPage int         `json:"last_page,omitempty"`
+	LastRow  int         `json:"last_row,omitempty"`
+}
+
+// pagePayloadFromTable converts a Lua table return value into the fields of a
+// remotePagePayload (data, last_page, last_row).
+func pagePayloadFromTable(tbl *lua.LTable) remotePagePayload {
+	var p remotePagePayload
+	if d := tbl.RawGetString("data"); d != lua.LNil {
+		// Re-encode the Lua table of rows as JSON for the browser.
+		if dTbl, ok := d.(*lua.LTable); ok {
+			p.Data = json.RawMessage(bindings.TableToJSON(dTbl))
+		}
+	}
+	if lp := tbl.RawGetString("last_page"); lp != lua.LNil {
+		p.LastPage = int(lua.LVAsNumber(lp))
+	}
+	if lr := tbl.RawGetString("last_row"); lr != lua.LNil {
+		p.LastRow = int(lua.LVAsNumber(lr))
+	}
+	return p
+}
+
+// toJSON serializes the payload. If Data is nil, emit an empty array so the
+// client always receives valid JSON and can clear the table.
+func (p remotePagePayload) toJSON() string {
+	data := p.Data
+	if data == nil {
+		data = json.RawMessage("[]")
+	}
+	type wire struct {
+		Data     json.RawMessage `json:"data"`
+		LastPage int             `json:"last_page,omitempty"`
+		LastRow  int             `json:"last_row,omitempty"`
+	}
+	if p.Data == nil {
+		out, _ := json.Marshal(wire{Data: json.RawMessage("[]")})
+		return string(out)
+	}
+	out, _ := json.Marshal(wire{Data: data.(json.RawMessage), LastPage: p.LastPage, LastRow: p.LastRow})
+	return string(out)
 }
 
 // handleTimer processes a timer event. It looks up a Lua global function named
@@ -606,6 +739,16 @@ func (s *Session) PostTabulatorSelectionResp(reqID string, rows []int) {
 	}
 }
 
+// PostTabulatorAjaxRequest forwards the browser's tabulator_ajax_request (a
+// remote-pagination page ask) to the actor inbox. The value is a JSON-decoded
+// object (page/size/sort/filter) passed as-is to the Lua handler.
+func (s *Session) PostTabulatorAjaxRequest(form, ctrl string, value interface{}) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxTabulatorAjaxRequest, form: form, ctrl: ctrl, raw: value}:
+	case <-s.done:
+	}
+}
+
 // PostClipboardResp is called from the web bridge goroutine when the browser
 // delivers clipboard text. It forwards the value to the actor inbox so the
 // resume happens on the actor goroutine (s.L is not thread-safe).
@@ -629,9 +772,9 @@ func (s *Session) RequestFilePicker(co *lua.LState, cancel func(), accept string
 	s.asyncMu.Unlock()
 
 	s.SendOutbox(common.OutboxMsg{
-		Type:   "pick_file",
-		ID:     pickerID,
-		Accept: accept,
+		Type:     "pick_file",
+		ID:       pickerID,
+		Accept:   accept,
 		Multiple: multiple,
 	})
 }
