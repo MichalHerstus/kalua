@@ -210,7 +210,7 @@
     // createTabulator reads the data-k-tabulator-* attributes on a container
     // and instantiates Tabulator. Columns are taken from data-k-tabulator-columns
     // (JSON array of {field,title,...}) or inferred from the first row of data.
-    function createTabulator(el) {
+function createTabulator(el) {
         var opts = {};
         try { opts = JSON.parse(el.dataset.kTabulatorOptions || '{}'); } catch (e) {}
         var cols = [];
@@ -218,18 +218,33 @@
         var data = [];
         try { data = JSON.parse(el.dataset.kTabulatorData || '[]'); } catch (e) {}
 
+        // Remote mode must be known before we decide whether to pass local data:
+        // Tabulator v6 treats a `data` array (even []) as the LOCAL data source
+        // and then never triggers remote loading, so DB/remote tables would
+        // stay empty. Omit `data` so ajaxRequestFunc (below) drives the load.
+        var remoteMode = opts.paginationMode === 'remote' || opts.pagination === 'remote';
+
         if (!cols || cols.length === 0) {
             cols = inferColumns(data);
         }
+        opts.columns = cols;
+        if (cols.length === 0) {
+            // Let Tabulator build columns from the first (possibly remote) row.
+            opts.autoColumns = true;
+        }
+        opts.layout = opts.layout || 'fitColumns';
+        opts.selectable = opts.selectable !== false;
+        opts.selectableRangeMode = opts.selectableRangeMode || 'click';
 
         var form = el.dataset.kForm;
         var ctrl = el.dataset.kCtrl;
 
-        opts.columns = cols;
-        opts.data = data || [];
-        opts.layout = opts.layout || 'fitColumns';
-        opts.selectable = opts.selectable !== false;
-        opts.selectableRangeMode = opts.selectableRangeMode || 'click';
+        if (remoteMode && (!data || data.length === 0)) {
+            // Omit `data` so the remote ajax loader drives the initial load.
+            delete opts.data;
+        } else {
+            opts.data = data || [];
+        }
 
         // Bridge selection changes to the host as tabulator_selection_change.
         if (typeof opts.rowSelectionChanged !== 'function') {
@@ -245,34 +260,42 @@
             };
         }
 
-        // Remote pagination: when paginationMode === 'remote', intercept every
-        // data request (initial load, page change, sort, filter) with a
-        // WebSocket round-trip instead of Tabulator's built-in ajaxURL fetch.
-        var remoteMode = opts.paginationMode === 'remote' || opts.pagination === 'remote';
-        if (remoteMode && typeof opts.dataLoader !== 'function') {
-            opts.dataLoader = function(params) {
-                return new Promise(function(resolve, reject) {
-                    var q = {
-                        page: (params && params.page) || 1,
-                        size: (params && params.size) || opts.paginationSize || 10,
-                        sort: (params && params.sort) || [],
-                        filter: (params && params.filter !== undefined && params.filter !== null)
-                            ? params.filter.map(function(f) {
-                                return { field: f.field, type: f.type, value: f.value };
-                              })
-                            : []
-                    };
-                    // Key the resolver slot by the table's selector so the
-                    // tabulator_remote_data response can find it.
-                    var selector = '#c:' + form + ':' + ctrl;
-                    var timer = setTimeout(function() {
-                        ajaxResolvers.delete(selector);
-                        reject(new Error('tabulator_ajax_request timeout'));
-                    }, 15000);
-                    ajaxResolvers.set(selector, { resolve: resolve, reject: reject, timer: timer });
-                    send({ type: 'tabulator_ajax_request', form: form, ctrl: ctrl, value: q });
-                });
-            };
+        // Remote pagination: route every data request (initial load, page change,
+        // sort, filter) through a WebSocket round-trip using Tabulator's
+        // documented ajaxRequestFunc override. ajaxURL is a dummy so Tabulator
+        // enters ajax-loading mode; the request is never actually made over HTTP.
+        if (remoteMode) {
+            opts.ajaxURL = opts.ajaxURL || '#kalua-ws';
+            opts.sortMode = 'remote';
+            opts.filterMode = 'remote';
+            if (typeof opts.ajaxRequestFunc !== 'function') {
+                opts.ajaxRequestFunc = function(url, config, params) {
+                    return new Promise(function(resolve, reject) {
+                        params = params || {};
+                        var q = {
+                            page: params.page || 1,
+                            size: params.size || opts.paginationSize || 10,
+                            sort: params.sorters || params.sort || [],
+                            filter: params.filters || params.filter || []
+                        };
+                        q.sort = (q.sort || []).map(function(s) {
+                            return { field: s.field, dir: s.dir || 'asc' };
+                        });
+                        q.filter = (q.filter || []).map(function(f) {
+                            return { field: f.field, type: f.type, value: f.value };
+                        });
+                        // Key the resolver slot by the table's selector so the
+                        // tabulator_remote_data response can find it.
+                        var selector = '#c:' + form + ':' + ctrl;
+                        var timer = setTimeout(function() {
+                            ajaxResolvers.delete(selector);
+                            reject(new Error('tabulator_ajax_request timeout'));
+                        }, 15000);
+                        ajaxResolvers.set(selector, { resolve: resolve, reject: reject, timer: timer });
+                        send({ type: 'tabulator_ajax_request', form: form, ctrl: ctrl, value: q });
+                    });
+                };
+            }
         }
 
         var inst = new Tabulator(el, opts);
@@ -455,9 +478,11 @@
         inst.setPage(1);
     }
 
-    // tabulatorRemoteData resolves the pending remote-pagination dataLoader
-    // promise for a table with the page the Go host returned. payload layout:
+    // tabulatorRemoteData resolves the pending remote-pagination ajax promise for
+    // a table with the page the Go host returned. payload layout:
     // { data: [...], last_page?: N, last_row?: N }.
+    // Tabulator's ajax module wants ajaxRequestFunc to resolve with a plain
+    // ARRAY, so we resolve `data`; last_page/last_row are pushed via setMaxPage.
     function tabulatorRemoteData(msg) {
         var selector = msg.selector || ('#c:' + msg.form + ':' + msg.ctrl);
         var payload = {};
@@ -470,19 +495,28 @@
         if (slot) {
             clearTimeout(slot.timer);
             ajaxResolvers.delete(selector);
-            // Tabulator v6 loader accepts {data, last_page} or {data, last_row}.
-            var result = { data: data };
-            if (lastPage > 0) result.last_page = lastPage;
-            if (lastRow > 0) result.last_row = lastRow;
-            slot.resolve(result);
+            slot.resolve(data);
+            applyMaxPage(selector, lastPage, lastRow);
         } else {
             // No pending request (e.g. an app-initiated push via
             // k.table.set_remote_data): replace data directly.
             const inst = tabulatorInstances.get(selector);
             if (inst) {
                 inst.setData(data);
-                if (lastPage > 0) inst.setMaxPage(lastPage);
+                applyMaxPage(selector, lastPage, lastRow);
             }
+        }
+    }
+
+    // applyMaxPage sets the total page count from last_page/last_row.
+    function applyMaxPage(selector, lastPage, lastRow) {
+        const inst = tabulatorInstances.get(selector);
+        if (!inst) return;
+        if (lastPage > 0) {
+            inst.setMaxPage(lastPage);
+        } else if (lastRow > 0) {
+            var size = inst.getPageSize() || 10;
+            inst.setMaxPage(Math.ceil(lastRow / size));
         }
     }
 
