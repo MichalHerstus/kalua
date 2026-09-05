@@ -19,7 +19,7 @@ func TestCheck(t *testing.T) {
 		{
 			name:     "missing main",
 			src:      `function foo() end`,
-			wantErrs: []string{"test.lua: missing required function main()"},
+			wantErrs: []string{"test.lua: missing required entry point: main() (run mode) or handle_http/handle_ws/handle_tcp/init/shutdown (serve mode)"},
 		},
 		{
 			name:     "unknown k.bogus",

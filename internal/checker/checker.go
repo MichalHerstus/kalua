@@ -38,8 +38,8 @@ func Check(src, name string) Result {
 	var res Result
 	w := walker{src: src, name: name, known: bindings.Known(), res: &res}
 	w.walk(chunk)
-	if !w.hasMain {
-		w.addIssue("missing required function main()", 0, "")
+	if !w.hasMain && !w.hasServeMain {
+		w.addIssue("missing required entry point: main() (run mode) or handle_http/handle_ws/handle_tcp/init/shutdown (serve mode)", 0, "")
 	}
 	return resultFromIssues(name, res.Issues)
 }
@@ -74,11 +74,12 @@ func buildErrors(name string, issues []Issue) []string {
 }
 
 type walker struct {
-	src     string
-	name    string
-	known   map[string]bool
-	res     *Result
-	hasMain bool
+	src          string
+	name         string
+	known        map[string]bool
+	res          *Result
+	hasMain      bool
+	hasServeMain bool
 }
 
 // addIssue records a structured diagnostic. line is 1-based (0 = unknown);
@@ -151,6 +152,10 @@ func (w *walker) checkFuncDef(f *ast.FuncDefStmt) {
 	name := funcName(f.Name)
 	if name == "main" && f.Func != nil {
 		w.hasMain = true
+	}
+	// Serve mode entry points: init, handle_http, handle_ws, handle_tcp, shutdown
+	if name == "init" || name == "handle_http" || name == "handle_ws" || name == "handle_tcp" || name == "shutdown" {
+		w.hasServeMain = true
 	}
 }
 

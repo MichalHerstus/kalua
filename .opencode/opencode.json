@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": {
+    "lua": {
+      "command": ["./KALUA", "lsp"],
+      "extensions": [".lua"]
+    }
+  },
+  "permission": {
+    "bash": {
+      "commands": [
+        "./KALUA check *",
+        "./KALUA run *",
+        "./KALUA serve *",
+        "./KALUA new *",
+        "./KALUA lsp",
+        "./KALUA version"
+      ]
+    }
+  }
+}

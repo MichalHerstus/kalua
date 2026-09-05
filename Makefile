@@ -1,6 +1,6 @@
 # KALUA Makefile
 
-.PHONY: build test test-race fmt vet clean lint run serve lsp check new version
+.PHONY: build test test-race fmt vet clean lint run serve lsp check new version gen-api check-api
 
 # Build the KALUA binary
 build:
@@ -94,3 +94,13 @@ help:
 	@echo "  ci           - Full CI pipeline (build + test-race + vet)"
 	@echo "  ext-build    - Build VSCode extension"
 	@echo "  ext-install  - Install VSCode extension"
+	@echo "  gen-api      - Generate API reference (.opencode/skills/kalua-api/api.md)"
+	@echo "  check-api    - Verify committed api.md matches generated output"
+
+# Generate API reference markdown from api_doc.go
+gen-api:
+	go run ./cmd/kalua-apidoc -o .opencode/skills/kalua-api/api.md
+
+# Check if committed api.md matches generated output (fails on drift)
+check-api:
+	go run ./cmd/kalua-apidoc -check
