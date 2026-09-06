@@ -49,7 +49,7 @@ var apiDocs = map[string]Info{
 
 	// forms
 	"form":           {Name: "form", Group: "forms", Signature: "k.form", Docs: "Form declarations: k.form.new/show/close/..."},
-	"form.new":       {Name: "form.new", Group: "forms", Signature: "k.form.new(name, optsTable)", Docs: "Declares a form. optsTable may set title and layout."},
+	"form.new":       {Name: "form.new", Group: "forms", Signature: "k.form.new(name, optsTable)", Docs: "Declares a form. opts: {title, layout=vertical|grid, align=left|center|right, gap=n px, cells}. grid cells: {id={width 1-12, bg, border={width,color}, align}} or ordered array of {id,...}; assign controls via control opt cell=\"id\" and override alignment via align (kforms_enhancements §6)."},
 	"form.show":      {Name: "form.show", Group: "forms", Signature: "k.form.show(name)", Docs: "Shows a form (modal) and suspends the script until it closes."},
 	"form.close":     {Name: "form.close", Group: "forms", Signature: "k.form.close([name])", Docs: "Closes the top form, or the named form."},
 	"form.return_to": {Name: "form.return_to", Group: "forms", Signature: "k.form.return_to(name)", Docs: "Closes all forms above name."},
@@ -59,8 +59,8 @@ var apiDocs = map[string]Info{
 
 	// controls
 	"ctrl":              {Name: "ctrl", Group: "controls", Signature: "k.ctrl", Docs: "Control constructors: k.ctrl.label/textbox/button/..."},
-	"ctrl.label":        {Name: "ctrl.label", Group: "controls", Signature: "k.ctrl.label(form, name, optsTable)", Docs: "Adds a label control. opts: {text, multiline?:boolean}. multiline renders a pre-wrap div preserving \\n (kforms_enhancements.md §4.2)."},
-	"ctrl.textbox":      {Name: "ctrl.textbox", Group: "controls", Signature: "k.ctrl.textbox(form, name, optsTable)", Docs: "Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolean, rows?:number, cols?:number, datetime?:boolean|table}. multiline renders a <textarea>. datetime enables a flatpickr picker: mode=\"date\"|\"time\"|\"datetime\", format, min, max, step (kforms_enhancements.md §4.1)."},
+	"ctrl.label":        {Name: "ctrl.label", Group: "controls", Signature: "k.ctrl.label(form, name, optsTable)", Docs: "Adds a label control. opts: {text, multiline?:boolean, cell?, align?}. multiline renders a pre-wrap div preserving \\n (kforms_enhancements.md §4.2). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6)."},
+	"ctrl.textbox":      {Name: "ctrl.textbox", Group: "controls", Signature: "k.ctrl.textbox(form, name, optsTable)", Docs: "Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolean, rows?:number, cols?:number, datetime?:boolean|table, cell?, align?}. multiline renders a <textarea>. datetime enables a flatpickr picker: mode=\"date\"|\"time\"|\"datetime\", format, min, max, step (kforms_enhancements.md §4.1). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6)."},
 	"ctrl.button":       {Name: "ctrl.button", Group: "controls", Signature: "k.ctrl.button(form, name, optsTable)", Docs: "Adds a button control. opts may set label, class, onclick, enabled."},
 	"ctrl.combo":        {Name: "ctrl.combo", Group: "controls", Signature: "k.ctrl.combo(form, name, optsTable)", Docs: "Adds a combo (dropdown) control. opts.items is a table of choices."},
 	"ctrl.list":         {Name: "ctrl.list", Group: "controls", Signature: "k.ctrl.list(form, name, optsTable)", Docs: "Adds a multi-row select list. opts.items is a table of choices."},

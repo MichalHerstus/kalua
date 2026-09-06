@@ -108,6 +108,7 @@ type outboxWire struct {
 	Data     string
 	Form     string
 	Ctrl     string
+	HTML     string
 }
 
 // TestRealTabulatorDBLinked runs a session whose Lua app connects a sqlite DB

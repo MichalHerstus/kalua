@@ -207,3 +207,18 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - CSS: `.kalua-textarea`, `.kalua-input.kalua-datetime`, flatpickr theme tuned to KALUA, `.kalua-label-multiline`, `.kalua-image-container`/`.kalua-image` (cursor pointer when clickable)
 - Tests: `internal/bindings/forms_test.go` (label multiline, textbox multiline rows/cols + escaping, datetime modes date/time/datetime + `flatpickrFormat`, image render incl. clickable/no-clickable, `set_value`→src mapping), `internal/session/image_e2e_test.go` (real session: clicked image onclick dispatched with src value; non-clickable registers no handler). Guard against `LNil.String()=="nil"` for unset `alt`/`fit`/`src`
 - Demo: `testdata/apps/extended_controls_demo.lua` (textarea, 4 flatpickr variants incl. european date format, multiline + plain labels, clickable image, swap-src / report-values / set-alt buttons); `KALUA check` passes; `go test ./...` + `node --check` green
+
+## Implemented Features (Phase 14 - Enhanced Form Layout System)
+
+- Vertical layout alignment (`kforms_enhancements.md` §6): form-level `align` (left/center/right) on `k.form.new`; per-control `align` property (via constructor opts or `k.ctrl.set_property`) overrides form default. Rendered via CSS `align-items` on `.kalua-form` + `align-self` on control elements.
+- Grid layout with cells: `k.form.new` accepts `layout="grid"`, `gap` (px), and `cells` table. Cell definitions: ordered array form (each entry has `id`, `width` 1-12, `bg`/`background`, `border` `{width,color}`, `align`) or map form (lexicographic fallback). Controls assigned via `cell` property (cell id). Backward compatible: grid without cells → auto "main" cell (width 12); unknown cell → "main".
+- Mobile responsive: `< 600px` → single column, all cells span 12 (CSS media query with `!important` on `grid-column`).
+- Dynamic cell assignment: `k.ctrl.set_property(form, ctrl, "cell", newCell)` triggers full form re-render so control moves to new cell container. `set_property("align")` works via per-control `align-self` baked into control style (works with `update_control`).
+- `gap` option → CSS custom property `--kalua-gap` on form element; affects both vertical (`gap`) and grid (`gap`) layouts.
+- Go rendering: `renderForm` dispatches to `renderVerticalControls` (vertical) or `renderGridForm` (grid). `renderGridForm` parses cells, buckets controls by cell assignment, renders cell containers with inline `style="grid-column: span N; background:...; border:..."` and `align` attr, then renders controls inside.
+- Per-control alignment baked into control's `style` attribute (`align-self:center|flex-end`), merged with visibility style (`display:none;align-self:...`).
+- CSS: `.kalua-form[layout="vertical"][align=...]`, `.kalua-form[layout="grid"]` with `grid-template-columns: repeat(12,1fr)`, `.kalua-cell` styles, mobile media query, title full-width in grid.
+- `sendOutbox` guards against nil `Env.App`.
+- API docs: `api_doc.go` updated for `form.new` options and control `cell`/`align` properties; `make gen-api && make check-api` in sync.
+- Tests: `internal/bindings/forms_test.go` (vertical align/gap, grid cells order/auto-main/fallback/map-form, control align merge), `internal/session/layout_e2e_test.go` (real session grid render + `set_property("cell")` move). All pass.
+- Demo: `testdata/apps/layout_demo.lua` (vertical centered + grid dashboard with header/sidebar/main/footer, move-to-sidebar button via set_property). `KALUA check` passes; `go test ./...` + `node --check` green.

@@ -90,7 +90,7 @@ Clears a form's control values.
 Closes the top form, or the named form.
 
 **`k.form.new(name, optsTable)`**  
-Declares a form. optsTable may set title and layout.
+Declares a form. opts: {title, layout=vertical|grid, align=left|center|right, gap=n px, cells}. grid cells: {id={width 1-12, bg, border={width,color}, align}} or ordered array of {id,...}; assign controls via control opt cell="id" and override alignment via align (kforms_enhancements §6).
 
 **`k.form.on(form, ctrl, event, fn)`**  
 Registers an event handler (e.g. event "onclick") for a control.
@@ -155,7 +155,7 @@ Returns a control's current value.
 Adds an image control (<img>). opts: {src (required), alt, width, height (px or %), fit="cover|contain|fill|scale-down|none" (default contain), clickable?, onclick?}. k.ctrl.set_value(form, name, new_src) updates the image (kforms_enhancements.md §4.3).
 
 **`k.ctrl.label(form, name, optsTable)`**  
-Adds a label control. opts: {text, multiline?:boolean}. multiline renders a pre-wrap div preserving \n (kforms_enhancements.md §4.2).
+Adds a label control. opts: {text, multiline?:boolean, cell?, align?}. multiline renders a pre-wrap div preserving \n (kforms_enhancements.md §4.2). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6).
 
 **`k.ctrl.list(form, name, optsTable)`**  
 Adds a multi-row select list. opts.items is a table of choices.
@@ -182,7 +182,7 @@ Sets a control's value and re-renders it.
 Adds a table control; rows manipulated via k.table.*.
 
 **`k.ctrl.textbox(form, name, optsTable)`**  
-Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolean, rows?:number, cols?:number, datetime?:boolean|table}. multiline renders a <textarea>. datetime enables a flatpickr picker: mode="date"|"time"|"datetime", format, min, max, step (kforms_enhancements.md §4.1).
+Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolean, rows?:number, cols?:number, datetime?:boolean|table, cell?, align?}. multiline renders a <textarea>. datetime enables a flatpickr picker: mode="date"|"time"|"datetime", format, min, max, step (kforms_enhancements.md §4.1). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6).
 
 **`k.looper`**  
 Looper control operations: k.looper.link_db/set_db_source/refresh/...

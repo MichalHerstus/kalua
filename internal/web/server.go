@@ -59,6 +59,16 @@ func NewServer(host string, port, sessionLimit int, opts bindings.Options, logge
 	}
 }
 
+// noCache forces the browser to revalidate embedded assets on every load.
+// http.FileServer over an embed.FS sends no Cache-Control/ETag/Last-Modified,
+// so without this the browser may serve a stale asset forever.
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Run starts the HTTP server and blocks until context is cancelled.
 func (s *Server) Run(ctx context.Context, defaultScript string) error {
 	s.defaultScript = defaultScript
@@ -71,7 +81,7 @@ func (s *Server) Run(ctx context.Context, defaultScript string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create assets sub-FS: %w", err)
 	}
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(assetsSubFS))))
+	mux.Handle("/static/", noCache(http.StripPrefix("/static/", http.FileServer(http.FS(assetsSubFS)))))
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -109,8 +119,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Security headers
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+	// Security headers. style-src needs 'unsafe-inline' because KALUA renders
+	// controls with inline style="" attributes (grid cell spans/backgrounds,
+	// --kalua-gap, visibility display:none, image sizing, etc.). Blocking them
+	// silently drops every inline style in the browser.
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")

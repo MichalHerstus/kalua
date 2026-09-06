@@ -4,6 +4,7 @@ package bindings
 import (
 	"encoding/json"
 	"html"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -20,11 +21,36 @@ func registerForms(e *Env) {
 		name := L.CheckString(1)
 		opts := L.OptTable(2, L.NewTable())
 
-		// Store form definition in Lua global
+		// Store form definition in Lua global. Layout opts (kforms_enhancements
+		// §6): layout=vertical|grid, align=left|center|right, gap px, cells.
+		layoutVal := opts.RawGetString("layout")
+		layout := ""
+		if layoutVal != lua.LNil {
+			layout = layoutVal.String()
+		}
+		if layout == "" {
+			layout = "vertical"
+		}
+		alignVal := opts.RawGetString("align")
+		align := ""
+		if alignVal != lua.LNil {
+			align = alignVal.String()
+		}
+		if align == "" {
+			align = "left"
+		}
 		formTbl := L.NewTable()
 		formTbl.RawSetString("name", lua.LString(name))
 		formTbl.RawSetString("title", lua.LString(opts.RawGetString("title").String()))
-		formTbl.RawSetString("layout", lua.LString(opts.RawGetString("layout").String()))
+		formTbl.RawSetString("layout", lua.LString(layout))
+		formTbl.RawSetString("align", lua.LString(align))
+		gapVal := opts.RawGetString("gap")
+		if gapVal != lua.LNil {
+			formTbl.RawSetString("gap", gapVal)
+		}
+		if cells := opts.RawGetString("cells"); cells != lua.LNil {
+			formTbl.RawSetString("cells", cells)
+		}
 		formTbl.RawSetString("controls", L.NewTable())
 		formTbl.RawSetString("handlers", L.NewTable())
 		L.SetGlobal(name, formTbl)
@@ -520,6 +546,19 @@ func registerControls(e *Env) {
 		if ctrl == nil {
 			return 0
 		}
+
+		// Moving a control to a different grid cell requires a full form
+		// re-render so it is placed inside the target cell container.
+		if prop == "cell" {
+			ctrl.RawSetString(prop, value)
+			html := renderForm(L, formName)
+			sendOutbox(e, common.OutboxMsg{
+				Type: "render_form",
+				Form: formName,
+				HTML: html,
+			})
+			return 0
+		}
 		ctrl.RawSetString(prop, value)
 
 		// Re-render and send update
@@ -646,6 +685,11 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 	ctrlTbl.RawSetString("items", opts.RawGetString("items"))
 	ctrlTbl.RawSetString("hidden_value", opts.RawGetString("hidden_value"))
 
+	// Layout properties (kforms_enhancements §6): assign the control to a grid
+	// cell (cell = cell_id) and/or override alignment left|center|right.
+	ctrlTbl.RawSetString("cell", opts.RawGetString("cell"))
+	ctrlTbl.RawSetString("align", opts.RawGetString("align"))
+
 	// For button with onclick, register as click handler. Image controls are
 	// clickable too (clickable=true option) and share the same handler table.
 	if ctrlType == "button" || ctrlType == "image" {
@@ -766,43 +810,252 @@ func renderForm(L *lua.LState, formName string) string {
 	}
 
 	title := escText(tbl.RawGetString("title").String())
-	layout := escAttr(tbl.RawGetString("layout").String())
+	layout := tbl.RawGetString("layout").String()
+	if layout == "" {
+		layout = "vertical"
+	}
+	align := tbl.RawGetString("align").String()
+	gap := 16
+	if v := tbl.RawGetString("gap"); v != lua.LNil {
+		if n := int(lua.LVAsNumber(v)); n >= 0 {
+			gap = n
+		}
+	}
 	controls := tbl.RawGetString("controls")
-	order := tbl.RawGetString("order")
 
 	var html string
 	html += `<div id="f:` + formNameEsc + `" class="kalua-form"`
-	if layout != "" && layout != "vertical" {
-		html += ` layout="` + layout + `"`
+	if layout != "vertical" {
+		html += ` layout="` + escAttr(layout) + `"`
 	}
+	if align != "" && align != "left" {
+		html += ` align="` + escAttr(align) + `"`
+	}
+	html += ` style="--kalua-gap:` + strconv.Itoa(gap) + `px"`
 	html += `>`
 
 	if title != "" {
 		html += `<div class="kalua-form-title">` + title + `</div>`
 	}
 
-	if controlsTbl, ok := controls.(*lua.LTable); ok {
-		// Iterate in order if available
-		if orderTbl, ok := order.(*lua.LTable); ok {
-			orderTbl.ForEach(func(k, v lua.LValue) {
-				name := v.String()
-				ctrl := controlsTbl.RawGetString(name)
-				if ctrl != lua.LNil {
-					if ctrlTbl, ok := ctrl.(*lua.LTable); ok {
-						html += renderControl(ctrlTbl)
+	if layout == "grid" {
+		html += renderGridForm(tbl)
+	} else if controlsTbl, ok := controls.(*lua.LTable); ok {
+		html += renderVerticalControls(controlsTbl, tbl)
+	}
+
+	html += `</div>`
+	return html
+}
+
+// renderVerticalControls renders a vertical-layout form's controls in creation
+// order (the form's "order" table), falling back to unordered iteration.
+func renderVerticalControls(controlsTbl, tbl *lua.LTable) string {
+	order := tbl.RawGetString("order")
+	var html string
+	if orderTbl, ok := order.(*lua.LTable); ok {
+		orderTbl.ForEach(func(k, v lua.LValue) {
+			name := v.String()
+			if ctrl := controlsTbl.RawGetString(name); ctrl != lua.LNil {
+				if ctrlTbl, ok := ctrl.(*lua.LTable); ok {
+					html += renderControl(ctrlTbl)
+				}
+			}
+		})
+	} else {
+		// Fallback to unordered iteration
+		controlsTbl.ForEach(func(k, v lua.LValue) {
+			if ctrl, ok := v.(*lua.LTable); ok {
+				html += renderControl(ctrl)
+			}
+		})
+	}
+	return html
+}
+
+// cellDef describes one grid cell (kforms_enhancements §6).
+type cellDef struct {
+	id     string
+	width  int
+	bg     string
+	border string
+	align  string
+}
+
+// renderGridForm renders a grid-layout form: it iterates the form's cells and
+// renders each control inside its assigned cell container. Backward compatible:
+// layout="grid" without cells auto-creates a single "main" cell (width 12), and
+// controls without a cell (or with an unknown cell) fall back to "main".
+func renderGridForm(tbl *lua.LTable) string {
+	controlsTbl, _ := tbl.RawGetString("controls").(*lua.LTable)
+	orderTbl, _ := tbl.RawGetString("order").(*lua.LTable)
+
+	cells := parseCells(tbl)
+	cellIDs := map[string]bool{}
+	for _, c := range cells {
+		cellIDs[c.id] = true
+	}
+
+	// buckets maps cell id → ordered control names.
+	buckets := map[string][]string{}
+	bucket := func(cellID, name string) {
+		if !cellIDs[cellID] {
+			cellID = "main"
+		}
+		buckets[cellID] = append(buckets[cellID], name)
+	}
+
+	if orderTbl != nil {
+		orderTbl.ForEach(func(_, v lua.LValue) {
+			name := v.String()
+			cellID := "main"
+			if ctrl := controlsTbl.RawGetString(name); ctrl != lua.LNil {
+				if ct, ok := ctrl.(*lua.LTable); ok {
+					if c := ct.RawGetString("cell"); c != lua.LNil && c.String() != "" {
+						cellID = c.String()
 					}
 				}
-			})
-		} else {
-			// Fallback to unordered iteration
-			controlsTbl.ForEach(func(k, v lua.LValue) {
-				if ctrl, ok := v.(*lua.LTable); ok {
-					html += renderControl(ctrl)
-				}
-			})
+			}
+			bucket(cellID, name)
+		})
+	} else {
+		controlsTbl.ForEach(func(_, v lua.LValue) {
+			ct, ok := v.(*lua.LTable)
+			if !ok {
+				return
+			}
+			cellID := ct.RawGetString("cell").String()
+			if cellID == "" {
+				cellID = "main"
+			}
+			bucket(cellID, ct.RawGetString("name").String())
+		})
+	}
+
+	// Backward compat: no cells defined → single auto "main" cell.
+	if len(cells) == 0 {
+		cells = []cellDef{{id: "main", width: 12}}
+	}
+	// Auto-create "main" when controls reference it but it was not defined.
+	if len(buckets["main"]) > 0 && !cellIDs["main"] {
+		cells = append(cells, cellDef{id: "main", width: 12})
+	}
+
+	var html string
+	for _, c := range cells {
+		html += renderCell(c, buckets[c.id], controlsTbl)
+	}
+	return html
+}
+
+// parseCells reads the form's "cells" table into ordered defs. gopher-lua does
+// not preserve insertion order for string keys, so the array form (each element
+// a table with an id) is the canonical ordered representation; the map form is
+// still supported and falls back to lexicographic order by cell id.
+func parseCells(tbl *lua.LTable) []cellDef {
+	cellsV := tbl.RawGetString("cells")
+	cellsTbl, ok := cellsV.(*lua.LTable)
+	if !ok {
+		return nil
+	}
+
+	var defs []cellDef
+	if cellsTbl.Len() > 0 {
+		for i := 1; i <= cellsTbl.Len(); i++ {
+			ct, ok := cellsTbl.RawGetInt(i).(*lua.LTable)
+			if !ok {
+				continue
+			}
+			id := ct.RawGetString("id").String()
+			if id == "" {
+				continue
+			}
+			defs = append(defs, cellFromTable(id, ct))
+		}
+		if len(defs) > 0 {
+			return defs
 		}
 	}
 
+	var ids []string
+	pairs := map[string]*lua.LTable{}
+	cellsTbl.ForEach(func(k, v lua.LValue) {
+		id := k.String()
+		if id == "" {
+			return
+		}
+		ids = append(ids, id)
+		if ct, ok := v.(*lua.LTable); ok {
+			pairs[id] = ct
+		}
+	})
+	sort.Strings(ids)
+	for _, id := range ids {
+		d := cellDef{id: id, width: 12}
+		if ct := pairs[id]; ct != nil {
+			d = cellFromTable(id, ct)
+		}
+		defs = append(defs, d)
+	}
+	return defs
+}
+
+// cellFromTable converts one cell definition table into a cellDef.
+func cellFromTable(id string, ct *lua.LTable) cellDef {
+	width := 12
+	if v := ct.RawGetString("width"); v != lua.LNil {
+		if n := int(lua.LVAsNumber(v)); n >= 1 && n <= 12 {
+			width = n
+		}
+	}
+	bg := ""
+	if v := ct.RawGetString("bg"); v != lua.LNil && v.String() != "" {
+		bg = v.String()
+	} else if v := ct.RawGetString("background"); v != lua.LNil && v.String() != "" {
+		bg = v.String()
+	}
+	border := ""
+	if bt, ok := ct.RawGetString("border").(*lua.LTable); ok {
+		w := 1
+		if v := bt.RawGetString("width"); v != lua.LNil {
+			if n := int(lua.LVAsNumber(v)); n > 0 {
+				w = n
+			}
+		}
+		color := "#ccc"
+		if v := bt.RawGetString("color"); v != lua.LNil && v.String() != "" {
+			color = v.String()
+		}
+		border = strconv.Itoa(w) + "px solid " + color
+	}
+	align := ""
+	if v := ct.RawGetString("align"); v != lua.LNil {
+		align = v.String()
+	}
+	return cellDef{id: id, width: width, bg: bg, border: border, align: align}
+}
+
+// renderCell renders a cell container and the controls assigned to it.
+func renderCell(c cellDef, names []string, controlsTbl *lua.LTable) string {
+	style := "grid-column: span " + strconv.Itoa(c.width) + ";"
+	if c.bg != "" {
+		style += "background-color: " + c.bg + ";"
+	}
+	if c.border != "" {
+		style += "border: " + c.border + ";"
+	}
+	alignAttr := ""
+	if c.align != "" && c.align != "left" {
+		alignAttr = ` align="` + escAttr(c.align) + `"`
+	}
+	html := `<div class="kalua-cell" data-k-cell="` + escAttr(c.id) + `" style="` + escAttr(style) + `"` + alignAttr + `>`
+	for _, name := range names {
+		if ctrl := controlsTbl.RawGetString(name); ctrl != lua.LNil {
+			if ct, ok := ctrl.(*lua.LTable); ok {
+				html += renderControl(ct)
+			}
+		}
+	}
 	html += `</div>`
 	return html
 }
@@ -840,11 +1093,29 @@ func renderControl(ctrl *lua.LTable) string {
 	name := escAttr(ctrl.RawGetString("name").String())
 	formName := escAttr(ctrl.RawGetString("form").String())
 	label := escText(ctrl.RawGetString("label").String())
-	value := escAttr(ctrl.RawGetString("value").String())
+	v := ctrl.RawGetString("value")
+	if v == nil {
+		v = lua.LNil
+	}
+	value := escAttr(v.String())
 
 	id := "c:" + formName + ":" + name
 
 	enabled, visible := renderEnabledVisible(ctrl)
+	// Per-control alignment (kforms_enhancements §6) via align-self on the
+	// control element; merges into the visibility style when both apply.
+	if a := ctrl.RawGetString("align"); a != lua.LNil && a.String() != "" && a.String() != "left" {
+		alignSelf := "center"
+		if a.String() == "right" {
+			alignSelf = "flex-end"
+		}
+		if visible == "" {
+			visible = ` style="align-self:` + alignSelf + `"`
+		} else {
+			inner := strings.TrimSuffix(strings.TrimPrefix(visible, ` style="`), `"`)
+			visible = ` style="` + inner + `;align-self:` + alignSelf + `"`
+		}
+	}
 	attrs := renderAttrs(formName, name)
 
 	switch ctrlType {
@@ -1231,6 +1502,9 @@ func flatpickrTime(s string) string {
 
 // sendOutbox sends a message to the session outbox.
 func sendOutbox(e *Env, msg common.OutboxMsg) {
+	if e == nil || e.App == nil {
+		return
+	}
 	sess := e.App.Session()
 	if sess != nil {
 		sess.SendOutbox(msg)

@@ -217,3 +217,244 @@ func decodeDatetimeAttr(t *testing.T, html string) map[string]interface{} {
 	}
 	return cfg
 }
+
+// layoutTestForm builds a form table registered as a global, adds controls via
+// the real addControl path, and renders it. Returns the rendered HTML.
+func layoutTestForm(t *testing.T, L *lua.LState, opts map[string]lua.LValue, controls [][]lua.LValue) string {
+	t.Helper()
+	f := L.NewTable()
+	f.RawSetString("name", str("f"))
+	f.RawSetString("title", str("T"))
+	f.RawSetString("layout", str("vertical"))
+	f.RawSetString("align", str("left"))
+	for k, v := range opts {
+		if k == "cells" {
+			f.RawSetString("cells", v)
+			continue
+		}
+		f.RawSetString(k, v)
+	}
+	f.RawSetString("controls", L.NewTable())
+	f.RawSetString("handlers", L.NewTable())
+	L.SetGlobal("f", f)
+
+	for _, ctrlOpts := range controls {
+		oC := L.NewTable()
+		for i := 0; i+1 < len(ctrlOpts); i += 2 {
+			oC.RawSetString(ctrlOpts[i].String(), ctrlOpts[i+1])
+		}
+		addControl(L, "f", ctrlOpts[0].String(), ctrlOpts[1].String(), oC)
+	}
+	return renderForm(L, "f")
+}
+
+// TestRenderVerticalAlignGap verifies §6 vertical layout: the form div carries
+// align and a --kalua-gap style var, and grid cells are not used.
+func TestRenderVerticalAlignGap(t *testing.T) {
+	L := setupTestState(t)
+	html := layoutTestForm(t, L, map[string]lua.LValue{
+		"align": str("center"),
+		"gap":   num(8),
+	}, [][]lua.LValue{
+		{str("a"), str("button"), str("label"), str("Go")},
+	})
+
+	if !strings.Contains(html, `class="kalua-form" align="center"`) {
+		t.Errorf("missing form align attr: %s", html)
+	}
+	if !strings.Contains(html, `style="--kalua-gap:8px"`) {
+		t.Errorf("missing gap var: %s", html)
+	}
+	if strings.Contains(html, "kalua-cell") {
+		t.Errorf("vertical layout must not render cells: %s", html)
+	}
+	if !strings.Contains(html, `id="c:f:a"`) {
+		t.Errorf("control not rendered: %s", html)
+	}
+}
+
+// TestRenderGridCellsOrder verifies §6 grid cells (array form): cells render in
+// declaration order with column spans, bg/border/align styles, and controls are
+// placed into their assigned cells.
+func TestRenderGridCellsOrder(t *testing.T) {
+	L := setupTestState(t)
+
+	header := L.NewTable()
+	header.RawSetString("id", str("header"))
+	header.RawSetString("width", num(12))
+	header.RawSetString("bg", str("#f5f5f5"))
+	header.RawSetString("align", str("center"))
+	bd := L.NewTable()
+	bd.RawSetString("width", num(1))
+	bd.RawSetString("color", str("#ddd"))
+	header.RawSetString("border", bd)
+
+	sidebar := L.NewTable()
+	sidebar.RawSetString("id", str("sidebar"))
+	sidebar.RawSetString("width", num(3))
+
+	main := L.NewTable()
+	main.RawSetString("id", str("main"))
+	main.RawSetString("width", num(9))
+
+	cells := L.NewTable()
+	cells.RawSetInt(1, header)
+	cells.RawSetInt(2, sidebar)
+	cells.RawSetInt(3, main)
+
+	html := layoutTestForm(t, L, map[string]lua.LValue{
+		"layout": str("grid"),
+		"gap":    num(16),
+		"cells":  cells,
+	}, [][]lua.LValue{
+		{str("search"), str("textbox"), str("cell"), str("header"), str("label"), str("Search")},
+		{str("menu"), str("list"), str("cell"), str("sidebar"), str("label"), str("Menu")},
+		{str("data"), str("textbox"), str("cell"), str("main"), str("label"), str("Data")},
+	})
+
+	for _, want := range []string{
+		`layout="grid"`,
+		`data-k-cell="header"`,
+		`data-k-cell="sidebar"`,
+		`data-k-cell="main"`,
+		"grid-column: span 12",
+		"grid-column: span 3",
+		"grid-column: span 9",
+		`background-color: #f5f5f5`,
+		`border: 1px solid #ddd`,
+		`align="center"`,
+		`id="c:f:search"`,
+		`id="c:f:menu"`,
+		`id="c:f:data"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q in: %s", want, html)
+		}
+	}
+
+	// Cell order must follow declaration order (header, sidebar, main).
+	hIdx := strings.Index(html, `data-k-cell="header"`)
+	sIdx := strings.Index(html, `data-k-cell="sidebar"`)
+	mIdx := strings.Index(html, `data-k-cell="main"`)
+	if !(hIdx < sIdx && sIdx < mIdx) {
+		t.Errorf("cells not in declaration order (header=%d sidebar=%d main=%d): %s", hIdx, sIdx, mIdx, html)
+	}
+
+	// Each control must live inside its cell container (after its cell's
+	// opening div and before the cell's closing div).
+	if !strings.Contains(html[strings.Index(html, `data-k-cell="header"`):strings.Index(html, `data-k-cell="sidebar"`)], `id="c:f:search"`) {
+		t.Errorf("search control not inside header cell: %s", html)
+	}
+	if !strings.Contains(html[strings.Index(html, `data-k-cell="sidebar"`):strings.Index(html, `data-k-cell="main"`)], `id="c:f:menu"`) {
+		t.Errorf("menu control not inside sidebar cell: %s", html)
+	}
+	if !strings.Contains(html[strings.Index(html, `data-k-cell="main"`):], `id="c:f:data"`) {
+		t.Errorf("data control not inside main cell: %s", html)
+	}
+}
+
+// TestRenderGridAutoMain verifies §6 backward compatibility: layout="grid"
+// without cells auto-creates a single "main" cell (width 12) holding controls
+// with no cell assignment.
+func TestRenderGridAutoMain(t *testing.T) {
+	L := setupTestState(t)
+	html := layoutTestForm(t, L, map[string]lua.LValue{
+		"layout": str("grid"),
+	}, [][]lua.LValue{
+		{str("a"), str("button"), str("label"), str("Go")},
+	})
+
+	if !strings.Contains(html, `data-k-cell="main"`) {
+		t.Errorf("missing auto main cell: %s", html)
+	}
+	if !strings.Contains(html, "grid-column: span 12") {
+		t.Errorf("auto cell must span 12: %s", html)
+	}
+	if !strings.Contains(html, `id="c:f:a"`) {
+		t.Errorf("control not in auto cell: %s", html)
+	}
+	if !strings.Contains(html[strings.Index(html, `data-k-cell="main"`):], `id="c:f:a"`) {
+		t.Errorf("control not inside main cell: %s", html)
+	}
+}
+
+// TestRenderGridUnknownCellFallsBackToMain verifies that a control referencing
+// an undefined cell lands in the auto-created main cell.
+func TestRenderGridUnknownCellFallsBackToMain(t *testing.T) {
+	L := setupTestState(t)
+	header := L.NewTable()
+	header.RawSetString("id", str("header"))
+	header.RawSetString("width", num(12))
+	cells := L.NewTable()
+	cells.RawSetInt(1, header)
+
+	html := layoutTestForm(t, L, map[string]lua.LValue{
+		"layout": str("grid"),
+		"cells":  cells,
+	}, [][]lua.LValue{
+		{str("a"), str("button"), str("cell"), str("bogus"), str("label"), str("Go")},
+	})
+
+	if !strings.Contains(html, `data-k-cell="main"`) {
+		t.Errorf("missing auto main fallback cell: %s", html)
+	}
+	if !strings.Contains(html[strings.Index(html, `data-k-cell="main"`):], `id="c:f:a"`) {
+		t.Errorf("control with unknown cell not in main: %s", html)
+	}
+}
+
+// TestRenderGridMapForm verifies the map form of cells is accepted and sorted
+// deterministically (lexicographic by id, since gopher-lua has no key order).
+func TestRenderGridMapForm(t *testing.T) {
+	L := setupTestState(t)
+	cells := L.NewTable()
+	cells.RawSetString("b.one", L.NewTable())
+	cells.RawSetString("a.two", L.NewTable())
+
+	html := layoutTestForm(t, L, map[string]lua.LValue{
+		"layout": str("grid"),
+		"cells":  cells,
+	}, [][]lua.LValue{
+		{str("x"), str("button"), str("label"), str("Go")},
+	})
+
+	aIdx := strings.Index(html, `data-k-cell="a.two"`)
+	bIdx := strings.Index(html, `data-k-cell="b.one"`)
+	if aIdx == -1 || bIdx == -1 {
+		t.Fatalf("map form cells missing: %s", html)
+	}
+	if aIdx > bIdx {
+		t.Errorf("map form should be lexicographically sorted: %s", html)
+	}
+}
+
+// TestRenderControlAlign verifies §6 per-control alignment is baked into the
+// control element's align-self, including when merged with hidden visibility.
+func TestRenderControlAlign(t *testing.T) {
+	L := setupTestState(t)
+
+	center := renderControl(ctrlTable(L, "button", map[string]lua.LValue{
+		"label": str("Go"),
+		"align": str("center"),
+	}))
+	if !strings.Contains(center, `style="align-self:center"`) {
+		t.Errorf("center align missing: %s", center)
+	}
+
+	right := renderControl(ctrlTable(L, "textbox", map[string]lua.LValue{
+		"label":   str("Notes"),
+		"visible": lua.LFalse,
+		"align":   str("right"),
+	}))
+	if !strings.Contains(right, `style="display:none;align-self:flex-end"`) {
+		t.Errorf("hidden + right align not merged: %s", right)
+	}
+
+	left := renderControl(ctrlTable(L, "label", map[string]lua.LValue{
+		"label": str("Hi"),
+		"align": str("left"),
+	}))
+	if strings.Contains(left, "align-self") {
+		t.Errorf("left align should be a no-op: %s", left)
+	}
+}

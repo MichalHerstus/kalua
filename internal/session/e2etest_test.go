@@ -10,12 +10,16 @@ import (
 	"kalua/internal/bindings"
 )
 
-type tLogger struct{}
+type tLogger struct {
+	t *testing.T
+}
 
-func (tLogger) Printf(string, ...interface{}) {}
-func (tLogger) Errorf(string, ...interface{}) {}
-func (tLogger) Warnf(string, ...interface{})  {}
-func (tLogger) Tracef(string, ...interface{}) {}
+func (l tLogger) Printf(string, ...interface{}) {}
+func (l tLogger) Warnf(string, ...interface{})  {}
+func (l tLogger) Tracef(string, ...interface{}) {}
+func (l tLogger) Errorf(format string, args ...interface{}) {
+	l.t.Logf("ERROR: "+format, args...)
+}
 
 func TestRealClipboard(t *testing.T) {
 	tmp := t.TempDir()

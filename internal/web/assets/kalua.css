@@ -34,12 +34,51 @@ body {
 .kalua-form {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: var(--kalua-gap, 16px);
+}
+
+.kalua-form[layout="vertical"][align="center"] {
+    align-items: center;
+}
+
+.kalua-form[layout="vertical"][align="right"] {
+    align-items: flex-end;
 }
 
 .kalua-form[layout="grid"] {
     display: grid;
-    gap: 16px;
+    grid-template-columns: repeat(12, 1fr);
+    gap: var(--kalua-gap, 16px);
+}
+
+.kalua-form[layout="grid"] > .kalua-form-title {
+    grid-column: 1 / -1;
+}
+
+/* Grid cells (kforms_enhancements §6) */
+.kalua-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    min-width: 0;
+}
+
+.kalua-cell[align="center"] {
+    align-items: center;
+}
+
+.kalua-cell[align="right"] {
+    align-items: flex-end;
+}
+
+@media (max-width: 600px) {
+    .kalua-form[layout="grid"] {
+        grid-template-columns: 1fr;
+    }
+    .kalua-cell {
+        grid-column: span 12 !important;
+    }
 }
 
 .kalua-form-title {
