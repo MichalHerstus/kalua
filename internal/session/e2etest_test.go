@@ -14,11 +14,13 @@ type tLogger struct {
 	t *testing.T
 }
 
-func (l tLogger) Printf(string, ...interface{}) {}
-func (l tLogger) Warnf(string, ...interface{})  {}
-func (l tLogger) Tracef(string, ...interface{}) {}
+func (l tLogger) Printf(string, ...interface{})  {}
+func (l tLogger) Warnf(string, ...interface{})   {}
+func (l tLogger) Tracef(string, ...interface{})  {}
 func (l tLogger) Errorf(format string, args ...interface{}) {
-	l.t.Logf("ERROR: "+format, args...)
+	if l.t != nil {
+		l.t.Logf("ERROR: "+format, args...)
+	}
 }
 
 func TestRealClipboard(t *testing.T) {
@@ -38,7 +40,7 @@ end
 	if err := os.WriteFile(script, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New("t1", script, bindings.Options{}, tLogger{})
+	s, err := New("t1", script, bindings.Options{}, tLogger{t: t})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -99,7 +101,7 @@ end
 	if err := os.WriteFile(script, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New("t1", script, bindings.Options{}, tLogger{})
+	s, err := New("t1", script, bindings.Options{}, tLogger{t: t})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -165,7 +167,7 @@ end
 	if err := os.WriteFile(script, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New("t1", script, bindings.Options{}, tLogger{})
+	s, err := New("t1", script, bindings.Options{}, tLogger{t: t})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

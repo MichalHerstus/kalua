@@ -344,6 +344,10 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		id := getString(msg, "id")
 		value := getString(msg, "value")
 		sess.PostFilePickerResp(id, value)
+	case "file_picker_save_resp":
+		id := getString(msg, "id")
+		value := getString(msg, "value")
+		sess.PostFilePickerSaveResp(id, value)
 	case "tabulator_data_resp":
 		id := getString(msg, "id")
 		value := getString(msg, "value")
@@ -377,6 +381,16 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		sess.SetClientInfo(w, h, locale)
 	case "ping":
 		// Keep-alive
+	case "selection_resp":
+		id := getString(msg, "id")
+		start := getInt(msg, "start")
+		end := getInt(msg, "end")
+		text := getString(msg, "text")
+		sess.PostSelectionResp(id, map[string]interface{}{
+			"start": start,
+			"end":   end,
+			"text":  text,
+		})
 	}
 }
 

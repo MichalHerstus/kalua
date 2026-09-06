@@ -223,3 +223,29 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - API docs: `api_doc.go` updated for `form.new` options and control `cell`/`align` properties; `make gen-api && make check-api` in sync.
 - Tests: `internal/bindings/forms_test.go` (vertical align/gap, grid cells order/auto-main/fallback/map-form, control align merge), `internal/session/layout_e2e_test.go` (real session grid render + `set_property("cell")` move). All pass.
 - Demo: `testdata/apps/layout_demo.lua` (vertical centered + grid dashboard with header/sidebar/main/footer, move-to-sidebar button via set_property). `KALUA check` passes; `go test ./...` + `node --check` green.
+
+## Implemented Features (Phase 15 - Tier 1 Completion & Tier 2 DB/Files)
+
+- **k.yield** — simple coroutine yield for cooperative scheduling
+- **k.tcp.accept()** — serve mode: wait for incoming TCP connection, returns {id} for use with k.tcp.send/close
+- **k.pick_file save/download modes** — extended file picker:
+  - mode="open" (default): pick existing files, returns files table with base64 data
+  - mode="save": show save dialog, returns {path, name}
+  - mode="download": trigger download of base64 data, returns {path, name}
+- **Action set trio (§5.2)**:
+  - k.assign(target, kind, value) — set global or control value with coercion (numeric/string/boolean/date)
+  - k.set(name, fn) — store function in action registry
+  - k.exec(name, ...) — execute stored function asynchronously, returns result(s)
+- **Control API (§3.3)**:
+  - k.ctrl.select_text(form, name) — select all text in textbox/textarea
+  - k.ctrl.get_selection(form, name) — get selection via browser round-trip ({start, end, text})
+  - k.ctrl.set_selection(form, name, from, to) — set selection range
+  - k.ctrl.get_item_count(form, name) — count items in combo/list/radio/table
+  - k.ctrl.execute_event(form, name, event) — fire control event asynchronously
+- **k.table.find(form, name, value)** — search rows for value, returns 1-based index
+- **Form lifecycle events (§3.1)**:
+  - k.form.on(name, event, fn) 3-arg overload for form-level events
+  - k.form.on(name, "on_idle", ms, fn) 4-arg for idle timer
+  - Events: open_form, after_open_form, close_form, key_pressed (fallback)
+- **Non-sqlite DB drivers** — MySQL (go-sql-driver/mysql), PostgreSQL (jackc/pgx/v5/stdlib), SQL Server (microsoft/go-mssqldb) via DSN scheme
+- Docs: api_doc.go, USER_GUIDE.md, kalua_spec.md updated; all tests pass

@@ -76,6 +76,7 @@ type Env struct {
 type Logger interface {
 	Printf(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
+	Warnf(format string, args ...interface{})
 	Tracef(format string, args ...interface{})
 }
 
@@ -95,6 +96,10 @@ var registerKnown = map[string]string{
 	"bell":                      "flow",
 	"screen_size":               "flow",
 	"http_request":              "flow",
+	"yield":                     "flow",
+	"assign":                    "flow",
+	"set":                       "flow",
+	"exec":                      "flow",
 	"debug":                     "debug", // namespace
 	"debug.stack":               "debug",
 	"debug.locals":              "debug",
@@ -133,6 +138,11 @@ var registerKnown = map[string]string{
 	"ctrl.chart":                "controls",
 	"chart":                     "controls", // namespace
 	"ctrl.image":                "controls",
+	"ctrl.select_text":          "controls",
+	"ctrl.set_selection":        "controls",
+	"ctrl.get_selection":        "controls",
+	"ctrl.get_item_count":       "controls",
+	"ctrl.execute_event":        "controls",
 	"chart.set_data":            "controls",
 	"chart.add_dataset":         "controls",
 	"chart.remove_dataset":      "controls",
@@ -154,6 +164,7 @@ var registerKnown = map[string]string{
 	"table.set_remote_data":     "controls",
 	"table.refresh":             "controls",
 	"table.set_db_source":       "controls",
+	"table.find":                "controls",
 	"connect_db":                "database",
 	"disconnect_db":             "database",
 	"sql":                       "database",
@@ -214,6 +225,7 @@ var registerKnown = map[string]string{
 	"tcp":          "server", // namespace
 	"tcp.send":     "server",
 	"tcp.close":    "server",
+	"tcp.accept":   "server",
 	// tier-2 flow
 	"timer_start":  "flow",
 	"timer_stop":   "flow",

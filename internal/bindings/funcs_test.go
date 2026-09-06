@@ -1,6 +1,7 @@
 package bindings
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -295,11 +296,13 @@ type fakeTCPHub struct{}
 
 func (f *fakeTCPHub) Send(id string, msg []byte) bool { return true }
 func (f *fakeTCPHub) Close(id string)         {}
+func (f *fakeTCPHub) Accept(ctx context.Context) string { return "test-id" }
 
 type fakeLogger struct{}
 
 func (f *fakeLogger) Printf(format string, args ...interface{})    {}
 func (f *fakeLogger) Errorf(format string, args ...interface{})    {}
+func (f *fakeLogger) Warnf(format string, args ...interface{})     {}
 func (f *fakeLogger) Tracef(format string, args ...interface{})    {}
 
 // TestExprFuncs_CheckCompat asserts the static checker does not flag the

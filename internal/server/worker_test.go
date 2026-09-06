@@ -17,6 +17,7 @@ type discardLogger struct{}
 
 func (discardLogger) Printf(string, ...interface{}) {}
 func (discardLogger) Errorf(string, ...interface{}) {}
+func (discardLogger) Warnf(string, ...interface{})  {}
 func (discardLogger) Tracef(string, ...interface{}) {}
 
 type captureLogger struct {
@@ -30,7 +31,7 @@ func (c *captureLogger) Errorf(f string, a ...interface{}) {
 	defer c.mu.Unlock()
 	c.err = append(c.err, fmt.Sprintf(f, a...))
 }
-
+func (c *captureLogger) Warnf(string, ...interface{})  {}
 func (c *captureLogger) Tracef(string, ...interface{}) {}
 
 func (c *captureLogger) errors() []string {
@@ -231,7 +232,7 @@ end
 		t.Error("expected handle_ws return value to be echoed")
 	}
 
-	tcp := &TCPConn{id: "tcp-1", sendCh: make(chan []byte, 8)}
+	tcp := &TCPConn{ID: "tcp-1", sendCh: make(chan []byte, 8)}
 	w.CallTCP(TCPMessage{Type: "text", Data: "hi", ClientID: "tcp-1"}, tcp)
 	select {
 	case got := <-tcp.sendCh:
@@ -268,7 +269,7 @@ end
 	defer w.Close()
 
 	w.CallWS(WSMessage{Type: "text", ClientID: "ws-2"}, &WSConn{id: "ws-2"})
-	w.CallTCP(TCPMessage{Type: "text", ClientID: "tcp-2"}, &TCPConn{id: "tcp-2"})
+	w.CallTCP(TCPMessage{Type: "text", ClientID: "tcp-2"}, &TCPConn{ID: "tcp-2"})
 
 	got := strings.Join(log.errors(), "; ")
 	if !strings.Contains(got, "ws-boom") || !strings.Contains(got, "tcp-boom") {

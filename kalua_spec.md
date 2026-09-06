@@ -455,6 +455,7 @@ All DB calls run through the async worker pattern (§2.2) and accept bound param
 | *(KALUA server mode — §2.4)* | `k.shared.set/get/del/keys/incr` | T1 |
 | *(KALUA server mode — §2.4)* | `k.ws_broadcast(msg)`, `k.ws_send(client_id, msg)` | T1 |
 | *(KALUA server mode — §2.4)* | `k.tcp_send(client_id, data)`, `k.tcp_close(client_id)` | T1 |
+| *(KALUA server mode — §2.4)* | `k.tcp_accept()` — wait for incoming TCP connection, returns {id} | T1 |
 | Monitor ×2, Synchronization ×6, MIS Communicator ×12, Push ×5, GSM ×4, GPRS ×3, Serial ×5, Bluetooth ×7, BLE ×11, Beacons ×6 | — (D9 hardware/remote infra) | — |
 
 ### 5.5 Group Files
@@ -467,7 +468,7 @@ All DB calls run through the async worker pattern (§2.2) and accept bound param
 | INI Read / Write | `k.ini_read(path,section,key)`, `k.ini_write(...)` — whole-file API in §5.10 | T2 |
 | ZIP Add/Extract/List | `k.zip_add`, `k.zip_extract`, `k.zip_list` | T2 |
 | File Import/Export to/from Table | CSV ↔ result-set: `k.csv_to_rows`, `k.rows_to_csv` (file-level API in §5.10) | T2 |
-| Select File / Share File | `k.pick_file(open|save, path_hint)` (browser file input for open; save = download) / — | T2 / — |
+| Select File / Share File | `k.pick_file(open|save|download, opts)` — mode="open" returns files table; mode="save" shows save dialog; mode="download" triggers download; returns {path,name} or files table | T2 ✓ |
 | Image ×5 | — (D8 visual) | — |
 
 Filesystem access is confined to the working directory unless `--allow-fs PATH` is given.
@@ -687,7 +688,7 @@ implemented; phase 11 (REPL) planned; see §8 for the per-phase status.
   assets live in `internal/web`.)
 - Database (§5.3): `k.connect_db`/`disconnect_db`, `k.sql`, `k.db_select/insert/
   update/delete`, `k.tx_begin/commit/rollback`, `k.rows` — sqlite driver wired;
-  mysql/postgres/mssql by DSN scheme (drivers not yet imported).
+  mysql/postgres/mssql by DSN scheme (drivers imported: go-sql-driver/mysql, jackc/pgx/v5/stdlib, microsoft/go-mssqldb).
 - Files (§5.5) + JSON (§5.10) + crypto (§5.1) + XML getters (§5.4): full T1 set,
   all through the async pattern with an 16 MiB file-size cap.
 - Expression-function library (§5.9): all String / Numeric / Conditional /

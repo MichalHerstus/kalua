@@ -31,6 +31,7 @@ var apiDocs = map[string]Info{
 	// flow
 	"print":         {Name: "print", Group: "flow", Signature: "k.print(...)", Docs: "Prints values to the app log (tab-separated, like Lua print)."},
 	"sleep":         {Name: "sleep", Group: "flow", Signature: "k.sleep(ms)", Docs: "Suspends the script for ms milliseconds."},
+	"yield":         {Name: "yield", Group: "flow", Signature: "k.yield()", Docs: "Yields the current coroutine, allowing other coroutines to run."},
 	"quit":          {Name: "quit", Group: "flow", Signature: "k.quit()", Docs: "Requests a clean termination of the app."},
 	"error":         {Name: "error", Group: "flow", Signature: "k.error(msg)", Docs: "Raises a deliberate Lua error."},
 	"msgbox":        {Name: "msgbox", Group: "flow", Signature: "k.msgbox(opts)", Docs: "Shows a message box and returns the clicked button's value. Legacy: k.msgbox(text[, kind]) (info/warn/error/ok-cancel/yes-no). Rich form: k.msgbox{title=, message=, type=\"info\"|\"warning\"|\"danger\", buttons={{\"Save\",1},{\"Cancel\",0}}} — type sets the left color strip, buttons are {label,value} pairs (or bare strings); default is a single OK button."},
@@ -41,6 +42,11 @@ var apiDocs = map[string]Info{
 	"bell":          {Name: "bell", Group: "flow", Signature: "k.bell()", Docs: "Plays a system beep sound via WebAudio."},
 	"screen_size":   {Name: "screen_size", Group: "flow", Signature: "k.screen_size()", Docs: "Returns viewport dimensions as {width, height}."},
 	"http_request":  {Name: "http_request", Group: "flow", Signature: "k.http_request(optsTable)", Docs: "Makes an HTTP request. opts: {method, url, headers, body, timeout}. Returns {status, headers, body}."},
+
+	// action set trio (§5.2)
+	"assign": {Name: "assign", Group: "flow", Signature: "k.assign(target, kind, value)", Docs: "Sets a global variable or control value with type coercion. target: string (global name) or table {form=, ctrl=}. kind: \"numeric\"|\"string\"|\"boolean\"|\"date\". Returns the coerced value."},
+	"set":    {Name: "set", Group: "flow", Signature: "k.set(name, fn)", Docs: "Stores a function in the action registry for later execution via k.exec."},
+	"exec":   {Name: "exec", Group: "flow", Signature: "k.exec(name, ...)", Docs: "Executes a previously stored function (via k.set) asynchronously with the given arguments. Returns the function's result(s)."},
 
 	// debug
 	"debug":        {Name: "debug", Group: "debug", Signature: "k.debug", Docs: "Runtime introspection helpers: stack/locals/trace."},
@@ -56,27 +62,32 @@ var apiDocs = map[string]Info{
 	"form.return_to": {Name: "form.return_to", Group: "forms", Signature: "k.form.return_to(name)", Docs: "Closes all forms above name."},
 	"form.clear":     {Name: "form.clear", Group: "forms", Signature: "k.form.clear(name)", Docs: "Clears a form's control values."},
 	"form.refresh":   {Name: "form.refresh", Group: "forms", Signature: "k.form.refresh(name)", Docs: "Re-renders and pushes the form to the browser."},
-	"form.on":        {Name: "form.on", Group: "forms", Signature: "k.form.on(form, ctrl, event, fn)", Docs: "Registers an event handler (e.g. event \"onclick\") for a control."},
+	"form.on":        {Name: "form.on", Group: "forms", Signature: "k.form.on(form, ctrl, event, fn) | k.form.on(name, event, fn) | k.form.on(name, \"on_idle\", ms, fn)", Docs: "Registers an event handler. 4-arg form: control handler (form, ctrl, event, fn). 3-arg form: form-level handler (name, event, fn) for open_form, after_open_form, close_form, key_pressed. 4-arg with number: form.on(name, \"on_idle\", ms, fn) sets idle interval in ms."},
 
 	// controls
-	"ctrl":              {Name: "ctrl", Group: "controls", Signature: "k.ctrl", Docs: "Control constructors: k.ctrl.label/textbox/button/..."},
-	"ctrl.label":        {Name: "ctrl.label", Group: "controls", Signature: "k.ctrl.label(form, name, optsTable)", Docs: "Adds a label control. opts: {text, multiline?:boolean, cell?, align?}. multiline renders a pre-wrap div preserving \\n (kforms_enhancements.md §4.2). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6)."},
-	"ctrl.textbox":      {Name: "ctrl.textbox", Group: "controls", Signature: "k.ctrl.textbox(form, name, optsTable)", Docs: "Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolean, rows?:number, cols?:number, datetime?:boolean|table, cell?, align?}. multiline renders a <textarea>. datetime enables a flatpickr picker: mode=\"date\"|\"time\"|\"datetime\", format, min, max, step (kforms_enhancements.md §4.1). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6)."},
-	"ctrl.button":       {Name: "ctrl.button", Group: "controls", Signature: "k.ctrl.button(form, name, optsTable)", Docs: "Adds a button control. opts may set label, class, onclick, enabled."},
-	"ctrl.combo":        {Name: "ctrl.combo", Group: "controls", Signature: "k.ctrl.combo(form, name, optsTable)", Docs: "Adds a combo (dropdown) control. opts.items is a table of choices."},
-	"ctrl.list":         {Name: "ctrl.list", Group: "controls", Signature: "k.ctrl.list(form, name, optsTable)", Docs: "Adds a multi-row select list. opts.items is a table of choices."},
-	"ctrl.table":        {Name: "ctrl.table", Group: "controls", Signature: "k.ctrl.table(form, name, optsTable)", Docs: "Adds a table control; rows manipulated via k.table.*."},
-	"ctrl.checkbox":     {Name: "ctrl.checkbox", Group: "controls", Signature: "k.ctrl.checkbox(form, name, optsTable)", Docs: "Adds a checkbox control."},
-	"ctrl.radio":        {Name: "ctrl.radio", Group: "controls", Signature: "k.ctrl.radio(form, name, optsTable)", Docs: "Adds a radio button control."},
-	"ctrl.set_value":    {Name: "ctrl.set_value", Group: "controls", Signature: "k.ctrl.set_value(form, name, value)", Docs: "Sets a control's value and re-renders it."},
-	"ctrl.get_value":    {Name: "ctrl.get_value", Group: "controls", Signature: "k.ctrl.get_value(form, name)", Docs: "Returns a control's current value."},
-	"ctrl.set_property": {Name: "ctrl.set_property", Group: "controls", Signature: "k.ctrl.set_property(form, name, prop, value)", Docs: "Sets an arbitrary control property."},
-	"ctrl.get_property": {Name: "ctrl.get_property", Group: "controls", Signature: "k.ctrl.get_property(form, name, prop)", Docs: "Gets an arbitrary control property."},
-	"ctrl.set_focus":    {Name: "ctrl.set_focus", Group: "controls", Signature: "k.ctrl.set_focus(form, name)", Docs: "Moves focus to a control in the browser."},
-	"ctrl.refresh":      {Name: "ctrl.refresh", Group: "controls", Signature: "k.ctrl.refresh(form, name)", Docs: "Re-renders a single control and pushes the update."},
-	"ctrl.looper":       {Name: "ctrl.looper", Group: "controls", Signature: "k.ctrl.looper(form, name, optsTable)", Docs: "Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}."},
-	"ctrl.chart":        {Name: "ctrl.chart", Group: "controls", Signature: "k.ctrl.chart(form, name, optsTable)", Docs: "Adds a Chart.js control. opts: {type=line|bar|hbar|pie|doughnut|scatter|radar|area, title, width=400, height=300, labels, datasets, options, responsive=true, maintainAspectRatio=false, legend=true, legendPosition=top, animation=true, stacked=false}. Events chart_click/chart_hover/chart_legend_click via k.form.on."},
-	"ctrl.image":        {Name: "ctrl.image", Group: "controls", Signature: "k.ctrl.image(form, name, optsTable)", Docs: "Adds an image control (<img>). opts: {src (required), alt, width, height (px or %), fit=\"cover|contain|fill|scale-down|none\" (default contain), clickable?, onclick?}. k.ctrl.set_value(form, name, new_src) updates the image (kforms_enhancements.md §4.3)."},
+	"ctrl":                {Name: "ctrl", Group: "controls", Signature: "k.ctrl", Docs: "Control constructors: k.ctrl.label/textbox/button/..."},
+	"ctrl.label":          {Name: "ctrl.label", Group: "controls", Signature: "k.ctrl.label(form, name, optsTable)", Docs: "Adds a label control. opts: {text, multiline?:boolean, cell?, align?}. multiline renders a pre-wrap div preserving \\n (kforms_enhancements.md §4.2). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6)."},
+	"ctrl.textbox":        {Name: "ctrl.textbox", Group: "controls", Signature: "k.ctrl.textbox(form, name, optsTable)", Docs: "Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolean, rows?:number, cols?:number, datetime?:boolean|table, cell?, align?}. multiline renders a <textarea>. datetime enables a flatpickr picker: mode=\"date\"|\"time\"|\"datetime\", format, min, max, step (kforms_enhancements.md §4.1). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6)."},
+	"ctrl.button":         {Name: "ctrl.button", Group: "controls", Signature: "k.ctrl.button(form, name, optsTable)", Docs: "Adds a button control. opts may set label, class, onclick, enabled."},
+	"ctrl.combo":          {Name: "ctrl.combo", Group: "controls", Signature: "k.ctrl.combo(form, name, optsTable)", Docs: "Adds a combo (dropdown) control. opts.items is a table of choices."},
+	"ctrl.list":           {Name: "ctrl.list", Group: "controls", Signature: "k.ctrl.list(form, name, optsTable)", Docs: "Adds a multi-row select list. opts.items is a table of choices."},
+	"ctrl.table":          {Name: "ctrl.table", Group: "controls", Signature: "k.ctrl.table(form, name, optsTable)", Docs: "Adds a table control; rows manipulated via k.table.*."},
+	"ctrl.checkbox":       {Name: "ctrl.checkbox", Group: "controls", Signature: "k.ctrl.checkbox(form, name, optsTable)", Docs: "Adds a checkbox control."},
+	"ctrl.radio":          {Name: "ctrl.radio", Group: "controls", Signature: "k.ctrl.radio(form, name, optsTable)", Docs: "Adds a radio button control."},
+	"ctrl.set_value":      {Name: "ctrl.set_value", Group: "controls", Signature: "k.ctrl.set_value(form, name, value)", Docs: "Sets a control's value and re-renders it."},
+	"ctrl.get_value":      {Name: "ctrl.get_value", Group: "controls", Signature: "k.ctrl.get_value(form, name)", Docs: "Returns a control's current value."},
+	"ctrl.set_property":   {Name: "ctrl.set_property", Group: "controls", Signature: "k.ctrl.set_property(form, name, prop, value)", Docs: "Sets an arbitrary control property."},
+	"ctrl.get_property":   {Name: "ctrl.get_property", Group: "controls", Signature: "k.ctrl.get_property(form, name, prop)", Docs: "Gets an arbitrary control property."},
+	"ctrl.set_focus":      {Name: "ctrl.set_focus", Group: "controls", Signature: "k.ctrl.set_focus(form, name)", Docs: "Moves focus to a control in the browser."},
+	"ctrl.refresh":        {Name: "ctrl.refresh", Group: "controls", Signature: "k.ctrl.refresh(form, name)", Docs: "Re-renders a single control and pushes the update."},
+	"ctrl.looper":         {Name: "ctrl.looper", Group: "controls", Signature: "k.ctrl.looper(form, name, optsTable)", Docs: "Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}."},
+	"ctrl.chart":          {Name: "ctrl.chart", Group: "controls", Signature: "k.ctrl.chart(form, name, optsTable)", Docs: "Adds a Chart.js control. opts: {type=line|bar|hbar|pie|doughnut|scatter|radar|area, title, width=400, height=300, labels, datasets, options, responsive=true, maintainAspectRatio=false, legend=true, legendPosition=top, animation=true, stacked=false}. Events chart_click/chart_hover/chart_legend_click via k.form.on."},
+	"ctrl.image":          {Name: "ctrl.image", Group: "controls", Signature: "k.ctrl.image(form, name, optsTable)", Docs: "Adds an image control (<img>). opts: {src (required), alt, width, height (px or %), fit=\"cover|contain|fill|scale-down|none\" (default contain), clickable?, onclick?}. k.ctrl.set_value(form, name, new_src) updates the image (kforms_enhancements.md §4.3)."},
+	"ctrl.select_text":    {Name: "ctrl.select_text", Group: "controls", Signature: "k.ctrl.select_text(form, name)", Docs: "Selects all text in a textbox or textarea control."},
+	"ctrl.set_selection":  {Name: "ctrl.set_selection", Group: "controls", Signature: "k.ctrl.set_selection(form, name, from, to)", Docs: "Sets the selection range in a textbox or textarea (0-based character offsets)."},
+	"ctrl.get_selection":  {Name: "ctrl.get_selection", Group: "controls", Signature: "k.ctrl.get_selection(form, name)", Docs: "Returns the current selection as {start, end, text} from a textbox or textarea."},
+	"ctrl.get_item_count": {Name: "ctrl.get_item_count", Group: "controls", Signature: "k.ctrl.get_item_count(form, name)", Docs: "Returns the number of items/rows in a combo, list, radio, or table control."},
+	"ctrl.execute_event":  {Name: "ctrl.execute_event", Group: "controls", Signature: "k.ctrl.execute_event(form, name, event)", Docs: "Fires a control's event handler as if the user triggered it (e.g., \"onclick\"). Runs asynchronously via the session actor."},
 
 	// looper operations
 	"looper":               {Name: "looper", Group: "controls", Signature: "k.looper", Docs: "Looper control operations: k.looper.link_db/set_db_source/refresh/..."},
@@ -112,6 +123,7 @@ var apiDocs = map[string]Info{
 	"table.set_remote_data":     {Name: "table.set_remote_data", Group: "controls", Signature: "k.table.set_remote_data(form, name, {data,last_page,last_row})", Docs: "Pushes server-side pagination data to a tabulator table =  {data=rows, last_page=n} or {data=rows, last_row=n}."},
 	"table.refresh":             {Name: "table.refresh", Group: "controls", Signature: "k.table.refresh(form, name)", Docs: "Re-runs a DB-linked tabulator table's query and shows page 1."},
 	"table.set_db_source":       {Name: "table.set_db_source", Group: "controls", Signature: "k.table.set_db_source(form, name, opts)", Docs: "Swaps a DB-linked tabulator table's source {db,query,columns?,page_size?,count_query?,where?,order_by?} and refreshes."},
+	"table.find":                {Name: "table.find", Group: "controls", Signature: "k.table.find(form, name, value)", Docs: "Searches for a row where any cell equals value. Returns 1-based row index or nil. Works for both traditional tables and tabulator tables."},
 
 	// database
 	"connect_db":    {Name: "connect_db", Group: "database", Signature: "k.connect_db(dsn)", Docs: "Opens a database connection (DSN scheme: sqlite://, mysql://, postgres://, sqlserver://) and returns a handle."},
@@ -179,9 +191,10 @@ var apiDocs = map[string]Info{
 	"ws.broadcast": {Name: "ws.broadcast", Group: "server", Signature: "k.ws.broadcast(message)", Docs: "Broadcasts a text message to all connected WebSocket clients."},
 	"ws.send":      {Name: "ws.send", Group: "server", Signature: "k.ws.send(client_id, message)", Docs: "Sends a text message to a specific WebSocket client."},
 	"ws.close":     {Name: "ws.close", Group: "server", Signature: "k.ws.close(client_id)", Docs: "Closes a WebSocket connection."},
-	"tcp":          {Name: "tcp", Group: "server", Signature: "k.tcp", Docs: "TCP operations: k.tcp.send/close."},
+	"tcp":          {Name: "tcp", Group: "server", Signature: "k.tcp", Docs: "TCP operations: k.tcp.send/close/accept."},
 	"tcp.send":     {Name: "tcp.send", Group: "server", Signature: "k.tcp.send(client_id, data)", Docs: "Sends data to a specific TCP client."},
 	"tcp.close":    {Name: "tcp.close", Group: "server", Signature: "k.tcp.close(client_id)", Docs: "Closes a TCP connection."},
+	"tcp.accept":   {Name: "tcp.accept", Group: "server", Signature: "k.tcp.accept()", Docs: "Waits for an incoming TCP connection and returns {id}. The connection can then be used with k.tcp.send and k.tcp.close. (Serve mode only.)"},
 
 	// tier-2 flow
 	"timer_start":  {Name: "timer_start", Group: "flow", Signature: "k.timer_start(id, ms[, repeats])", Docs: "Starts a session timer; fires a Lua function named id (repeats optional)."},

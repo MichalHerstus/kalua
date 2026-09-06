@@ -113,6 +113,12 @@ func registerFlow(e *Env) {
 		return L.Yield(lua.LNil)
 	})
 
+	// k.yield() — yields the current coroutine, allowing other coroutines to run.
+	// Returns any values passed to the next resume.
+	e.register("yield", "flow", func(L *lua.LState) int {
+		return L.Yield(lua.LNil)
+	})
+
 	// k.quit() — requests clean app termination at next scheduler tick
 	e.register("quit", "flow", func(L *lua.LState) int {
 		e.App.RequestQuit()
@@ -223,11 +229,15 @@ func registerFlow(e *Env) {
 		return L.Yield(lua.LNil)
 	})
 
-	// k.pick_file([opts]) — open a browser file picker dialog.
-	// opts (optional table): {accept="image/*,.pdf", multiple=true}
-	// Returns a table of files: {{name, size, type, data}, ...} where data is
-	// base64-encoded content. Returns nil on cancel.
-	// Suspends the current coroutine until files are selected or cancelled.
+// k.pick_file([opts]) — open a browser file picker dialog.
+// opts (optional table): {accept="image/*,.pdf", multiple=true, mode="open|save|download", filename="default.txt", data="base64 content"}
+// mode: "open" (default) - pick existing files
+//       "save" - pick location to save a file, returns {path, name}
+//       "download" - download provided data to a file, returns {path, name}
+// Returns a table of files for open mode: {{name, size, type, data}, ...}
+// Returns {path, name} for save/download modes.
+// Returns nil on cancel.
+// Suspends the current coroutine until files are selected or cancelled.
 	e.register("pick_file", "flow", func(L *lua.LState) int {
 		if e.Sess == nil {
 			L.RaiseError("pick_file: no session available")
@@ -236,6 +246,9 @@ func registerFlow(e *Env) {
 
 		accept := ""
 		multiple := false
+		mode := "open"
+		filename := ""
+		fileData := ""
 
 		opts := L.OptTable(1, nil)
 		if opts != nil {
@@ -245,6 +258,21 @@ func registerFlow(e *Env) {
 			if v := opts.RawGetString("multiple"); v != lua.LNil {
 				multiple = v == lua.LTrue || v.String() == "true"
 			}
+			if v := opts.RawGetString("mode"); v != lua.LNil {
+				mode = v.String()
+			}
+			if v := opts.RawGetString("filename"); v != lua.LNil {
+				filename = v.String()
+			}
+			if v := opts.RawGetString("data"); v != lua.LNil {
+				fileData = v.String()
+			}
+		}
+
+		// For save/download modes, use RequestFilePickerSave
+		if mode == "save" || mode == "download" {
+			e.Sess.RequestFilePickerSave(L, func() {}, mode, filename, fileData)
+			return L.Yield(lua.LNil)
 		}
 
 		e.Sess.RequestFilePicker(L, func() {}, accept, multiple)
@@ -477,6 +505,147 @@ func registerFlow(e *Env) {
 		}
 		L.Push(lua.LNumber(ms))
 		return 1
+	})
+
+	// k.assign / k.set / k.exec (action set trio, §5.2)
+	registerAssignSetExec(e)
+}
+
+// registerAssignSetExec registers k.assign, k.set, k.exec (action set trio, §5.2).
+// Called from registerFlow (run mode) and SetupServe (serve mode).
+func registerAssignSetExec(e *Env) {
+	// k.assign(target, kind, value) — set a global or control value with coercion.
+	// target: string (global name) or table {form=, ctrl=} (control target)
+	// kind: "numeric"|"string"|"boolean"|"date"|"number"|"bool"
+	// Returns the coerced value.
+	e.register("assign", "flow", func(L *lua.LState) int {
+		target := L.Get(1)
+		kind := L.CheckString(2)
+		val := L.Get(3)
+
+		// Coerce value according to kind
+		var coerced lua.LValue
+		switch strings.ToLower(kind) {
+		case "numeric", "number":
+			if n, ok := coerce.ToNum(val); ok {
+				coerced = lua.LNumber(n)
+			} else {
+				coerced = lua.LNumber(0)
+			}
+		case "string":
+			coerced = lua.LString(coerce.Stringify(val))
+		case "boolean", "bool":
+			coerced = lua.LBool(coerce.Truthy(val))
+		case "date":
+			coerced = lua.LString(coerce.Stringify(val))
+		default:
+			coerced = val
+		}
+
+		// String target -> set global
+		if lv, ok := target.(lua.LString); ok {
+			L.SetGlobal(string(lv), coerced)
+			L.Push(coerced)
+			return 1
+		}
+
+		// Table target {form=, ctrl=} -> set control value
+		if tbl, ok := target.(*lua.LTable); ok {
+			formName := tbl.RawGetString("form")
+			ctrlName := tbl.RawGetString("ctrl")
+			if formName == lua.LNil || ctrlName == lua.LNil {
+				L.RaiseError("assign: control target requires form and ctrl fields")
+				return 0
+			}
+			if e.Sess == nil {
+				L.RaiseError("assign: no session available for control target")
+				return 0
+			}
+			// Use set_value logic via control
+			ctrl := getControl(L, formName.String(), ctrlName.String())
+			if ctrl == nil {
+				L.RaiseError("assign: control not found: %s.%s", formName, ctrlName)
+				return 0
+			}
+			ctrl.RawSetString("value", coerced)
+			if ctrl.RawGetString("type").String() == "image" {
+				ctrl.RawSetString("src", coerced)
+			}
+			html := renderControl(ctrl)
+			sendOutbox(e, common.OutboxMsg{
+				Type:     "update_control",
+				Form:     formName.String(),
+				Ctrl:     ctrlName.String(),
+				Selector: "#c:" + formName.String() + ":" + ctrlName.String(),
+				HTML:     html,
+			})
+			L.Push(coerced)
+			return 1
+		}
+
+		L.RaiseError("assign: target must be string (global) or table {form, ctrl}")
+		return 0
+	})
+
+	// k.set(name, fn) — store a function in the action registry.
+	e.register("set", "flow", func(L *lua.LState) int {
+		name := L.CheckString(1)
+		fn := L.CheckFunction(2)
+
+		// Store in _kalua_actions global table
+		actions := L.GetGlobal("_kalua_actions")
+		if actions == lua.LNil {
+			actions = L.NewTable()
+			L.SetGlobal("_kalua_actions", actions)
+		}
+		actionsTbl, ok := actions.(*lua.LTable)
+		if !ok {
+			L.RaiseError("set: _kalua_actions corrupted")
+			return 0
+		}
+		actionsTbl.RawSetString(name, fn)
+		return 0
+	})
+
+	// k.exec(name, ...) — execute a stored function asynchronously.
+	// Returns the function's result(s) when it completes.
+	e.register("exec", "flow", func(L *lua.LState) int {
+		name := L.CheckString(1)
+		fn := L.GetGlobal("_kalua_actions")
+		if fn == lua.LNil {
+			L.RaiseError("exec: no actions registered")
+			return 0
+		}
+		actionsTbl, ok := fn.(*lua.LTable)
+		if !ok {
+			L.RaiseError("exec: _kalua_actions corrupted")
+			return 0
+		}
+		actionFn := actionsTbl.RawGetString(name)
+		if actionFn == lua.LNil {
+			L.RaiseError("exec: action not found: %s", name)
+			return 0
+		}
+		lfn, ok := actionFn.(*lua.LFunction)
+		if !ok {
+			L.RaiseError("exec: %s is not a function", name)
+			return 0
+		}
+
+		// Collect arguments (2..top)
+		var args []lua.LValue
+		for i := 2; i <= L.GetTop(); i++ {
+			args = append(args, L.Get(i))
+		}
+
+		if e.Sess == nil {
+			L.RaiseError("exec: no session available")
+			return 0
+		}
+
+		// Request async execution and yield
+		e.Sess.RequestExec(L, func() {}, lfn, args)
+		return L.Yield(lua.LNil)
 	})
 }
 

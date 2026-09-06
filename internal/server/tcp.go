@@ -11,11 +11,12 @@ type TCPHub struct {
 	mu       sync.RWMutex
 	conns    map[string]*TCPConn
 	workerCh chan *Worker
+	acceptCh chan *TCPConn // channel for k.tcp_accept to wait for new connections
 }
 
 // TCPConn wraps a TCP connection for use in Lua callbacks.
 type TCPConn struct {
-	id     string
+	ID     string
 	conn   net.Conn
 	sendCh chan []byte
 	close  func()
@@ -26,13 +27,14 @@ func NewTCPHub(workerCh chan *Worker) *TCPHub {
 	return &TCPHub{
 		conns:    make(map[string]*TCPConn),
 		workerCh: workerCh,
+		acceptCh: make(chan *TCPConn, 16),
 	}
 }
 
 // Register adds a new TCP connection.
 func (h *TCPHub) Register(id string, c net.Conn, close func()) *TCPConn {
 	tcp := &TCPConn{
-		id:     id,
+		ID:     id,
 		conn:   c,
 		sendCh: make(chan []byte, 256),
 		close:  close,
@@ -40,7 +42,26 @@ func (h *TCPHub) Register(id string, c net.Conn, close func()) *TCPConn {
 	h.mu.Lock()
 	h.conns[id] = tcp
 	h.mu.Unlock()
+
+	// Also push to accept channel for k.tcp_accept
+	select {
+	case h.acceptCh <- tcp:
+	default:
+		// Channel full, connection will be handled by auto-dispatch
+	}
+
 	return tcp
+}
+
+// Accept waits for and returns the next incoming TCP connection ID.
+// Returns empty string if the hub is closed.
+func (h *TCPHub) Accept(ctx context.Context) string {
+	select {
+	case tcp := <-h.acceptCh:
+		return tcp.ID
+	case <-ctx.Done():
+		return ""
+	}
 }
 
 // Unregister removes a TCP connection.

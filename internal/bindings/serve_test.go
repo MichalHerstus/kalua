@@ -153,6 +153,11 @@ func TestServe_UIStubsRaiseError(t *testing.T) {
 		`k.msgbox{"x"}`,
 		`k.form.new("f")`,
 		`k.ctrl.button("f", "b", {})`,
+		`k.ctrl.select_text("f", "b")`,
+		`k.ctrl.set_selection("f", "b", 0, 5)`,
+		`k.ctrl.get_selection("f", "b")`,
+		`k.ctrl.get_item_count("f", "b")`,
+		`k.ctrl.execute_event("f", "b", "onclick")`,
 		`k.status_show("x")`,
 	} {
 		err := runServeLua(t, store, src)

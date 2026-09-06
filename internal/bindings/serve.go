@@ -1,6 +1,7 @@
 package bindings
 
 import (
+	"context"
 	"github.com/yuin/gopher-lua"
 
 	"kalua/internal/vm"
@@ -26,6 +27,7 @@ type WSHub interface {
 type TCPHub interface {
 	Send(id string, msg []byte) bool
 	Close(id string)
+	Accept(ctx context.Context) string // returns connection ID
 }
 
 // SetupServe configures the Lua state for serve mode (headless API).
@@ -114,6 +116,9 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 	registerCrypto(e)
 	registerFiles(e)
 	registerDB(e)
+
+	// Action set trio (assign/set/exec) — works in serve mode for headless logic.
+	registerAssignSetExec(e)
 
 	// Session-dependent UI/timer bindings are removed; SetupUIError installs
 	// the error-raising stubs for form/ctrl/msgbox/status. Timers and net/param
@@ -241,6 +246,22 @@ func registerTCP(L *lua.LState, hub TCPHub) {
 		return 0
 	}))
 
+	// k.tcp_accept() -> {id} — waits for an incoming TCP connection
+	// and returns the connection ID. The connection can then be used with
+	// k.tcp_send and k.tcp_close. Blocks until a connection is available.
+	tcpTbl.RawSetString("accept", L.NewFunction(func(L *lua.LState) int {
+		ctx := context.Background()
+		id := hub.Accept(ctx)
+		if id == "" {
+			L.Push(lua.LNil)
+			return 1
+		}
+		result := L.NewTable()
+		result.RawSetString("id", lua.LString(id))
+		L.Push(result)
+		return 1
+	}))
+
 	k.RawSetString("tcp", tcpTbl)
 }
 
@@ -281,7 +302,7 @@ func SetupUIError(L *lua.LState) {
 
 	// Disable k.ctrl.*
 	ctrlTbl := L.NewTable()
-	ctrlFuncs := []string{"set_value", "get_value", "set_property", "get_property", "textbox", "button", "label", "combo", "list", "table", "checkbox", "radio"}
+	ctrlFuncs := []string{"set_value", "get_value", "set_property", "get_property", "textbox", "button", "label", "combo", "list", "table", "checkbox", "radio", "select_text", "set_selection", "get_selection", "get_item_count", "execute_event", "image", "chart", "looper"}
 	for _, fn := range ctrlFuncs {
 		ctrlTbl.RawSetString(fn, L.NewFunction(errorFunc("k.ctrl."+fn)))
 	}

@@ -70,6 +70,11 @@ func registerForms(e *Env) {
 			sess.StoreFormCoro(name, L)
 		}
 
+		// Fire open_form event before showing
+		if sess != nil {
+			sess.PostFormEvent(name, "open_form")
+		}
+
 		// Render form and send to browser
 		html := renderForm(L, name)
 		sendOutbox(e, common.OutboxMsg{
@@ -77,6 +82,11 @@ func registerForms(e *Env) {
 			Form: name,
 			HTML: html,
 		})
+
+		// Fire after_open_form event after rendering
+		if sess != nil {
+			sess.PostFormEvent(name, "after_open_form")
+		}
 
 		// Suspend the coroutine until form is closed
 		return e.App.Block(L, &vm.PendingOp{Kind: vm.PendingFormShow, Form: name})
@@ -92,6 +102,9 @@ func registerForms(e *Env) {
 				name = sess.TopForm()
 			}
 			sess.PopForm()
+
+			// Fire close_form event
+			sess.PostFormEvent(name, "close_form")
 
 			// Resume the suspended coroutine for this form
 			sess.ResumeFormCoro(name)
@@ -114,6 +127,8 @@ func registerForms(e *Env) {
 		if sess != nil {
 			for sess.TopForm() != name && sess.TopForm() != "" {
 				closed := sess.PopForm()
+				// Fire close_form event for each closed form
+				sess.PostFormEvent(closed, "close_form")
 				// Resume the suspended coroutine for each closed form
 				sess.ResumeFormCoro(closed)
 				sendOutbox(e, common.OutboxMsg{
@@ -146,8 +161,106 @@ func registerForms(e *Env) {
 		return 0
 	})
 
-	// k.form.on(form, ctrl, event, fn) - register event handler
+	// k.form.on(form, ctrl, event, fn) - register control event handler
+	// k.form.on(name, event, fn) - register form-level event handler (3 args)
+	// k.form.on(name, "on_idle", ms, fn) - register form-level on_idle with interval (4 args, 3rd is number)
 	e.register("form.on", "forms", func(L *lua.LState) int {
+		top := L.GetTop()
+
+		// 3-arg form: form.on(name, event, fn) - form-level handler
+		if top == 3 {
+			formName := L.CheckString(1)
+			eventName := L.CheckString(2)
+			fn := L.CheckFunction(3)
+
+			formTbl := L.GetGlobal(formName)
+			if formTbl == lua.LNil {
+				L.RaiseError("form %s not found", formName)
+				return 0
+			}
+			tbl, ok := formTbl.(*lua.LTable)
+			if !ok {
+				return 0
+			}
+
+			handlers := tbl.RawGetString("handlers")
+			if handlers == lua.LNil {
+				handlers = L.NewTable()
+				tbl.RawSetString("handlers", handlers)
+			}
+			handlersTbl, ok := handlers.(*lua.LTable)
+			if !ok {
+				return 0
+			}
+
+			// Store under @form key for form-level events
+			formHandlers := handlersTbl.RawGetString("@form")
+			if formHandlers == lua.LNil {
+				formHandlers = L.NewTable()
+				handlersTbl.RawSetString("@form", formHandlers)
+			}
+			formHandlersTbl, ok := formHandlers.(*lua.LTable)
+			if !ok {
+				return 0
+			}
+
+			formHandlersTbl.RawSetString(eventName, fn)
+
+			// If this is on_idle, store the interval
+			if eventName == "on_idle" {
+				tbl.RawSetString("idle_ms", lua.LNumber(1000))
+			}
+			return 0
+		}
+
+		// 4-arg form: check if 3rd arg is number (on_idle with interval) or string (control event)
+		if top == 4 {
+			formName := L.CheckString(1)
+			arg3 := L.Get(3)
+			fn := L.CheckFunction(4)
+
+			// If 3rd arg is a number, it's: form.on(name, "on_idle", ms, fn)
+			if _, ok := arg3.(lua.LNumber); ok {
+				eventName := L.CheckString(2)
+				ms := L.CheckInt(3)
+
+				formTbl := L.GetGlobal(formName)
+				if formTbl == lua.LNil {
+					L.RaiseError("form %s not found", formName)
+					return 0
+				}
+				tbl, ok := formTbl.(*lua.LTable)
+				if !ok {
+					return 0
+				}
+
+				handlers := tbl.RawGetString("handlers")
+				if handlers == lua.LNil {
+					handlers = L.NewTable()
+					tbl.RawSetString("handlers", handlers)
+				}
+				handlersTbl, ok := handlers.(*lua.LTable)
+				if !ok {
+					return 0
+				}
+
+				formHandlers := handlersTbl.RawGetString("@form")
+				if formHandlers == lua.LNil {
+					formHandlers = L.NewTable()
+					handlersTbl.RawSetString("@form", formHandlers)
+				}
+				formHandlersTbl, ok := formHandlers.(*lua.LTable)
+				if !ok {
+					return 0
+				}
+
+				formHandlersTbl.RawSetString(eventName, fn)
+				tbl.RawSetString("idle_ms", lua.LNumber(ms))
+				return 0
+			}
+		}
+
+		// 4-arg form: form.on(form, ctrl, event, fn) - control handler (original)
 		formName := L.CheckString(1)
 		ctrlName := L.CheckString(2)
 		eventName := L.CheckString(3)
@@ -619,6 +732,138 @@ func registerControls(e *Env) {
 			Selector: "#c:" + formName + ":" + name,
 			HTML:     html,
 		})
+		return 0
+	})
+
+	// k.ctrl.select_text(form, name) - select all text in a textbox/textarea
+	e.register("ctrl.select_text", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			return 0
+		}
+
+		sendOutbox(e, common.OutboxMsg{
+			Type: "select_text",
+			Form: formName,
+			Ctrl: name,
+		})
+		return 0
+	})
+
+	// k.ctrl.set_selection(form, name, from, to) - set selection range in a textbox/textarea
+	e.register("ctrl.set_selection", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		from := L.CheckInt(3)
+		to := L.CheckInt(4)
+
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			return 0
+		}
+
+		// Send selection range as JSON in Data field (OutboxMsg has no int fields)
+		data := map[string]interface{}{
+			"from": from,
+			"to":   to,
+		}
+		jsonData, _ := json.Marshal(data)
+		sendOutbox(e, common.OutboxMsg{
+			Type: "select_range",
+			Form: formName,
+			Ctrl: name,
+			Data: string(jsonData),
+		})
+		return 0
+	})
+
+	// k.ctrl.get_selection(form, name) -> {start, end, text} - get current selection
+	e.register("ctrl.get_selection", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+
+		sess := e.App.Session()
+		if sess == nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+
+		// Request selection from browser and suspend
+		respID := sess.RequestSelection(L, nil, formName, name)
+		_ = respID
+		return L.Yield(lua.LNil)
+	})
+
+	// k.ctrl.get_item_count(form, name) -> number - get item count for combo/list/radio/table
+	e.register("ctrl.get_item_count", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			L.Push(lua.LNumber(0))
+			return 1
+		}
+
+		ctrlType := ctrl.RawGetString("type").String()
+		count := 0
+
+		switch ctrlType {
+		case "combo", "list", "radio":
+			items := ctrl.RawGetString("items")
+			if itemsTbl, ok := items.(*lua.LTable); ok {
+				count = itemsTbl.Len()
+			}
+		case "table":
+			// Traditional table: rows; Tabulator: data
+			rows := ctrl.RawGetString("rows")
+			if rowsTbl, ok := rows.(*lua.LTable); ok {
+				count = rowsTbl.Len()
+			} else {
+				data := ctrl.RawGetString("data")
+				if dataTbl, ok := data.(*lua.LTable); ok {
+					count = dataTbl.Len()
+				}
+			}
+		}
+
+		L.Push(lua.LNumber(count))
+		return 1
+	})
+
+	// k.ctrl.execute_event(form, name, event) - fire a control's event handler as if user triggered it
+	e.register("ctrl.execute_event", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		event := L.CheckString(3)
+
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			return 0
+		}
+
+		// Get current control value to pass to handler
+		value := ctrl.RawGetString("value")
+		if ctrl.RawGetString("type").String() == "image" {
+			if v := ctrl.RawGetString("src"); v != lua.LNil {
+				value = v
+			}
+		}
+
+		sess := e.App.Session()
+		if sess != nil {
+			// Post event to session inbox - handler runs asynchronously
+			sess.PostEvent(formName, name, event, value)
+		}
 		return 0
 	})
 

@@ -40,6 +40,10 @@ const (
 	inboxLooperScrollRequest                 // browser asked for the next looper batch of rows
 	inboxLooperRefreshRequest                // browser re-triggered a looper fetch
 	inboxChartImageResp                      // browser answered k.chart.get_image
+	inboxFormEvent                           // form lifecycle event (open_form, after_open_form, close_form, on_idle)
+	inboxExec                                // k.exec async function execution
+	inboxSelectionResp                       // browser answered k.ctrl.get_selection
+	inboxFilePickerSaveResp                // browser answered k.pick_file save/download
 )
 
 // asyncOp represents a suspended coroutine waiting for an async operation
@@ -47,6 +51,8 @@ type asyncOp struct {
 	co     *lua.LState                               // coroutine to resume
 	cancel func()                                    // cleanup function
 	conv   func(*lua.LState, interface{}) lua.LValue // result converter (nil = default)
+	// For file picker: "open" | "save" | "download"
+	pickMode string
 }
 
 // inboxMsg is a typed message delivered to the session actor's inbox.
@@ -97,6 +103,9 @@ type Session struct {
 	// Timers managed by this session
 	timers map[string]*time.Timer
 
+	// Idle timers for form on_idle events (one per form name)
+	idleTimers map[string]*time.Timer
+
 	// Async operations - suspended coroutines waiting for completion
 	asyncOps map[string]*asyncOp
 	asyncMu  sync.Mutex
@@ -144,16 +153,17 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:      id,
-		L:       L,
-		app:     app,
-		env:     env,
-		verbose: opts.Verbose,
-		inbox:   make(chan inboxMsg, 64),
-		outbox:  make(chan common.OutboxMsg, 64),
-		cancel:  cancel,
-		done:    make(chan struct{}),
-		timers:  make(map[string]*time.Timer),
+		id:         id,
+		L:          L,
+		app:        app,
+		env:        env,
+		verbose:    opts.Verbose,
+		inbox:      make(chan inboxMsg, 64),
+		outbox:     make(chan common.OutboxMsg, 64),
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		timers:     make(map[string]*time.Timer),
+		idleTimers: make(map[string]*time.Timer),
 		// Form show coroutines
 		formCoros: make(map[string]*lua.LState),
 		// Async operations - suspended coroutines waiting for completion
@@ -237,6 +247,8 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.resumeAsyncResp(msg.respID, lua.LString(msg.resp), "clipboard", logger)
 	case inboxFilePickerResp:
 		s.resumeFilePickerResp(msg.respID, msg.resp, logger)
+	case inboxFilePickerSaveResp:
+		s.resumeFilePickerSaveResp(msg.respID, msg.resp, logger)
 	case inboxQuery:
 		if msg.query != nil && msg.reply != nil {
 			msg.reply <- msg.query(s.L)
@@ -255,6 +267,12 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.handleLooperRefreshRequest(msg, logger)
 	case inboxChartImageResp:
 		s.resumeChartImageResp(msg.respID, msg.resp, logger)
+	case inboxFormEvent:
+		s.handleFormEvent(msg.form, msg.event, logger)
+	case inboxExec:
+		s.handleExec(msg, logger)
+	case inboxSelectionResp:
+		s.handleSelectionResp(msg.respID, msg.raw, logger)
 	}
 }
 
@@ -295,49 +313,10 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		s.updateControlValue(msg.form, msg.ctrl, value)
 	}
 
-	// Look up the handler in the form's event table
-	formTbl := s.L.GetGlobal(msg.form)
-	if formTbl == lua.LNil {
-		logger.Warnf("form %s not found for event %s", msg.form, msg.event)
-		return
-	}
-	tbl, ok := formTbl.(*lua.LTable)
-	if !ok {
-		return
-	}
+	// Try control-specific handler first
+	ctrlKey := msg.ctrl
+	resumeArgs := []lua.LValue{value}
 
-	// Get the handler: form.handlers[ctrl][event]
-	handlers := tbl.RawGetString("handlers")
-	if handlers == lua.LNil {
-		return
-	}
-	handlersTbl, ok := handlers.(*lua.LTable)
-	if !ok {
-		return
-	}
-
-	ctrlHandlers := handlersTbl.RawGetString(msg.ctrl)
-	if ctrlHandlers == lua.LNil {
-		return
-	}
-	ctrlTbl, ok := ctrlHandlers.(*lua.LTable)
-	if !ok {
-		return
-	}
-
-	handler := ctrlTbl.RawGetString(msg.event)
-	if handler == lua.LNil {
-		return
-	}
-	fn, ok := handler.(*lua.LFunction)
-	if !ok {
-		return
-	}
-
-	// Run the handler in a coroutine
-	co, cancel := s.L.NewThread()
-
-	var resumeArgs []lua.LValue
 	switch {
 	case looperDispatch && msg.event == "onselect":
 		vt := value.(*lua.LTable)
@@ -355,14 +334,61 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 	case chartDispatch:
 		vt := value.(*lua.LTable)
 		resumeArgs = []lua.LValue{vt.RawGetString("dataset_index"), vt.RawGetString("index"), vt.RawGetString("value")}
-	default:
-		resumeArgs = []lua.LValue{value}
 	}
+
+	ran := s.runFormHandler(msg.form, ctrlKey, msg.event, resumeArgs, logger)
+
+	// Fallback: if no control handler, try form-level handler (@form)
+	if !ran {
+		s.runFormHandler(msg.form, "@form", msg.event, []lua.LValue{value}, logger)
+	}
+}
+
+// runFormHandler looks up and runs a form event handler in a fresh coroutine.
+// ctrlKey is either the control name or "@form" for form-level events.
+// Returns true if a handler was found and executed.
+func (s *Session) runFormHandler(formName, ctrlKey, event string, resumeArgs []lua.LValue, logger Logger) bool {
+	formTbl := s.L.GetGlobal(formName)
+	if formTbl == lua.LNil {
+		return false
+	}
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+
+	handlers := tbl.RawGetString("handlers")
+	if handlers == lua.LNil {
+		return false
+	}
+	handlersTbl, ok := handlers.(*lua.LTable)
+	if !ok {
+		return false
+	}
+
+	ctrlHandlers := handlersTbl.RawGetString(ctrlKey)
+	if ctrlHandlers == lua.LNil {
+		return false
+	}
+	ctrlTbl, ok := ctrlHandlers.(*lua.LTable)
+	if !ok {
+		return false
+	}
+
+	handler := ctrlTbl.RawGetString(event)
+	if handler == lua.LNil {
+		return false
+	}
+	fn, ok := handler.(*lua.LFunction)
+	if !ok {
+		return false
+	}
+
+	// Run the handler in a fresh coroutine
+	co, cancel := s.L.NewThread()
 
 	st, err, _ := s.L.Resume(co, fn, resumeArgs...)
 	if st == lua.ResumeError {
-		// cancel() may be nil (NewThread returns nil when the state has no
-		// context) and may panic if called on a finished coroutine; guard both.
 		if cancel != nil {
 			cancel()
 		}
@@ -373,14 +399,251 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 			logger.Errorf("%s", getStack(s.L))
 		}
 		s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)}
-		return
+		return true
 	}
 
 	// Flush outbox after handler
 	s.flushOutbox()
+	return true
 }
 
-// handleTabulatorAjaxRequest services the browser's remote-pagination page ask.
+// handleFormEvent processes form lifecycle events (open_form, after_open_form, close_form, on_idle)
+// dispatched via PostFormEvent.
+func (s *Session) handleFormEvent(formName, event string, logger Logger) {
+	s.runFormHandler(formName, "@form", event, []lua.LValue{lua.LString(event)}, logger)
+}
+
+// handleExec runs a stored function (k.exec) in a fresh coroutine and resumes the caller.
+func (s *Session) handleExec(msg inboxMsg, logger Logger) {
+	// msg.raw contains: {op_id, fn, args}
+	data, ok := msg.raw.(map[string]interface{})
+	if !ok {
+		logger.Warnf("invalid exec data: %v", msg.raw)
+		return
+	}
+	opID, _ := data["op_id"].(string)
+	fnVal := data["fn"]
+	argsVal := data["args"]
+
+	// Convert fn to *lua.LFunction and args to []lua.LValue
+	// fnVal is stored as a lua.LFunction, argsVal as []interface{}
+	lfn, ok := fnVal.(*lua.LFunction)
+	if !ok {
+		logger.Warnf("exec: fn is not a function")
+		return
+	}
+
+	// Convert args from []interface{} to []lua.LValue
+	var args []lua.LValue
+	if argsList, ok := argsVal.([]interface{}); ok {
+		for _, a := range argsList {
+			args = append(args, s.toLuaValue(a))
+		}
+	}
+
+	s.asyncMu.Lock()
+	_, exists := s.asyncOps[opID]
+	s.asyncMu.Unlock()
+
+	if !exists {
+		logger.Warnf("exec: async op not found: %s", opID)
+		return
+	}
+
+	// Run the function in a fresh coroutine
+	co, cancel := s.L.NewThread()
+
+	st, err, rets := s.L.Resume(co, lfn, args...)
+	if st == lua.ResumeError {
+		if cancel != nil {
+			cancel()
+		}
+		logger.Errorf("exec handler error: %v", err)
+		if s.verbose {
+			logger.Errorf("%s", postMortemDump(s.L))
+		} else {
+			logger.Errorf("%s", getStack(s.L))
+		}
+		s.resumeAsyncResp(opID, lua.LNil, "exec", logger)
+		return
+	}
+
+	// Collect return values
+	var result lua.LValue
+	if len(rets) == 0 {
+		result = lua.LNil
+	} else if len(rets) == 1 {
+		result = rets[0]
+	} else {
+		tbl := s.L.NewTable()
+		for i, r := range rets {
+			tbl.RawSetInt(i+1, r)
+		}
+		result = tbl
+	}
+
+	s.resumeAsyncResp(opID, result, "exec", logger)
+}
+
+// handleSelectionResp handles the browser's response to k.ctrl.get_selection
+func (s *Session) handleSelectionResp(respID string, raw interface{}, logger Logger) {
+	// raw is a map with start, end, text
+	s.asyncMu.Lock()
+	_, exists := s.asyncOps[respID]
+	s.asyncMu.Unlock()
+
+	if !exists {
+		logger.Warnf("selection_resp: async op not found: %s", respID)
+		return
+	}
+
+	val := s.toLuaValue(raw)
+	s.resumeAsyncResp(respID, val, "selection", logger)
+}
+
+// PostFormEvent posts a form lifecycle event to the actor's inbox.
+func (s *Session) PostFormEvent(form, event string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxFormEvent, form: form, event: event}:
+	case <-s.done:
+	}
+}
+
+// RequestExec registers an async execution (k.exec) and posts inboxExec.
+// The caller coroutine is suspended and will be resumed with the result.
+func (s *Session) RequestExec(co *lua.LState, cancel func(), fn *lua.LFunction, args []lua.LValue) string {
+	opID := fmt.Sprintf("exec_%d", time.Now().UnixNano())
+
+	// Convert args to []interface{} for JSON serialization in inbox
+	var argsIf []interface{}
+	for _, a := range args {
+		argsIf = append(argsIf, a)
+	}
+
+	op := &asyncOp{co: co, cancel: cancel}
+	s.asyncMu.Lock()
+	s.asyncOps[opID] = op
+	s.asyncMu.Unlock()
+
+	// Post inboxExec with the function and args
+	select {
+	case s.inbox <- inboxMsg{
+		typ: inboxExec,
+		raw: map[string]interface{}{
+			"op_id": opID,
+			"fn":    fn,
+			"args":  argsIf,
+		},
+	}:
+	case <-s.done:
+	}
+
+	return opID
+}
+
+// RequestSelection requests the current text selection from the browser.
+// The caller coroutine is suspended and will be resumed with {start, end, text}.
+func (s *Session) RequestSelection(co *lua.LState, cancel func(), form, ctrl string) string {
+	respID := fmt.Sprintf("sel_%d", time.Now().UnixNano())
+
+	op := &asyncOp{co: co, cancel: cancel}
+	s.asyncMu.Lock()
+	s.asyncOps[respID] = op
+	s.asyncMu.Unlock()
+
+	// Send get_selection outbox to browser
+	s.SendOutbox(common.OutboxMsg{
+		Type: "get_selection",
+		Form: form,
+		Ctrl: ctrl,
+		ID:   respID,
+	})
+
+	return respID
+}
+
+// PostSelectionResp handles the browser's selection response.
+func (s *Session) PostSelectionResp(reqID string, value map[string]interface{}) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxSelectionResp, respID: reqID, raw: value}:
+	case <-s.done:
+	}
+}
+
+// startIdleTimer starts or restarts the idle timer for a form.
+// Called when a form becomes the top form.
+func (s *Session) startIdleTimer(formName string, logger Logger) {
+	// Stop any existing timer for this form
+	if t, ok := s.idleTimers[formName]; ok {
+		t.Stop()
+	}
+
+	// Look up the form's idle_ms and on_idle handler
+	formTbl := s.L.GetGlobal(formName)
+	if formTbl == lua.LNil {
+		return
+	}
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return
+	}
+
+	// Check if on_idle handler exists
+	handlers := tbl.RawGetString("handlers")
+	if handlers == lua.LNil {
+		return
+	}
+	handlersTbl, ok := handlers.(*lua.LTable)
+	if !ok {
+		return
+	}
+	formHandlers := handlersTbl.RawGetString("@form")
+	if formHandlers == lua.LNil {
+		return
+	}
+	formHandlersTbl, ok := formHandlers.(*lua.LTable)
+	if !ok {
+		return
+	}
+	if formHandlersTbl.RawGetString("on_idle") == lua.LNil {
+		return
+	}
+
+	// Get idle_ms (default 1000)
+	idleMs := int64(1000)
+	if v := tbl.RawGetString("idle_ms"); v != lua.LNil {
+		if lv, ok := v.(lua.LNumber); ok {
+			idleMs = int64(lv)
+		}
+	}
+
+	// Start the timer
+	t := time.AfterFunc(time.Duration(idleMs)*time.Millisecond, func() {
+		select {
+		case s.inbox <- inboxMsg{typ: inboxFormEvent, form: formName, event: "on_idle"}:
+		case <-s.done:
+		}
+	})
+	s.idleTimers[formName] = t
+}
+
+// stopIdleTimer stops the idle timer for a form.
+func (s *Session) stopIdleTimer(formName string) {
+	if t, ok := s.idleTimers[formName]; ok {
+		t.Stop()
+		delete(s.idleTimers, formName)
+	}
+}
+
+// PushForm pushes a form onto the stack (for k.form.show).
+func (s *Session) PushForm(name string) {
+	s.formStack = append(s.formStack, name)
+	// Start idle timer for the new top form
+	if s.env != nil && s.env.Logger != nil {
+		s.startIdleTimer(name, s.env.Logger)
+	}
+}
+
 // Two paths:
 //  1. DB-linked table (control has a db handle + query): pageed in-process by
 //     the Go pager (bindings.FetchTablePage) — no Lua handler needed.
@@ -1390,7 +1653,7 @@ func (s *Session) RequestFilePicker(co *lua.LState, cancel func(), accept string
 	pickerID := fmt.Sprintf("filepicker_%d", time.Now().UnixNano())
 
 	s.asyncMu.Lock()
-	s.asyncOps[pickerID] = &asyncOp{co: co, cancel: cancel}
+	s.asyncOps[pickerID] = &asyncOp{co: co, cancel: cancel, pickMode: "open"}
 	s.asyncMu.Unlock()
 
 	s.SendOutbox(common.OutboxMsg{
@@ -1401,11 +1664,41 @@ func (s *Session) RequestFilePicker(co *lua.LState, cancel func(), accept string
 	})
 }
 
+// RequestFilePickerSave asks the browser for a save/download file dialog.
+// mode: "save" or "download", filename: suggested filename, data: base64 content for download
+func (s *Session) RequestFilePickerSave(co *lua.LState, cancel func(), mode, filename, data string) string {
+	pickerID := fmt.Sprintf("filepicker_%d", time.Now().UnixNano())
+
+	s.asyncMu.Lock()
+	s.asyncOps[pickerID] = &asyncOp{co: co, cancel: cancel, pickMode: mode}
+	s.asyncMu.Unlock()
+
+	dataMap := map[string]string{"mode": mode, "filename": filename, "data": data}
+	dataJSON, _ := json.Marshal(dataMap)
+
+	s.SendOutbox(common.OutboxMsg{
+		Type: "pick_file_save",
+		ID:   pickerID,
+		Data: string(dataJSON),
+	})
+
+	return pickerID
+}
+
 // PostFilePickerResp is called from the web bridge goroutine when the browser
 // delivers file picker results. The value is a JSON array of file objects.
 func (s *Session) PostFilePickerResp(pickerID, value string) {
 	select {
 	case s.inbox <- inboxMsg{typ: inboxFilePickerResp, respID: pickerID, resp: value}:
+	case <-s.done:
+		// session closed; drop
+	}
+}
+
+// PostFilePickerSaveResp handles save/download file picker responses.
+func (s *Session) PostFilePickerSaveResp(pickerID, value string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxFilePickerSaveResp, respID: pickerID, resp: value}:
 	case <-s.done:
 		// session closed; drop
 	}
@@ -1467,6 +1760,57 @@ func (s *Session) resumeFilePickerResp(pickerID string, jsonResp string, logger 
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("file_picker resume error: %v", err)
+		}
+		return
+	}
+
+	if st != lua.ResumeOK && op.cancel != nil {
+		op.cancel()
+	}
+
+	s.flushOutbox()
+}
+
+// resumeFilePickerSaveResp resumes a coroutine suspended by RequestFilePickerSave
+// with the save/download result (path and name).
+func (s *Session) resumeFilePickerSaveResp(pickerID string, jsonResp string, logger Logger) {
+	s.asyncMu.Lock()
+	op, exists := s.asyncOps[pickerID]
+	if exists {
+		delete(s.asyncOps, pickerID)
+	}
+	s.asyncMu.Unlock()
+
+	if !exists {
+		logger.Warnf("file_picker_save response for unknown op: %s", pickerID)
+		return
+	}
+
+	// Parse JSON response: {path, name}
+	var val lua.LValue
+	if jsonResp == "" {
+		val = lua.LNil
+	} else {
+		// Try to parse as JSON
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonResp), &parsed); err == nil {
+			result := s.L.NewTable()
+			if path, ok := parsed["path"].(string); ok {
+				result.RawSetString("path", lua.LString(path))
+			}
+			if name, ok := parsed["name"].(string); ok {
+				result.RawSetString("name", lua.LString(name))
+			}
+			val = result
+		} else {
+			val = lua.LNil
+		}
+	}
+
+	st, err, _ := s.L.Resume(op.co, nil, val)
+	if st == lua.ResumeError {
+		if s.env != nil && s.env.Logger != nil {
+			s.env.Logger.Errorf("file_picker_save resume error: %v", err)
 		}
 		return
 	}
@@ -1717,11 +2061,6 @@ func (s *Session) ScheduleSleep(co *lua.LState, delay time.Duration) {
 	}(sleepID)
 }
 
-// PushForm pushes a form onto the stack (for k.form.show).
-func (s *Session) PushForm(name string) {
-	s.formStack = append(s.formStack, name)
-}
-
 // PopForm pops the top form from the stack.
 func (s *Session) PopForm() string {
 	if len(s.formStack) == 0 {
@@ -1729,6 +2068,12 @@ func (s *Session) PopForm() string {
 	}
 	name := s.formStack[len(s.formStack)-1]
 	s.formStack = s.formStack[:len(s.formStack)-1]
+	// Stop idle timer for the popped form
+	s.stopIdleTimer(name)
+	// Start idle timer for the new top form (if any)
+	if len(s.formStack) > 0 && s.env != nil && s.env.Logger != nil {
+		s.startIdleTimer(s.formStack[len(s.formStack)-1], s.env.Logger)
+	}
 	return name
 }
 
@@ -1937,11 +2282,10 @@ func (s *Session) Close() error {
 // teardown performs session cleanup.
 func (s *Session) teardown(logger Logger) {
 	s.quitting = true
-	// close_form cleanup for all forms on stack
+	// close_form cleanup for all forms on stack - fire close_form event for each
 	for len(s.formStack) > 0 {
 		name := s.PopForm()
-		// TODO: fire close_form events
-		_ = name
+		s.PostFormEvent(name, "close_form")
 	}
 	select {
 	case s.outbox <- common.OutboxMsg{Type: "quit"}:

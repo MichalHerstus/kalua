@@ -220,6 +220,60 @@ func registerTableOps(e *Env) {
 		})
 		return 0
 	})
+
+	// k.table.find(form, name, value) -> row index (1-based) or nil
+	// Searches for a row where any cell equals value. Works for both
+	// traditional tables (rows) and tabulator tables (data).
+	e.register("table.find", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		searchVal := L.Get(3)
+
+		ctrl := getControl(L, formName, name)
+		if ctrl == nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		if ctrl.RawGetString("type").String() != "table" {
+			L.RaiseError("control %s is not a table", name)
+			return 0
+		}
+
+		// Get rows (traditional) or data (tabulator)
+		var rows *lua.LTable
+		rowsVal := ctrl.RawGetString("rows")
+		if rowsTbl, ok := rowsVal.(*lua.LTable); ok && rowsTbl.Len() > 0 {
+			rows = rowsTbl
+		} else {
+			dataVal := ctrl.RawGetString("data")
+			if dataTbl, ok := dataVal.(*lua.LTable); ok {
+				rows = dataTbl
+			}
+		}
+		if rows == nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+
+		// Search each row
+		for i := 1; i <= rows.Len(); i++ {
+			row := rows.RawGetInt(i)
+			if rowTbl, ok := row.(*lua.LTable); ok {
+				found := false
+				rowTbl.ForEach(func(_, v lua.LValue) {
+					if v.String() == searchVal.String() {
+						found = true
+					}
+				})
+				if found {
+					L.Push(lua.LNumber(i))
+					return 1
+				}
+			}
+		}
+		L.Push(lua.LNil)
+		return 1
+	})
 }
 
 // registerLooperOps installs the k.looper.* operations (DB-linked loopers,

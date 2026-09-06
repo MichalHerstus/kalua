@@ -63,6 +63,8 @@ type SessionInterface interface {
 	PostClipboardResp(clipID, value string)
 	RequestFilePicker(co *lua.LState, cancel func(), accept string, multiple bool)
 	PostFilePickerResp(pickerID, value string)
+	RequestFilePickerSave(co *lua.LState, cancel func(), mode, filename, data string) string
+	PostFilePickerSaveResp(pickerID, value string)
 	StoreFormCoro(name string, co *lua.LState)
 	ResumeFormCoro(name string) bool
 	ScheduleSleep(co *lua.LState, delay time.Duration)
@@ -72,6 +74,19 @@ type SessionInterface interface {
 	PostTabulatorSelectionResp(reqID string, rows []int)
 	RequestChartGetImage(co *lua.LState, cancel func(), form, ctrl string)
 	PostChartImageResp(reqID, value string)
+
+	// Post a browser event to the session's inbox (for ctrl.execute_event)
+	PostEvent(form, ctrl, event string, value lua.LValue)
+
+	// Form lifecycle events (k.form.on 3-arg overload)
+	PostFormEvent(form, event string)
+
+	// k.exec - run a stored function asynchronously
+	RequestExec(co *lua.LState, cancel func(), fn *lua.LFunction, args []lua.LValue) string
+
+	// k.ctrl.get_selection - browser round-trip for selection
+	RequestSelection(co *lua.LState, cancel func(), form, ctrl string) string
+	PostSelectionResp(reqID string, value map[string]interface{})
 }
 
 // DefaultConv converts an async result to a Lua value on the caller's state,

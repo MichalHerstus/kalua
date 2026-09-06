@@ -181,6 +181,58 @@
         input.click();
     }
 
+    function pickFileSave(id, data) {
+        // data: {mode: "save"|"download", filename: "name.txt", data: "base64"}
+        // For save mode: show save dialog
+        // For download mode: trigger download
+        var mode = data.mode || 'save';
+        var filename = data.filename || 'file';
+        var fileData = data.data || '';
+
+        if (mode === 'download') {
+            // Trigger download directly
+            var link = document.createElement('a');
+            link.href = 'data:application/octet-stream;base64,' + fileData;
+            link.download = filename;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            send({type: 'file_picker_save_resp', id: id, value: JSON.stringify({path: filename, name: filename})});
+            return;
+        }
+
+        // Save mode: show save dialog
+        // Use <a download> for save-as, but we need user to pick location
+        // Fallback: use a file input with type="file" and webkitdirectory for directory picking
+        // Since we can't truly show a save dialog, we'll use a file input and let user pick a file to overwrite
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.style.display = 'none';
+        input.accept = '*/*';
+
+        input.addEventListener('change', function() {
+            var file = input.files[0];
+            if (!file) {
+                send({type: 'file_picker_save_resp', id: id, value: JSON.stringify({path: '', name: ''})});
+                document.body.removeChild(input);
+                return;
+            }
+            // For save mode, we return the path of the selected file
+            // In a real implementation, this would show a save-as dialog
+            send({type: 'file_picker_save_resp', id: id, value: JSON.stringify({path: file.name, name: file.name})});
+            document.body.removeChild(input);
+        });
+
+        input.addEventListener('cancel', function() {
+            send({type: 'file_picker_save_resp', id: id, value: JSON.stringify({path: '', name: ''})});
+            document.body.removeChild(input);
+        });
+
+        document.body.appendChild(input);
+        input.click();
+    }
+
     // ---- Tabulator table support ----
     // Instances are keyed by the element id (selector "#c:form:ctrl").
     const tabulatorInstances = new Map();
@@ -632,6 +684,9 @@ function createTabulator(el) {
             case 'pick_file':
                 pickFile(msg.id, msg.accept, msg.multiple);
                 break;
+            case 'pick_file_save':
+                pickFileSave(msg.id, msg.data);
+                break;
             case 'error':
                 showError(msg.msg, msg.stack);
                 break;
@@ -679,6 +734,15 @@ function createTabulator(el) {
                 break;
             case 'chart_get_image':
                 chartGetImage(msg.id, msg.selector);
+                break;
+            case 'select_text':
+                handleSelectText(msg.form, msg.ctrl);
+                break;
+            case 'select_range':
+                handleSelectRange(msg.form, msg.ctrl, msg.data);
+                break;
+            case 'get_selection':
+                handleGetSelection(msg.id, msg.form, msg.ctrl);
                 break;
         }
     }
@@ -1318,6 +1382,60 @@ function createTabulator(el) {
             return el.value;
         }
         return el.textContent;
+    }
+
+    // Utility
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Selection handlers
+    function handleSelectText(form, ctrl) {
+        const selector = '#c:' + form + ':' + ctrl;
+        const el = document.querySelector(selector);
+        if (!el) return;
+        el.focus();
+        if (typeof el.setSelectionRange === 'function') {
+            const len = el.value ? el.value.length : 0;
+            el.setSelectionRange(0, len);
+        }
+    }
+
+    function handleSelectRange(form, ctrl, data) {
+        const selector = '#c:' + form + ':' + ctrl;
+        const el = document.querySelector(selector);
+        if (!el) return;
+        let range = { from: 0, to: 0 };
+        try {
+            if (data) range = JSON.parse(data);
+        } catch (e) {}
+        el.focus();
+        if (typeof el.setSelectionRange === 'function') {
+            el.setSelectionRange(range.from || 0, range.to || 0);
+        }
+    }
+
+    function handleGetSelection(id, form, ctrl) {
+        const selector = '#c:' + form + ':' + ctrl;
+        const el = document.querySelector(selector);
+        let start = 0, end = 0, text = '';
+        if (el) {
+            if (typeof el.selectionStart === 'number') {
+                start = el.selectionStart;
+                end = el.selectionEnd;
+                const v = el.value != null ? el.value : '';
+                text = v.substring(start, end);
+            }
+        }
+        send({
+            type: 'selection_resp',
+            id: id,
+            start: start,
+            end: end,
+            text: text
+        });
     }
 
     // Utility

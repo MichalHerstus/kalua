@@ -475,7 +475,11 @@ Reads a persisted app param (string; "" if unset).
 Persists an app param (string) to an app-side file.
 
 **`k.pick_file([opts])`**  
-Opens a browser file picker dialog. opts (optional table): {accept="image/*,.pdf", multiple=true}. Returns a table of files: {{name, size, type, data}, ...} where data is base64-encoded. Returns nil on cancel.
+Opens a browser file picker dialog. opts (optional table): {accept="image/*,.pdf", multiple=true, mode="open|save|download", filename="default.txt", data="base64 content"}.  
+- **mode="open"** (default): picks existing files, returns table {{name, size, type, data}, ...} with base64 data.  
+- **mode="save"**: shows save dialog with filename, returns {path, name}.  
+- **mode="download"**: triggers download of base64 data, returns {path, name}.  
+Returns nil on cancel. Suspends the script until the dialog completes.
 
 **`k.ping(host, timeout_ms)`**  
 TCP-based latency probe returning ms, or nil when unreachable.
@@ -504,6 +508,21 @@ Starts a session timer; fires a Lua function named id (repeats optional).
 **`k.timer_stop(id)`**  
 Stops a running session timer.
 
+**`k.yield()`**  
+Yields the current coroutine, allowing other coroutines to run.
+
+**`k.assign(target, kind, value)`**  
+Sets a global variable or control value with type coercion.  
+- `target`: string (global name) or table `{form="...", ctrl="..."}`.  
+- `kind`: "numeric", "string", "boolean", "date".  
+Returns the coerced value.
+
+**`k.set(name, fn)`**  
+Stores a function in the action registry for later execution via `k.exec`.
+
+**`k.exec(name, ...)`**  
+Executes a previously stored function (via `k.set`) asynchronously with the given arguments. Returns the function's result(s).
+
 #### Debug
 
 **`k.debug`**  
@@ -529,8 +548,11 @@ Closes the top form, or the named form.
 **`k.form.new(name, optsTable)`**  
 Declares a form. opts: {title, layout=vertical|grid, align=left|center|right, gap=n px, cells}. grid cells: {id={width 1-12, bg, border={width,color}, align}} or ordered array of {id,...}; assign controls via control opt cell="id" and override alignment via align (kforms_enhancements §6).
 
-**`k.form.on(form, ctrl, event, fn)`**  
-Registers an event handler (e.g. event "onclick") for a control.
+**`k.form.on(form, ctrl, event, fn) | k.form.on(name, event, fn) | k.form.on(name, "on_idle", ms, fn)`**  
+Registers an event handler. Three forms:  
+- 4-arg: control handler — `k.form.on(form, ctrl, event, fn)` for control events (e.g., "onclick").  
+- 3-arg: form-level handler — `k.form.on(name, event, fn)` for events like `open_form`, `after_open_form`, `close_form`, `key_pressed` (fallback when no control handler exists).  
+- 4-arg with number: `k.form.on(name, "on_idle", ms, fn)` sets a periodic idle callback (ms interval, default 1000). Only the topmost form receives idle events.
 
 **`k.form.refresh(name)`**  
 Re-renders and pushes the form to the browser.
@@ -609,11 +631,26 @@ Re-renders a single control and pushes the update.
 **`k.ctrl.set_focus(form, name)`**  
 Moves focus to a control in the browser.
 
+**`k.ctrl.select_text(form, name)`**  
+Selects all text in a textbox or textarea control.
+
 **`k.ctrl.set_property(form, name, prop, value)`**  
 Sets an arbitrary control property.
 
+**`k.ctrl.set_selection(form, name, from, to)`**  
+Sets the selection range in a textbox or textarea (0-based character offsets).
+
 **`k.ctrl.set_value(form, name, value)`**  
 Sets a control's value and re-renders it.
+
+**`k.ctrl.get_selection(form, name)`**  
+Returns the current selection as {start, end, text} from a textbox or textarea (browser round-trip).
+
+**`k.ctrl.get_item_count(form, name)`**  
+Returns the number of items/rows in a combo, list, radio, or table control.
+
+**`k.ctrl.execute_event(form, name, event)`**  
+Fires a control's event handler as if the user triggered it (e.g., "onclick"). Runs asynchronously via the session actor.
 
 **`k.ctrl.table(form, name, optsTable)`**  
 Adds a table control; rows manipulated via k.table.*.
@@ -672,6 +709,9 @@ Bulk replaces all row data (Tabulator mode pushes tabulator_update).
 **`k.table.set_db_source(form, name, opts)`**  
 Swaps a DB-linked tabulator table's source {db,query,columns?,page_size?,count_query?,where?,order_by?} and refreshes.
 
+**`k.table.find(form, name, value)`**  
+Searches for a row where any cell equals value. Returns 1-based row index or nil. Works for both traditional tables and tabulator tables.
+
 **`k.table.set_remote_data(form, name, {data,last_page,last_row})`**  
 Pushes server-side pagination data to a tabulator table =  {data=rows, last_page=n} or {data=rows, last_row=n}.
 
@@ -681,7 +721,8 @@ Sets the selected column.
 #### Database
 
 **`k.connect_db(dsn)`**  
-Opens a database connection (DSN scheme: sqlite://, mysql://, postgres://, sqlserver://) and returns a handle.
+Opens a database connection (DSN scheme: `sqlite://`, `mysql://`, `postgres://`, `sqlserver://`) and returns a handle.  
+Supported drivers: SQLite (built-in), MySQL (`github.com/go-sql-driver/mysql`), PostgreSQL (`github.com/jackc/pgx/v5/stdlib`), SQL Server (`github.com/microsoft/go-mssqldb`).
 
 **`k.connect_sqlite(path)`**  
 Opens a SQLite database file; returns a handle usable with k.sql/k.db_*.
@@ -872,6 +913,9 @@ Returns all keys matching pattern (prefix, * = all).
 
 **`k.shared.set(key, value)`**  
 Stores a string value in shared state.
+
+**`k.tcp.accept()`**  
+Waits for an incoming TCP connection and returns {id}. The connection can then be used with `k.tcp.send` and `k.tcp.close`. (Serve mode only.)
 
 **`k.tcp.close(client_id)`**  
 Closes a TCP connection.
