@@ -968,13 +968,44 @@ Enhance existing controls and add a new image control:
 
 ## Executive Summary
 
-A visual form builder for KALUA that allows drag-and-drop form design with live preview, property editing, and export to Lua script. This is a **design-time tool** — no Lua execution, purely form structure editing.
+A visual form builder for KALUA that allows drag-and-drop form design with live preview, property editing, Lua import/export, and validation. This is a **design-time tool** — the builder never executes the app; it renders controls through the **real Go renderer** in-process for a pixel-accurate preview.
+
+---
+
+## Decisions (locked)
+
+| Decision | Choice |
+|----------|--------|
+| **Hosting** | **Option B — standalone web app** served by a new `KALUA builder` subcommand (VS Code webview dropped) |
+| **Domain** | `127.0.0.1`-bound developer tool (like `run`), `--port`, `--no-browser` flags |
+| **Layouts (MVP)** | **Vertical + Grid with cells**, full runtime parity (`align`, `gap`, `cells`, per-control `cell`/`align`) |
+| **Preview** | **Hybrid** — JS sim only for palette thumbnails / drag ghosts; the **Go renderer** endpoint is the canvas source of truth (debounced) |
+| **Controls (MVP)** | **All 11 runtime types**, incl. `chart` and `looper` |
+| **Event handlers** | Not edited / exported; preserved as read-only metadata; export emits TODO comments (`k.form.on` / `onclick`) |
+| **Multi-form** | One form per workspace file (per spec) |
+| **Save model** | CLI path + Go HTTP **GET/PUT** of the workspace file |
+| **File format** | `.kalua-form.json` primary; Lua is export-only (and import-only) |
 
 ---
 
 ## Current Form Structure Analysis
 
-### Lua → JSON Mapping
+### Live runtime model
+
+Forms and controls live entirely in the gopher-lua state. A form is a Lua global table:
+
+```lua
+form := {
+    name, title, layout, align, gap, cells,
+    controls = { name = ctrlTable, ... },
+    handlers = { name = { event = fn, ... } },   -- k.form.on / constructor onclick
+    order    = { "lbl1", "txt1", ... }            -- creation order (rendering)
+}
+```
+
+`renderForm` (`internal/bindings/forms.go`) walks `order` (vertical) or buckets controls into grid `cells`; `renderControl` switches on the control `type`. The builder reuses both verbatim for preview.
+
+### Lua → JSON mapping
 
 ```lua
 -- Lua script
@@ -984,149 +1015,168 @@ k.ctrl.textbox("main", "txt1", {label="Name", value="World"})
 k.ctrl.button("main", "btn1", {label="Click Me", onclick=function() ... end})
 ```
 
-```json
+```jsonc
 // Equivalent JSON representation
 {
-  "name": "main",
-  "title": "Test Form",
-  "layout": "vertical",
-  "controls": [
-    {
-      "name": "lbl1",
-      "type": "label",
-      "text": "Hello KALUA!",
-      "enabled": true,
-      "visible": true
-    },
-    {
-      "name": "txt1",
-      "type": "textbox",
-      "label": "Name",
-      "value": "World",
-      "enabled": true,
-      "visible": true
-    },
-    {
-      "name": "btn1",
-      "type": "button",
-      "label": "Click Me",
-      "class": "kalua-button-primary",
-      "enabled": true,
-      "visible": true
-    }
-  ]
+  "version": 1,
+  "form": {
+    "name": "main",
+    "title": "Test Form",
+    "layout": "vertical",
+    "align": "left",
+    "gap": 16,
+    "cells": {},
+    "controls": [
+      { "name": "lbl1", "type": "label",    "text": "Hello KALUA!" },
+      { "name": "txt1", "type": "textbox",  "label": "Name", "value": "World" },
+      { "name": "btn1", "type": "button",   "label": "Click Me" }
+      // onclick: not serializable — held in "handlers" metadata
+    ],
+    "handlers": { "btn1": ["click"] }
+  }
 }
 ```
+
+**`controls` is an array in creation order** — both vertical rendering and grid bucketing depend on it. `handlers` is read-only metadata (event names per control) so the UI can show "1 event handler wired in Lua".
 
 ### Form Properties
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `name` | string | required | Form identifier |
-| `title` | string | "" | Form title display |
-| `layout` | "vertical" \| "grid" | "vertical" | Layout mode |
+| `name` | string | required | Form identifier (`^[a-zA-Z_][a-zA-Z0-9_]*$`) |
+| `title` | string | `""` | Form title, rendered as `.kalua-form-title` |
+| `layout` | `"vertical" \| "grid"` | `"vertical"` | Layout mode |
+| `align` | `"left" \| "center" \| "right"` | `"left"` | Form-level alignment (vertical) / cell default |
+| `gap` | number | `16` | Spacing between controls/cells (px, CSS `--kalua-gap`) |
+| `cells` | `{cell_id → cell}` | `{}` | Grid cell definitions; absent ⇒ auto `main` cell (width 12) |
+
+Cell definition: `{ width (1-12), bg|background, border {width, color}, align }`.
+Runtime accepts array (`{id=..., ...}`) or map form; the builder writes **map form** in JSON and exports **array form** for deterministic order.
 
 ### Control Properties by Type
 
-| Control | Required Props | Optional Props |
-|---------|----------------|----------------|
-| **label** | `name`, `type`, `text` | `enabled`, `visible` |
-| **textbox** | `name`, `type`, `label` | `value`, `enabled`, `visible`, `multiline`, `rows`, `cols`, `datetime` |
-| **button** | `name`, `type`, `label` | `class`, `enabled`, `visible`, `onclick` (handler ref) |
-| **combo** | `name`, `type`, `label`, `items` | `enabled`, `visible` |
-| **list** | `name`, `type`, `label`, `items` | `enabled`, `visible` |
-| **table** | `name`, `type` | `label`, `columns`, `rows`, `enabled`, `visible` |
-| **checkbox** | `name`, `type`, `label` | `value`, `enabled`, `visible`, `hidden_value` |
-| **radio** | `name`, `type`, `label` | `value`, `enabled`, `visible`, `hidden_value` |
-| **image** | `name`, `type`, `src` | `alt`, `width`, `height`, `fit`, `clickable`, `onclick`, `enabled`, `visible` |
+Every control shares: `name`, `type`, `label` (label control uses `text`), `value`, `enabled`, `visible`, `class`, `cell`, `align`.
+
+| Control | Optional Props | Runtime notes |
+|---------|----------------|---------------|
+| **label** | `text` (required), `multiline` | `text` stored as `label`; multiline renders pre-wrap div |
+| **textbox** | `label`, `value`, `multiline`, `rows`, `cols`, `datetime` (bool or `{mode,format,min,max,step}`) | datetime modes date/time/datetime |
+| **button** | `label`, `class` | `onclick` ⇒ handler; `value` unused at render |
+| **combo / list** | `label`, `items`, `value` | `items` = value→display map |
+| **table** | `label`, `columns`, `rows`, `data`; advanced: `tabulator`, `tabulatorOptions`, `db`, `query`, `page_size`, `count_query`, `where`, `order_by` | Tabulator + DB-linking (§1) |
+| **checkbox / radio** | `label`, `value`, `hidden_value` | `value` boolean drives `checked` |
+| **image** | `src` (required), `alt`, `width`, `height`, `fit` (`cover\|contain\|fill\|scale-down\|none`), `clickable` | `onclick` ⇒ handler (requires `clickable=true`) |
+| **chart** | `chart_type` (from `type`), `title`, `labels`, `datasets`, `options`, `width`, `height`, `responsive`, `maintainAspectRatio`, `legend`, `legendPosition`, `animation`, `stacked` | §3 Chart.js control |
+| **looper** | `columns`, `db`, `query`, `links` (`[{column\|field, control, property}]`), `page_size`, `count_query`, `where`, `order_by` | §2 looper control |
 
 ### Items Format (combo/list)
+
+Lua stores a **value→display map**; combo/list rendering iterates it in hash order (a gopher-lua table with string keys has no insertion order).
+
+```json
+{ "items": [ { "key": "key1", "display": "Display 1" }, ... ] }
+```
+
+**Decision:** JSON stores `items` as an ordered array; export emits a Lua map literal
+(`items={key1="Display 1", key2="Display 2"}`). Display order in a live app follows
+gopher-lua hash order — runtime behavior, out of builder scope.
+
+### DB handles are runtime values
+
+`db` is a handle from `k.connect_db` / `k.connect_sqlite` — not serializable. The
+builder stores the *structure* opts (`query`, `where`, `order_by`, `page_size`,
+`count_query`, `links`) and exports a `-- TODO: assign a DB handle (k.connect_db(...) / k.connect_sqlite(...))` comment in place of `db`.
+
+---
+
+## File Format (`.kalua-form.json`)
+
 ```json
 {
-  "items": {
-    "key1": "Display 1",
-    "key2": "Display 2"
+  "$schema": "./kalua-form.schema.json",
+  "version": 1,
+  "form": {
+    "name": "main",
+    "title": "Test Form",
+    "layout": "vertical",
+    "align": "left",
+    "gap": 16,
+    "cells": {
+      "header": { "width": 12, "bg": "#f5f5f5", "border": { "width": 1, "color": "#ddd" }, "align": "left" }
+    },
+    "controls": [
+      { "name": "txt1", "type": "textbox", "label": "Name", "value": "World", "cell": "header" }
+    ],
+    "handlers": { "btn1": ["click"] }
   }
 }
 ```
 
----
-
-## Architecture
-
-### Option A: VS Code Webview (Recommended)
-- **Pros**: Integrated into existing extension, access to workspace, file system, LSP
-- **Cons**: Webview API limitations, TypeScript only
-- **Implementation**: Add "Open Form Builder" command → opens webview panel
-
-### Option B: Standalone Web App (Served by KALUA)
-- **Pros**: Full browser capabilities, can be used independently
-- **Cons**: Separate deployment, needs auth/access control
-- **Implementation**: New `KALUA builder` command serves builder UI
-
-### Option C: Electron/Tauri Desktop App
-- **Pros**: Native feel, file system access
-- **Cons**: Additional maintenance, separate distribution
-- **Not recommended** for Phase 1
-
-### Recommendation: **Option A (VS Code Webview)**
-- Leverages existing extension infrastructure
-- Natural fit for "edit .lua file → open builder → save back"
-- Can use VS Code's file watcher for live sync
-- Access to LSP for validation
+* `.kalua-form.json` is the builder-native (primary) format.
+* Lua is an **export-only** (and import-only) format.
+* `handlers` is informational; it round-trips but is never re-emitted as code.
 
 ---
-__Decision: Option B, standalone web app__
 
-## JSON Schema Definition
+## Architecture — Option B: Standalone Web App
 
-```json
-{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "KALUA Form Definition",
-  "type": "object",
-  "required": ["name", "controls"],
-  "properties": {
-    "name": { "type": "string", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$" },
-    "title": { "type": "string" },
-    "layout": { "type": "string", "enum": ["vertical", "grid"] },
-    "controls": {
-      "type": "array",
-      "items": { "$ref": "#/definitions/control" }
-    }
-  },
-  "definitions": {
-    "control": {
-      "type": "object",
-      "required": ["name", "type"],
-      "properties": {
-        "name": { "type": "string", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$" },
-        "type": { "type": "string", "enum": ["label", "textbox", "button", "combo", "list", "table", "checkbox", "radio", "image"] },
-        "label": { "type": "string" },
-        "text": { "type": "string" },
-        "value": { "type": ["string", "number", "boolean"] },
-        "enabled": { "type": "boolean", "default": true },
-        "visible": { "type": "boolean", "default": true },
-        "class": { "type": "string" },
-        "items": { "type": "object", "additionalProperties": { "type": "string" } },
-        "columns": { "type": "array", "items": { "type": "string" } },
-        "rows": { "type": "array", "items": { "type": "object" } },
-        "hidden_value": { "type": "string" },
-        "multiline": { "type": "boolean" },
-        "rows": { "type": "number" },
-        "cols": { "type": "number" },
-        "datetime": { "type": "object" },
-        "src": { "type": "string" },
-        "alt": { "type": "string" },
-        "width": { "type": ["number", "string"] },
-        "height": { "type": ["number", "string"] },
-        "fit": { "type": "string", "enum": ["cover", "contain", "fill", "scale-down", "none"] },
-        "clickable": { "type": "boolean" }
-      }
-    }
-  }
-}
+Served by the KALUA binary, so the **real Go renderer** (`renderForm`/`renderControl` in `internal/bindings/forms.go`) is callable in-process — no HTML drift possible.
+
 ```
+KALUA builder <file.lua|file.json> [--host 127.0.0.1] [--port 9001] [--no-browser]
+```
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                KALUA builder <file>  (internal/builder)          │
+│                                                                  │
+│  ┌──────────────┐   ┌───────────────────┐   ┌─────────────────┐  │
+│  │ /static/*    │   │ /api/form GET/PUT │   │ /api/preview    │  │
+│  │ builder UI   │   │ workspace file    │   │ real renderer   │  │
+│  └──────────────┘   └─────────┬─────────┘   │ renderForm()    │  │
+│                               │             └────────┬────────┘  │
+│  ┌──────────────┐   ┌─────────┴─────────┐             │           │
+│  │ /api/import  │   │ /api/export       │   /api/validate        │
+│  │ Lua → JSON   │   │ JSON → Lua        │   checker.Check()      │
+│  └──────────────┘   └───────────────────┘   └─────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Package layout
+
+```
+internal/builder/
+  builder.go       // Form JSON <-> LTable serialization (mirrors addControl storage)
+  lua_export.go    // Form JSON -> Lua source
+  lua_import.go    // Lua source -> Form JSON (gopher-lua AST walk)
+  server.go        // HTTP routes + preview/validate handlers
+  assets/          // //go:embed: index.html, builder.js, builder.css
+```
+
+### HTTP API
+
+| Method & Path | Purpose |
+|---------------|---------|
+| `GET /` | builder shell (`index.html`) |
+| `GET /static/*` | builder assets for the app and the preview iframe (incl. KALUA's `kalua.css`) |
+| `GET /api/form` | workspace parsed to Form JSON (`.json` read; `.lua` imported on demand) |
+| `PUT /api/form` | save Form JSON — writes `.kalua-form.json`; for a `.lua` workspace defaults to a sidecar `.kalua-form.json` |
+| `POST /api/export` | `{form}` → `{lua}` |
+| `POST /api/import` | `{lua}` → `{form, warnings[]}` |
+| `POST /api/validate` | `{lua}` → `checker.Result` (syntax, unknown `k.*`, missing `main`) |
+| `POST /api/preview` | `{form}` → form HTML from the **real Go renderer** (private `LState` built from JSON → `renderForm`) |
+
+CSP mirrors run mode: `style-src 'self' 'unsafe-inline'` (controls carry inline
+`style=""`), `script-src 'self'` (no inline scripts). Do **not** reuse serve-mode's
+CSP, which blocks inline styles.
+
+---
+
+## Preview Rendering Strategy — Hybrid
+
+* **Canvas = accurate.** Every model change debounces (~150 ms) a `POST /api/preview`; the returned form HTML (go-rendered) is injected into a sandboxed `<iframe>` with `/static/kalua.css`. Selection / click hit-tests use the real DOM ids `c:{form}:{ctrl}`.
+* **JS sim = feedback only.** A TS port of `renderControl` powers palette thumbnails and drag ghosts. Because the canvas never depends on it, drift risk is contained.
+* **Parity guards (tests):** Go test asserts canonical go-rendered markup per control type from a Form JSON fixture; a Node test mirrors the TS sim against the same fixtures when the builder UI is built.
 
 ---
 
@@ -1134,11 +1184,11 @@ __Decision: Option B, standalone web app__
 
 ```
 +-----------------------------------------------------------------+
-| Toolbar: [Save] [Export Lua] [Import Lua] [Undo] [Redo] [Zoom]  |
+| Toolbar: [Save JSON] [Export Lua] [Validate] [Undo] [Redo] [Dev]|
 +----------+--------------------------------------+----------------+
 |          |                                      |                |
-| Controls |         Preview Canvas             | Property Editor|
-| Palette  |                                      |                |
+| Controls |        Preview Canvas (iframe)       | Property Editor|
+| Palette  |  Go-rendered via /api/preview        |                |
 |          |  +--------------------------------+  | +------------+ |
 |  +------+ | |  Form Title                  |  | | Control:   | |
 |  |label | | +--------------------------------+  | | | btn1      | |
@@ -1146,18 +1196,22 @@ __Decision: Option B, standalone web app__
 |  |textbox| | |  [txt1] Name: [World______] |  | | Type:      | |
 |  +------+ | |  [btn1] [Click Me]           |  | | button     | |
 |  |button | | |                              |  | | Label:     | |
-|  +------+ | |  Drag controls from palette  |  | | Click Me   | |
-|  |combo  | | |  to canvas. Click to select. |  | | Class:     | |
-|  +------+ | +--------------------------------+  | | primary    | |
-|  |list   | |                                      | | Enabled:  | |
-|  +------+ |                                      | | [x]        | |
-|  |table  | |                                      | | Visible:  | |
-|  +------+ |                                      | | [x]        | |
-|  |checkbox| |                                      | | OnClick:  | |
-|  +------+ |                                      | | [  fx  ]   | |
-|  |radio  | |                                      | +------------+ |
+|  +------+ | |  Drag from palette → canvas.  |  | | Click Me   | |
+|  |combo  | | |  Click to select.            |  | | Class:     | |
+|  +------+ | +--------------------------------+  | | Enabled:  | |
+|  |list   | |                                      | | [x]        | |
+|  +------+ | +--------------------------------+  | | Visible:  | |
+|  |table  | | |  Grid-mode: cell drop zones,  |  | | [x]        | |
+|  +------+ | |  per-control cell assignment   |  | | Cell:     | |
+|  |checkbox| | +--------------------------------+  | | [ header ]| |
+|  +------+ |                                      | +------------+ |
+|  |radio  | |                                      |                |
 |  +------+ |                                      |                |
 |  |image  | |                                      |                |
+|  +------+ |                                      |                |
+|  |chart  | |                                      |                |
+|  +------+ |                                      |                |
+|  |looper | |                                      |                |
 |  +------+ |                                      |                |
 |          |                                      |                |
 +----------+--------------------------------------+----------------+
@@ -1165,237 +1219,105 @@ __Decision: Option B, standalone web app__
 
 ### Components
 
-1. **Controls Palette** (left) - Draggable control types
-2. **Preview Canvas** (center) - Live form rendering using actual KALUA CSS
-3. **Property Editor** (right) - Dynamic form based on selected control type
+1. **Controls Palette** (left) — draggable control types (all 11)
+2. **Preview Canvas** (center) — Go-rendered live form using the actual KALUA rendering + CSS
+3. **Property Editor** (right) — dynamic form per selected control type, incl. special editors (items, cells, datetime, chart datasets/options, table columns/rows, looper links)
 
 ---
 
-## Preview Rendering Strategy
+## Lua Import (Go AST)
 
-### Approach: Reuse KALUA Rendering Engine
+Reuses the gopher-lua `parse`/`ast` packages (the same path `internal/checker` uses). Walk top-level statements of the provided Lua source:
 
-**Option 1: Embed KALUA CSS + Simulated Rendering**
-- Include `kalua.css` in webview
-- JavaScript renders controls using same HTML structure as Go `renderControl()`
-- Fast, no Go dependency in builder
+* `k.form.new(name, opts)` → form props / cells
+* `k.ctrl.<type>(form, name, opts)` → controls, **in order encountered**
+* `k.form.on(form, ctrl, event, fn)` → recorded in `handlers` metadata (read-only; not exported back)
+* anything else → warning `"non-form code will be lost on export"`
 
-**Option 2: Call KALUA Binary for Preview**
-- Send JSON to `KALUA check` or custom endpoint
-- Get back HTML
-- Slower, but 100% accurate
-
-**Recommendation: Option 1** with periodic sync validation via Option 2
-__Decision: Option 1__
-
-### Preview HTML Generation (TypeScript)
-```typescript
-function renderControl(control: Control): string {
-  switch (control.type) {
-    case 'label':
-      return '<label class="kalua-label" id="c:' + formName + ':' + control.name + '">' + escapeHtml(control.text) + '</label>';
-    case 'textbox':
-      return '<div class="kalua-control">\n' +
-        '  <label class="kalua-label" for="c:' + formName + ':' + control.name + '">' + escapeHtml(control.label) + '</label>\n' +
-        '  <input type="text" class="kalua-input" id="c:' + formName + ':' + control.name + '" value="' + escapeHtml(control.value) + '"' + (control.enabled ? '' : ' disabled') + '>\n' +
-        '</div>';
-    // ... etc
-  }
-}
-```
+Import is structure-extraction only: logic, timers, and handlers are not editable and are dropped on export (with a confirmation warning when the export would overwrite the source file).
 
 ---
 
 ## Lua Export Generation
 
-### Strategy: Template-based Code Generation
+Template-based, matches runtime semantics exactly.
 
-```typescript
-function exportToLua(form: FormDefinition): string {
-  const lines: string[] = [];
-  
-  lines.push('function main()');
-  lines.push('  k.form.new("' + form.name + '", {title="' + escapeLua(form.title) + '", layout="' + form.layout + '"})');
-  
-  for (const ctrl of form.controls) {
-    const opts = buildControlOptions(ctrl);
-    lines.push('  k.ctrl.' + ctrl.type + '("' + form.name + '", "' + ctrl.name + '", ' + opts + ')');
-  }
-  
-  lines.push('  k.form.show("' + form.name + '")');
-  lines.push('end');
-  
-  return lines.join('\n');
-}
-
-function buildControlOptions(ctrl: Control): string {
-  const opts: string[] = [];
-  
-  if (ctrl.type === 'label') {
-    if (ctrl.text) opts.push('text="' + escapeLua(ctrl.text) + '"');
-  } else {
-    if (ctrl.label) opts.push('label="' + escapeLua(ctrl.label) + '"');
-  }
-  
-  if (ctrl.value !== undefined) opts.push('value="' + escapeLua(String(ctrl.value)) + '"');
-  if (ctrl.enabled === false) opts.push('enabled=false');
-  if (ctrl.visible === false) opts.push('visible=false');
-  if (ctrl.class) opts.push('class="' + escapeLua(ctrl.class) + '"');
-  if (ctrl.items) opts.push('items=' + jsonToLuaTable(ctrl.items));
-  if (ctrl.columns) opts.push('columns=' + jsonToLuaArray(ctrl.columns));
-  // ... etc
-  
-  return '{' + opts.join(', ') + '}';
-}
+```lua
+function main()
+    k.form.new("main", {title="Test Form", layout="grid", align="left", gap=16,
+        cells={
+            {id="header", width=12, bg="#f5f5f5", border={width=1, color="#ddd"}, align="left"},
+        }})
+    k.ctrl.label("main", "lbl1", {text="Hello KALUA!"})
+    k.ctrl.textbox("main", "txt1", {label="Name", value="World", cell="header"})
+    -- TODO: add onclick handler: k.form.on("main", "btn1", "click", function() ... end)
+    k.ctrl.button("main", "btn1", {label="Click Me"})
+    k.form.show("main")
+end
 ```
 
-### Event Handlers (onclick, etc.)
-- **Not exported** — builder only handles form structure
-- User adds logic manually in Lua after export
-- Builder can insert placeholder comments:
-  ```lua
-  k.ctrl.button("main", "btn1", {label="Click Me"})
-  -- TODO: Add onclick handler: k.form.on("main", "btn1", "click", function() ... end)
-  ```
+### Rules
+
+* Label control emits `text=...`; all others emit `label=...`.
+* `enabled=false` / `visible=false` emitted only when false; `class`, `cell`, `align` only when set; `value`/`rows`/`cols`/`multiline`/`datetime`/`hidden_value` when set.
+* Button & clickable-image `onclick` ⇒ TODO comment (`k.form.on(...)`); option not emitted.
+* Chart emits `labels`, `datasets`, `options` as Lua table literals; dataset maps recurse.
+* Table: `columns` array + `rows` array; Tabulator opts (`tabulator=true`, `tabulatorOptions={...}`, `data={...}`) when present; DB opts (`query`, `page_size`, `count_query`, `where`, `order_by`) when present, with the DB-handle TODO.
+* Looper: `columns`, `links` array (`{column=N, control="...", property="..."}`), DB opts as above.
+* Grid cells exported as **array form** `cells={{id=..., ...}, ...}` for deterministic order.
+* Proper Lua string escaping (quotes, backslashes, newlines), number/bool literals.
+* Export is **whole-file**: importing `.lua` → edit → export overwrites the file and drops non-form code after a confirmation.
 
 ---
 
 ## Implementation Plan
 
 ### Phase 1: Foundation (3 days)
-- [ ] Create JSON schema for form definition
-- [ ] Build TypeScript types matching schema
-- [ ] Set up VS Code webview infrastructure in extension
-- [ ] Add "KALUA: Open Form Builder" command
+- [ ] `internal/builder` package: Form JSON ⇄ LTable serialization (mirrors `addControl` storage keys), TS types
+- [ ] New `KALUA builder <file>` subcommand in `internal/cli` (+ usage, `--port`, `--host`, `--no-browser`)
+- [ ] HTTP routes: `/`, `/static/*`, `/api/form` GET/PUT (workspace file), `/api/export`, `/api/import`, `/api/validate`, `/api/preview`
+- [ ] Embedded builder shell (`index.html` + `builder.js` + `builder.css` via `//go:embed`)
 
 ### Phase 2: Preview Engine (3 days)
-- [ ] Port `renderControl` logic to TypeScript
-- [ ] Include `kalua.css` in webview
-- [ ] Implement live preview canvas
-- [ ] Handle form/control selection highlighting
+- [ ] `/api/preview` reuses `renderForm`/`renderControl` in-process (private `LState` built from Form JSON)
+- [ ] Canvas iframe + `kalua.css`; debounced re-render on model change
+- [ ] Selection/click hit-tests on real `c:{form}:{ctrl}` DOM ids
+- [ ] JS sim ports of `renderControl` for palette thumbnails + drag ghosts
 
-### Phase 3: Controls Palette (2 days)
-- [ ] Draggable control list
-- [ ] Drag-and-drop to canvas
-- [ ] Insert at position (before/after/into)
-- [ ] Visual drop zones
+### Phase 3: Canvas & Palette (3 days)
+- [ ] Drag-and-drop from palette to canvas; insert before/after/into
+- [ ] Visual drop zones; reorder controls; delete; duplicate; copy/paste
+- [ ] Vertical + grid rendering parity in the canvas
 
-### Phase 4: Property Editor (3 days)
-- [ ] Dynamic form generation per control type
-- [ ] Real-time preview updates
-- [ ] Validation (required fields, unique names)
-- [ ] Special editors: items (key-value grid), columns, datetime config
+### Phase 4: Property Editor (4 days)
+- [ ] Dynamic per-control-type editor for all 11 types
+- [ ] Special editors: items (ordered key/display grid), cells (grid editor), datetime config, chart datasets/labels/options, table columns/rows, looper links, table Tabulator/DB advanced section
+- [ ] Validation (required fields, unique names, name pattern)
 
-### Phase 5: Layout & Ordering (2 days)
-- [ ] Reorder controls (drag handles in preview)
-- [ ] Delete controls
-- [ ] Form-level properties (title, layout)
-- [ ] Copy/paste/duplicate controls
+### Phase 5: Grid Layout Editing (2 days)
+- [ ] Cells editor (add/remove/rename, width, bg, border, align)
+- [ ] Per-control `cell` assignment (dropdown from cells), `align`, form `gap`
+- [ ] Mobile/desktop preview toggle
 
-### Phase 6: Import/Export (2 days)
-- [ ] Export to Lua script (as described above)
-- [ ] Import from existing Lua file (parse `k.form.new` + `k.ctrl.*` calls)
-- [ ] Save/load `.kalua-form.json` files
+### Phase 6: Import / Export / Validate (3 days)
+- [ ] Lua export generator (`lua_export.go`)
+- [ ] Lua import via gopher-lua AST (`lua_import.go`)
+- [ ] `/api/validate` preflight (syntax + unknown `k.*` + `main`) on save/export
+- [ ] Round-trip tests: `.json` → `.lua` → `.json` equality; go-rendered markup parity fixtures
 
 ### Phase 7: Polish & Integration (2 days)
-- [ ] Undo/redo stack
-- [ ] Keyboard shortcuts
-- [ ] Responsive preview (mobile/desktop toggle)
-- [ ] Error handling & validation feedback
-- [ ] Documentation
-
----
-
-## Technical Details
-
-### Webview Communication
-
-```typescript
-// Extension side (extension.ts)
-const panel = vscode.window.createWebviewPanel(
-  'kaluaFormBuilder',
-  'KALUA Form Builder',
-  vscode.ViewColumn.One,
-  { enableScripts: true, retainContextWhenHidden: true }
-);
-
-panel.webview.html = getWebviewContent();
-
-// Message handling
-panel.webview.onDidReceiveMessage(msg => {
-  switch (msg.type) {
-    case 'exportLua':
-      // Write to .lua file
-      break;
-    case 'saveJson':
-      // Write to .kalua-form.json
-      break;
-    case 'loadFile':
-      // Read .lua or .json file, send back
-      break;
-  }
-});
-```
-
-### File Association
-
-- `.kalua-form.json` — Builder native format
-- Double-click → opens in builder
-- Right-click `.lua` → "Open in Form Builder" (parses and loads)
-
----
-
-## Open Questions & Decisions Needed
-
-| Question | Options | Recommendation |
-|----------|---------|----------------|
-| **Builder hosting** | VS Code webview vs standalone web app | VS Code webview (Option A) |
-| **Layout system** | Vertical only vs Grid vs Absolute | Start vertical only; grid later |
-| **Event handlers** | Include in JSON? | No — design-time only, export as TODO comments |
-| **Table/Looper support** | Include complex controls? | Phase 2 — start with basic controls |
-| **Multi-form support** | Single form vs multiple | Single form per file (per spec) |
-| **Live sync** | Auto-save to Lua on change? | Manual save/export; auto-save JSON |
-| **CSS framework** | Plain CSS vs Tailwind vs other | Plain CSS (match KALUA style) |
+- [ ] Undo/redo stack, keyboard shortcuts
+- [ ] Error handling & validation feedback UX
+- [ ] Docs, parity tests, `make gen-api && make check-api` if `api_doc.go` touched
 
 ---
 
 ## Dependencies
 
-### New Dependencies (Webview)
-- No heavy frameworks — vanilla TypeScript + CSS
+- No heavy frameworks — vanilla TypeScript/JS + CSS
 - Optional: `sortablejs` for drag-and-drop reordering (~20KB)
-- Optional: `uuid` for control IDs
-
-### Existing Assets Reused
-- `kalua.css` — embedded in webview
-- Control rendering logic — ported to TypeScript
-
----
-
-## Estimated Timeline: 17 days
-
-| Phase | Days | Deliverable |
-|-------|------|-------------|
-| 1: Foundation | 3 | Webview + schema + types |
-| 2: Preview Engine | 3 | Live rendering matching KALUA |
-| 3: Controls Palette | 2 | Drag-drop from palette |
-| 4: Property Editor | 3 | Dynamic per-control-type editor |
-| 5: Layout & Ordering | 2 | Reorder, delete, form props |
-| 6: Import/Export | 2 | Lua <-> JSON round-trip |
-| 7: Polish | 2 | UX, validation, docs |
-| **Total** | **17** | **MVP Form Builder** |
-
----
-
-## Future Enhancements (Post-MVP)
-
-1. **Grid Layout** — CSS Grid-based positioning
-2. **Looper Support** — Template editor for looper controls
-3. **Tabulator Table Config** — Visual column editor
-4. **Theme Preview** — Light/dark mode toggle
-5. **Responsive Preview** — Device toolbar (mobile/tablet/desktop)
-6. **Collaboration** — Real-time co-editing via VS Code Live Share
-7. **Code Generation** — Full app skeleton with handlers
+- Reuses: `kalua.css`, Go renderer (`forms.go`), `internal/checker` (validate), gopher-lua `ast`/`parse` (import)
+- No new Go dependencies; new `//go:embed` block in `internal/builder`
 
 ---
 
@@ -1403,11 +1325,50 @@ panel.webview.onDidReceiveMessage(msg => {
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Preview mismatch vs runtime | High | Periodic validation via `KALUA check` |
-| Complex control properties (table, looper) | Medium | Defer to Phase 2 |
-| Lua parsing for import | Medium | Use regex + simple AST for known patterns |
-| Webview performance with many controls | Low | Virtualize palette, memoize preview |
-| -------------------------------------- | ----- | ------------------------------------ |
+| Export/import drops non-form code | High | Explicit confirmation warning; `handlers` metadata read-only; structure-only extraction |
+| JS-sim vs Go HTML drift | Low | Sim only feeds thumbnails/ghosts; canvas is Go-rendered; parity fixtures |
+| Complex control property editors (chart, looper, tabulator) | Medium | Dedicated special editors in Phase 4 |
+| Lua import correctness on exotic syntax | Medium | gopher-lua AST (same as checker); unknown calls → warnings, not failures |
+| Builder preview matching runtime | None | Preview IS the Go renderer |
+
+---
+
+## Estimated Timeline: 20 days
+
+| Phase | Days | Deliverable |
+|-------|------|-------------|
+| 1: Foundation | 3 | `KALUA builder` + API + shell |
+| 2: Preview Engine | 3 | Live Go-rendered canvas |
+| 3: Canvas & Palette | 3 | Drag-drop, reorder, delete |
+| 4: Property Editor | 4 | Per-type editors incl. special editors |
+| 5: Grid Layout Editing | 2 | Cells, cell assignment, alignment |
+| 6: Import/Export/Validate | 3 | Lua round-trip + validation |
+| 7: Polish | 2 | UX, undo/redo, docs |
+| **Total** | **20** | **MVP Form Builder** |
+
+---
+
+## Future Enhancements (Post-MVP)
+
+1. **Absolute / free positioning layout** — new runtime layout mode + builder support
+2. **Looper template editor** — visual template for looper rows
+3. **Tabulator column wizard** — visual column/format configuration
+4. **Theme / dark mode preview**, **collaboration**, **full app skeleton export**
+
+---
+
+## Open Questions & Decisions (resolved)
+
+| Question | Decision |
+|----------|----------|
+| Builder hosting | **Option B standalone** (`KALUA builder`) |
+| Layout system | **Vertical + Grid with cells** (full runtime parity) |
+| Event handlers | Not edited/exported; TODO comments; `handlers` metadata read-only |
+| Table/Chart/Looper support | **All 11 types in MVP** (chart & looper included); Tabulator/DB-linking shown as advanced sections |
+| Multi-form support | Single form per file |
+| Live sync | Manual save/export; JSON auto-saved to workspace via `PUT /api/form` |
+| CSS framework | Plain CSS (match KALUA style) |
+| Preview accuracy | Hybrid (Go-rendered canvas + JS sim ghosts) |
 
 ---
 
@@ -1593,8 +1554,8 @@ k.ctrl.set_property("dashboard", "search", "align", "right")  -- override cell d
 | 3 | Chart Control (Chart.js) | 10 days |
 | 4 | Extended Controls (Textbox/Label/Image) | 5.5 days |
 | 5 | Enhanced Form Layout System | 7.5 days |
-| 6 | Form Builder | 17 days |
-| **Total** | | **~60 days** |
+| 6 | Form Builder | 20 days |
+| **Total** | | **~63 days** |
 
 ---
 

@@ -797,6 +797,19 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 	controlsTbl.RawSetString(name, ctrlTbl)
 }
 
+// AddControl is the exported registration entry point used by the visual
+// builder (internal/builder) to construct the LState form model from
+// source-level options. Identical semantics to k.ctrl.<type>.
+func AddControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable) {
+	addControl(L, formName, name, ctrlType, opts)
+}
+
+// RenderForm is the exported preview entry point used by the visual builder:
+// it renders the form stored in the LState global `formName` to HTML.
+func RenderForm(L *lua.LState, formName string) string {
+	return renderForm(L, formName)
+}
+
 // renderForm renders a form to HTML using templ-like logic (simplified for now).
 func renderForm(L *lua.LState, formName string) string {
 	formNameEsc := escAttr(formName)

@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"kalua/internal/bindings"
+	"kalua/internal/builder"
 	"kalua/internal/checker"
 	"kalua/internal/host"
 	"kalua/internal/lsp"
@@ -39,6 +40,8 @@ func Run(args []string) int {
 		return lspCmd()
 	case "serve":
 		return serveCmd(args[1:])
+	case "builder":
+		return builderCmd(args[1:])
 	case "version":
 		fmt.Println("KALUA dev (phase 2)")
 		return int(host.ExitOK)
@@ -55,12 +58,13 @@ func printUsage() {
 Usage: KALUA <command> [args...]
 
 Commands:
-  run    <app.lua> [flags]   Run app as web app (opens browser)
-  serve  <app.lua> [flags]   Run app as headless API server
-  check  <app.lua>           Validate script (syntax, unknown k.*, main)
-  new    <name>              Scaffold a minimal app.lua
-  lsp    Language server over stdio (completion, hover, definitions)
-  version                    Print version
+  run     <app.lua> [flags]   Run app as web app (opens browser)
+  serve   <app.lua> [flags]   Run app as headless API server
+  check   <app.lua>           Validate script (syntax, unknown k.*, main)
+  builder <app.lua|form.json> Visual form builder (opens browser)
+  new     <name>              Scaffold a minimal app.lua
+  lsp     Language server over stdio (completion, hover, definitions)
+  version                     Print version
 
 Run 'KALUA <command> -h' for command-specific flags.
 `)
@@ -334,6 +338,57 @@ func serveCmd(args []string) int {
 			}
 		}
 	}
+}
+
+// builderCmd starts the visual form builder server for a .lua or .json form
+// file. The file need not exist yet: an empty form is served and Save creates
+// it (Lua files are written as generated source, JSON files as documents).
+func builderCmd(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "builder: requires a form file argument (app.lua or form.json)")
+		return int(host.ExitUsage)
+	}
+	if args[0] == "-h" || args[0] == "--help" {
+		fmt.Fprintln(os.Stderr, "Usage: KALUA builder <app.lua|form.json> [--host 127.0.0.1] [--port 9001] [-n]")
+		return int(host.ExitOK)
+	}
+
+	fs := flag.NewFlagSet("builder", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	var (
+		hostFlag  = fs.String("host", "127.0.0.1", "Host to bind to")
+		port      = fs.Int("port", 9001, "HTTP port")
+		noBrowser = fs.Bool("no-browser", false, "Do not open browser")
+	)
+	fs.IntVar(port, "p", 9001, "Shorthand for --port")
+	fs.BoolVar(noBrowser, "n", false, "Shorthand for --no-browser")
+
+	// Parse flags before and after the positional file.
+	file, err := parseArgsScript(fs, args)
+	if err != nil {
+		return int(host.ExitUsage)
+	}
+	if file == "" {
+		fmt.Fprintln(os.Stderr, "builder: requires a form file argument")
+		return int(host.ExitUsage)
+	}
+
+	srv, err := builder.New(file, *hostFlag, *port)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "builder error: %v\n", err)
+		return int(host.ExitError)
+	}
+	defer srv.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if !*noBrowser {
+		_ = openBrowser(srv.URL())
+	}
+	fmt.Fprintf(os.Stderr, "KALUA Form Builder: %s\n", srv.URL())
+	srv.Run(ctx)
+	return int(host.ExitOK)
 }
 
 func openBrowser(url string) error {
