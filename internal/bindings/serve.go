@@ -153,14 +153,14 @@ func registerShared(e *Env, shared SharedStore) {
 	}))
 
 	// k.shared.del(key)
-sharedTbl.RawSetString("del", e.L.NewFunction(func(L *lua.LState) int {
+	sharedTbl.RawSetString("del", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		shared.Del(key)
 		return 0
 	}))
 
 	// k.shared.keys([pattern]) -> table of keys
-sharedTbl.RawSetString("keys", e.L.NewFunction(func(L *lua.LState) int {
+	sharedTbl.RawSetString("keys", e.L.NewFunction(func(L *lua.LState) int {
 		pattern := "*"
 		if L.GetTop() >= 1 {
 			pattern = L.CheckString(1)
@@ -175,7 +175,7 @@ sharedTbl.RawSetString("keys", e.L.NewFunction(func(L *lua.LState) int {
 	}))
 
 	// k.shared.incr(key, delta) -> new_value
-sharedTbl.RawSetString("incr", e.L.NewFunction(func(L *lua.LState) int {
+	sharedTbl.RawSetString("incr", e.L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		delta := int64(1)
 		if L.GetTop() >= 2 {
@@ -289,6 +289,9 @@ func SetupUIError(L *lua.LState) {
 
 	// Disable k.msgbox
 	k.RawSetString("msgbox", L.NewFunction(errorFunc("k.msgbox")))
+
+	// Disable k.popup
+	k.RawSetString("popup", L.NewFunction(errorFunc("k.popup")))
 
 	// Disable k.status_show / k.status_close (and legacy k.status_*).
 	statusFuncs := []string{"show", "close", "set", "clear", "progress"}

@@ -145,3 +145,19 @@ check(k.shared.get("foo:1") == "", "del leaves missing key empty")
 		t.Fatalf("shared keys/del failed: %v", err)
 	}
 }
+
+func TestServe_UIStubsRaiseError(t *testing.T) {
+	store := newFakeStore()
+	for _, src := range []string{
+		`k.popup{{"A"}}`,
+		`k.msgbox{"x"}`,
+		`k.form.new("f")`,
+		`k.ctrl.button("f", "b", {})`,
+		`k.status_show("x")`,
+	} {
+		err := runServeLua(t, store, src)
+		if err == nil {
+			t.Fatalf("expected runtime error for UI binding in serve mode: %s", src)
+		}
+	}
+}

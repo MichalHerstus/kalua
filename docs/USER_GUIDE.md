@@ -295,7 +295,7 @@ end)
 
 ## 4.5 Async operations (coroutine suspension)
 
-Some functions suspend the script until the browser/host answers: `k.msgbox`, `k.http_request`, `k.pick_file`, `k.clipboard_get`, `k.ctrl.get_value` round-trips, `k.chart.get_image`, `k.table.get_data`. They look like normal function calls:
+Some functions suspend the script until the browser/host answers: `k.msgbox`, `k.popup`, `k.http_request`, `k.pick_file`, `k.clipboard_get`, `k.ctrl.get_value` round-trips, `k.chart.get_image`, `k.table.get_data`. They look like normal function calls:
 
 ```lua
 local choice = k.msgbox("Delete row?")     -- suspends until the user clicks
@@ -326,7 +326,7 @@ Everything beyond bare Lua lives on the `k` table, the `K` helpers, and the flat
 
 | Group | Namespace prefix | Purpose |
 |-------|------------------|---------|
-| Flow | `k.print`, `k.sleep`, `k.quit`, `k.msgbox`, `k.http_request`, `k.timer_start`, `k.param_set`, `k.net_ok`, `k.locale`, `k.ping`, … | App lifecycle, UI dialogs, time, persistence |
+| Flow | `k.print`, `k.sleep`, `k.quit`, `k.msgbox`, `k.popup`, `k.http_request`, `k.timer_start`, `k.param_set`, `k.net_ok`, `k.locale`, `k.ping`, … | App lifecycle, UI dialogs, time, persistence |
 | Forms | `k.form.*` | Declare/show/close forms, register events |
 | Controls | `k.ctrl.*` | Add & manipulate the 11 control types |
 | Tables / Loopers | `k.table.*`, `k.looper.*` | Row data ops, DB-linked grids and repeaters |
@@ -416,8 +416,54 @@ Makes an HTTP request. opts: {method, url, headers, body, timeout}. Returns {sta
 **`k.locale()`**  
 Returns the session locale ("en-US" default).
 
-**`k.msgbox(text[, kind])`**  
-Shows a message box; kind defaults to "info". Returns user's choice.
+**`k.msgbox(opts)`**  
+Shows a message box and returns the clicked button's value. Legacy form: `k.msgbox(text[, kind])` where kind is `info`/`warn`/`error`/`ok-cancel`/`yes-no` (returns `"ok"`, `"cancel"`, `"yes"`, `"no"`). Rich form takes a single options table:
+
+```lua
+local choice = k.msgbox{
+  title   = "Confirm delete",
+  message = "Delete row 42?",
+  type    = "warning",                    -- "info" | "warning" | "danger" → left color strip
+  buttons = { {"Delete", 1}, {"Keep", 0}, {"Cancel", false} },
+}
+```
+
+- `type` sets the left color strip: `info` (blue), `warning` (amber), `danger` (red).
+- `buttons` is a list of `{label, value}` pairs (values keep their type: number, boolean or string), `{label=…, value=…}` tables, or bare strings (label = value). When omitted, a single `OK` button returning `"ok"` is added.
+  
+  Options table:
+
+  | Field | Type | Notes |
+  |-------|------|-------|
+  | `title` | string | Optional; empty hides the header. |
+  | `message` | string | Optional; empty hides the text. |
+  | `type` | string | `info` (default), `warning`, `danger`. |
+  | `buttons` | list | `{label, value}` entries; default single `OK`. |
+
+**`k.popup(items)`**  
+Shows a multilevel menu-style popup and returns the picked item's value with its type preserved, or `nil` when dismissed (Esc / click outside). Each item is a leaf (called directly) or a branch (`items={…}` opens a fly-out submenu):
+
+```lua
+local pick = k.popup{
+  title = "Maintenance",
+  items = {
+    { label = "File", items = {                       -- branch → hover/click to open
+        { label = "Open",   value = "open" },
+        { label = "Recent", items = {
+            { label = "a.lua", value = "r1" },
+            { label = "b.lua", value = "r2" },
+        }},
+    }},
+    { label = "Refresh", value = 1 },                  -- leaf → returns 1
+    { "Quit" },                                        -- bare string → returns "Quit"
+  },
+}
+if pick == nil then ... end                            -- dismissed
+```
+
+- Leaves accept `{label, value}` pairs, `{label=…, value=…}` tables, or bare strings (label = value); values round-trip typed (number, boolean, string, table).
+- Branches never return a value — they only navigate to their submenu (up to 8 levels).
+- Alternative list form (no title): `k.popup{ {"Open", "open"}, {"Quit"} }`.
 
 **`k.net_ok(timeout_ms)`**  
 Reports internet reachability via a TCP dial.

@@ -327,7 +327,15 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 	case "msgbox_choice":
 		id := getString(msg, "id")
 		choice := getString(msg, "choice")
-		sess.HandleMsgboxChoice(id, choice)
+		value := msg["value"]
+		sess.HandleMsgboxChoice(id, value, choice)
+	case "popup_choice":
+		id := getString(msg, "id")
+		value := msg["value"]
+		sess.HandlePopupChoice(id, value)
+	case "popup_dismiss":
+		id := getString(msg, "id")
+		sess.DismissPopup(id)
 	case "clipboard_resp":
 		id := getString(msg, "id")
 		value := getString(msg, "value")

@@ -25,8 +25,11 @@ Makes an HTTP request. opts: {method, url, headers, body, timeout}. Returns {sta
 **`k.locale()`**  
 Returns the session locale ("en-US" default).
 
-**`k.msgbox(text[, kind])`**  
-Shows a message box; kind defaults to "info". Returns user's choice.
+**`k.msgbox(opts)`**  
+Shows a message box and returns the clicked button's value. Legacy: `k.msgbox(text[, kind])` (info/warn/error/ok-cancel/yes-no). Rich form: `k.msgbox{title=, message=, type="info"|"warning"|"danger", buttons={{"Save",1},{"Cancel",0}}}` — type sets the left color strip, buttons are {label,value} pairs (or bare strings); default is a single OK button.
+
+**`k.popup(items[, opts])`**  
+Shows a multilevel menu-style popup and returns the picked item's value (type preserved), or nil when dismissed (Esc / click outside). Items are leaves `{label, value}` (or `{label,value}` pairs / bare strings) and branches `{label, items={...}}` which open a fly-out submenu. Optional title: `k.popup{title="Menu", items={...}}`. Nesting up to 8 levels.
 
 **`k.net_ok(timeout_ms)`**  
 Reports internet reachability via a TCP dial.

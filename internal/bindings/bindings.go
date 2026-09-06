@@ -88,6 +88,7 @@ var registerKnown = map[string]string{
 	"quit":                      "flow",
 	"error":                     "flow",
 	"msgbox":                    "flow",
+	"popup":                     "flow",
 	"clipboard_set":             "flow",
 	"clipboard_get":             "flow",
 	"pick_file":                 "flow",

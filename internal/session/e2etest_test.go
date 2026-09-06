@@ -114,7 +114,7 @@ end
 					return
 				}
 				if out.Type == "msgbox" {
-					s.HandleMsgboxChoice(out.ID, "ok")
+					s.HandleMsgboxChoice(out.ID, nil, "ok")
 				}
 			case <-time.After(3 * time.Second):
 				return

@@ -28,6 +28,8 @@ const (
 	inboxTimer                               // timer fired
 	inboxAsyncDone                           // blocking operation completed (DB, HTTP, etc.)
 	inboxMsgboxChoice                        // user answered a k.msgbox
+	inboxPopupChoice                         // user picked a k.popup item
+	inboxPopupDismiss                        // user dismissed a k.popup (Esc / outside)
 	inboxClipboardResp                       // browser clipboard_get value
 	inboxFilePickerResp                      // browser file picker result (JSON-encoded files)
 	inboxQuery                               // external read of Lua state (tests)
@@ -222,7 +224,15 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 	case inboxAsyncDone:
 		s.handleAsyncDone(msg.data, logger)
 	case inboxMsgboxChoice:
-		s.resumeAsyncResp(msg.respID, lua.LString(msg.resp), "msgbox", logger)
+		if msg.raw != nil {
+			s.resumeAsyncResp(msg.respID, s.toLuaValue(msg.raw), "msgbox", logger)
+		} else {
+			s.resumeAsyncResp(msg.respID, lua.LString(msg.resp), "msgbox", logger)
+		}
+	case inboxPopupChoice:
+		s.resumeAsyncResp(msg.respID, s.toLuaValue(msg.raw), "popup", logger)
+	case inboxPopupDismiss:
+		s.resumeAsyncResp(msg.respID, lua.LNil, "popup", logger)
 	case inboxClipboardResp:
 		s.resumeAsyncResp(msg.respID, lua.LString(msg.resp), "clipboard", logger)
 	case inboxFilePickerResp:
@@ -987,9 +997,14 @@ func (s *Session) RunAsync(co *lua.LState, cancel func(), fn func() (interface{}
 }
 
 // ShowMsgbox shows a message box in the browser and suspends the coroutine until user responds.
-// Returns the user's choice ("ok", "yes", "no", "cancel", etc.) or empty string on error.
-func (s *Session) ShowMsgbox(co *lua.LState, cancel func(), text, kind string) string {
-	msgboxID := fmt.Sprintf("msgbox_%d", time.Now().UnixNano())
+// It returns the user's button value with its original type: a string choice
+// ("ok", "yes", "no", "cancel", ...) for the legacy k.msgbox(text, kind) form,
+// or whatever value the clicked button carried in the rich options-table form.
+func (s *Session) ShowMsgbox(co *lua.LState, cancel func(), opts common.MsgboxOptions) string {
+	msgboxID := opts.ID
+	if msgboxID == "" {
+		msgboxID = fmt.Sprintf("msgbox_%d", time.Now().UnixNano())
+	}
 
 	// Store the suspended coroutine
 	s.asyncMu.Lock()
@@ -1000,8 +1015,8 @@ func (s *Session) ShowMsgbox(co *lua.LState, cancel func(), text, kind string) s
 	s.SendOutbox(common.OutboxMsg{
 		Type: "msgbox",
 		ID:   msgboxID,
-		Kind: kind,
-		HTML: renderMsgboxHTML(msgboxID, text, kind),
+		Kind: msgboxKind(opts.Kind),
+		HTML: renderMsgboxHTML(msgboxID, opts),
 	})
 
 	// The coroutine will be resumed when HandleMsgboxChoice is called
@@ -1009,45 +1024,190 @@ func (s *Session) ShowMsgbox(co *lua.LState, cancel func(), text, kind string) s
 	return ""
 }
 
-// renderMsgboxHTML builds the msgbox body: escaped text plus the buttons
-// appropriate for the kind. Each button carries data-k-msgbox-id and
-// data-k-choice so the JS client can answer with msgbox_choice.
-func renderMsgboxHTML(id, text, kind string) string {
-	choices := []string{"ok"}
+// msgboxKind maps a legacy k.msgbox kind to the modal CSS class; rich-form
+// types (info/warning/danger) pass through unchanged.
+func msgboxKind(kind string) string {
 	switch kind {
-	case "ok-cancel":
-		choices = []string{"ok", "cancel"}
-	case "yes-no":
-		choices = []string{"yes", "no"}
-	case "info", "warn", "error", "":
-		choices = []string{"ok"}
+	case "warn":
+		return "warning"
+	case "error":
+		return "danger"
+	default:
+		return kind
+	}
+}
+
+// renderMsgboxHTML builds the msgbox body: an optional header with title, the
+// escaped message, and the buttons. Each button carries data-k-msgbox-id, a
+// data-k-value attribute holding the JSON-encoded return value and a
+// data-k-choice fallback so the JS client can answer with msgbox_choice.
+func renderMsgboxHTML(id string, opts common.MsgboxOptions) string {
+	var sb strings.Builder
+
+	if opts.Title != "" {
+		sb.WriteString(`<div class="msgbox-header">`)
+		sb.WriteString(msgboxIcon(opts.Kind))
+		sb.WriteString(`<span class="msgbox-title">`)
+		sb.WriteString(html.EscapeString(opts.Title))
+		sb.WriteString(`</span></div>`)
 	}
 
-	var sb strings.Builder
-	sb.WriteString(`<p class="msgbox-text">`)
-	sb.WriteString(html.EscapeString(text))
-	sb.WriteString(`</p>`)
-	sb.WriteString(`<div class="msgbox-buttons">`)
-	for _, choice := range choices {
-		label := strings.ToUpper(choice)
+	sb.WriteString(`<div class="msgbox-content"><p class="msgbox-text">`)
+	sb.WriteString(html.EscapeString(opts.Message))
+	sb.WriteString(`</p></div>`)
+
+	sb.WriteString(`<div class="msgbox-actions">`)
+	if len(opts.Buttons) == 0 {
+		opts.Buttons = []common.MsgboxButton{{Label: "OK", Value: "\"ok\""}}
+	}
+	for _, btn := range opts.Buttons {
 		sb.WriteString(`<button type="button" class="kalua-button" data-k-msgbox-id="`)
 		sb.WriteString(html.EscapeString(id))
+		sb.WriteString(`" data-k-value="`)
+		sb.WriteString(html.EscapeString(btn.Value))
 		sb.WriteString(`" data-k-choice="`)
-		sb.WriteString(html.EscapeString(choice))
+		sb.WriteString(html.EscapeString(msgboxFallbackChoice(btn)))
 		sb.WriteString(`">`)
-		sb.WriteString(html.EscapeString(label))
+		sb.WriteString(html.EscapeString(btn.Label))
 		sb.WriteString(`</button>`)
 	}
 	sb.WriteString(`</div>`)
 	return sb.String()
 }
 
+// msgboxFallbackChoice returns the plain-string form of a button's return
+// value for the data-k-choice fallback (used when a client cannot parse the
+// JSON data-k-value). String values decode to themselves so legacy choices
+// like "ok"/"cancel" round-trip unchanged.
+func msgboxFallbackChoice(btn common.MsgboxButton) string {
+	var s string
+	if err := json.Unmarshal([]byte(btn.Value), &s); err == nil {
+		return s
+	}
+	return btn.Label
+}
+
+// msgboxIcon returns the inline SVG icon matching the modal kind. Fallback to
+// the info icon for unknown kinds.
+func msgboxIcon(kind string) string {
+	var body string
+	switch msgboxKind(kind) {
+	case "warning":
+		body = `<path d="M1 21h22L12 2 1 21z"/><path d="M12 9v4"/><path d="M12 17h.01"/>`
+	case "danger":
+		body = `<circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6"/><path d="M9 9l6 6"/>`
+	default:
+		body = `<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>`
+	}
+	return `<span class="msgbox-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` + body + `</svg></span>`
+}
+
 // HandleMsgboxChoice is called from the web bridge goroutine when the browser
 // answers a k.msgbox modal. It forwards the answer to the actor inbox so the
-// resume happens on the actor goroutine (s.L is not thread-safe).
-func (s *Session) HandleMsgboxChoice(msgboxID, choice string) {
+// resume happens on the actor goroutine (s.L is not thread-safe). value is the
+// JSON-decoded typed button value (may be nil when the client only sends the
+// legacy choice string).
+func (s *Session) HandleMsgboxChoice(msgboxID string, value interface{}, choice string) {
 	select {
-	case s.inbox <- inboxMsg{typ: inboxMsgboxChoice, respID: msgboxID, resp: choice}:
+	case s.inbox <- inboxMsg{typ: inboxMsgboxChoice, respID: msgboxID, resp: choice, raw: value}:
+	case <-s.done:
+		// session closed; drop
+	}
+}
+
+// ShowPopup shows a multilevel menu-style popup in the browser and suspends
+// the coroutine until the user picks a leaf item or dismisses the popup. The
+// browser answers via popup_choice / popup_dismiss; the coroutine is resumed
+// with the picked value (typed) or nil.
+func (s *Session) ShowPopup(co *lua.LState, cancel func(), opts common.PopupOptions) string {
+	popupID := opts.ID
+	if popupID == "" {
+		popupID = fmt.Sprintf("popup_%d", time.Now().UnixNano())
+	}
+
+	s.asyncMu.Lock()
+	s.asyncOps[popupID] = &asyncOp{co: co, cancel: cancel}
+	s.asyncMu.Unlock()
+
+	s.SendOutbox(common.OutboxMsg{
+		Type: "popup",
+		ID:   popupID,
+		HTML: renderPopupHTML(popupID, opts),
+	})
+
+	return ""
+}
+
+// renderPopupHTML builds the popup body: an optional header with title and the
+// nested menu list. Branch items carry data-k-submenu and open a fly-out
+// submenu; leaf items carry data-k-popup-id plus the JSON-encoded return value
+// (data-k-value) and a data-k-choice fallback so the client can answer with
+// popup_choice.
+func renderPopupHTML(id string, opts common.PopupOptions) string {
+	var sb strings.Builder
+	if opts.Title != "" {
+		sb.WriteString(`<div class="popup-header"><span class="popup-title">`)
+		sb.WriteString(html.EscapeString(opts.Title))
+		sb.WriteString(`</span></div>`)
+	}
+	sb.WriteString(`<ul class="kalua-popup-menu">`)
+	renderPopupItems(&sb, id, opts.Items)
+	sb.WriteString(`</ul>`)
+	return sb.String()
+}
+
+func renderPopupItems(sb *strings.Builder, id string, items []common.PopupItem) {
+	for _, item := range items {
+		if len(item.Items) > 0 {
+			sb.WriteString(`<li class="popup-item popup-branch" data-k-popup-id="`)
+			sb.WriteString(html.EscapeString(id))
+			sb.WriteString(`" data-k-submenu="true"><span class="popup-item-label">`)
+			sb.WriteString(html.EscapeString(item.Label))
+			sb.WriteString(`</span><span class="popup-caret" aria-hidden="true">&#9656;</span><ul class="kalua-popup-submenu">`)
+			renderPopupItems(sb, id, item.Items)
+			sb.WriteString(`</ul></li>`)
+			continue
+		}
+		sb.WriteString(`<li class="popup-item" tabindex="0" data-k-popup-id="`)
+		sb.WriteString(html.EscapeString(id))
+		sb.WriteString(`" data-k-value="`)
+		sb.WriteString(html.EscapeString(item.Value))
+		sb.WriteString(`" data-k-choice="`)
+		sb.WriteString(html.EscapeString(popupFallbackChoice(item)))
+		sb.WriteString(`"><span class="popup-item-label">`)
+		sb.WriteString(html.EscapeString(item.Label))
+		sb.WriteString(`</span></li>`)
+	}
+}
+
+// popupFallbackChoice returns the plain-string form of a leaf item's return
+// value for the data-k-choice fallback (used when a client cannot parse the
+// JSON data-k-value).
+func popupFallbackChoice(item common.PopupItem) string {
+	var s string
+	if err := json.Unmarshal([]byte(item.Value), &s); err == nil {
+		return s
+	}
+	return item.Label
+}
+
+// HandlePopupChoice is called from the web bridge goroutine when the browser
+// reports a picked k.popup leaf. It forwards the pick to the actor inbox so
+// the resume happens on the actor goroutine.
+func (s *Session) HandlePopupChoice(popupID string, value interface{}) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxPopupChoice, respID: popupID, raw: value}:
+	case <-s.done:
+		// session closed; drop
+	}
+}
+
+// DismissPopup is called from the web bridge goroutine when the browser
+// reports that a k.popup was dismissed (Esc / clicked outside). The suspended
+// coroutine is resumed with nil.
+func (s *Session) DismissPopup(popupID string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxPopupDismiss, respID: popupID}:
 	case <-s.done:
 		// session closed; drop
 	}

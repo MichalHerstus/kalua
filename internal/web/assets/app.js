@@ -611,6 +611,12 @@ function createTabulator(el) {
             case 'close_msgbox':
                 closeMsgbox(msg.id);
                 break;
+            case 'popup':
+                showPopup(msg.id, msg.html);
+                break;
+            case 'close_popup':
+                closePopup(msg.id);
+                break;
             case 'status':
                 showStatus(msg.text);
                 break;
@@ -1048,6 +1054,57 @@ function createTabulator(el) {
         }
     }
 
+    // Popup (multilevel menu modal)
+    function showPopup(id, html) {
+        const overlay = document.createElement('div');
+        overlay.id = 'pop:' + id;
+        overlay.className = 'popup-overlay';
+        overlay.innerHTML = `
+            <div class="popup" role="menu" aria-label="menu">
+                ${html}
+            </div>
+        `;
+        modals.appendChild(overlay);
+
+        const firstItem = overlay.querySelector('.popup-item');
+        if (firstItem) {
+            firstItem.focus();
+        }
+
+        // Esc / outside click dismisses the popup (the Lua app gets nil).
+        overlay.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                send({ type: 'popup_dismiss', id: id });
+                closePopup(id);
+            } else if (e.key === 'Tab') {
+                trapFocus(e, overlay);
+            }
+        });
+        overlay.addEventListener('mousedown', function(e) {
+            if (e.target === overlay) {
+                send({ type: 'popup_dismiss', id: id });
+                closePopup(id);
+            }
+        });
+    }
+
+    function closePopup(id) {
+        const overlay = document.getElementById('pop:' + id);
+        if (overlay) {
+            overlay.remove();
+        }
+    }
+
+    // Expand/collapse a popup submenu (touch/keyboard; hover handled by CSS).
+    function togglePopupSubmenu(item) {
+        const submenu = item.querySelector('.kalua-popup-submenu');
+        if (!submenu) {
+            return;
+        }
+        item.classList.toggle('open');
+    }
+
     function trapFocus(e, container) {
         const focusable = container.querySelectorAll(
             'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -1108,12 +1165,41 @@ function createTabulator(el) {
 
     // Event handlers (delegated)
     function handleClick(e) {
+        // Popup menu: a branch opens its submenu, a leaf answers popup_choice.
+        const popupItem = e.target.closest('[data-k-popup-id]');
+        if (popupItem) {
+            const id = popupItem.dataset.kPopupId;
+            if (popupItem.dataset.kSubmenu !== undefined) {
+                e.preventDefault();
+                togglePopupSubmenu(popupItem);
+                return;
+            }
+            const choice = popupItem.dataset.kChoice || '';
+            const json = popupItem.dataset.kValue;
+            let value;
+            try {
+                value = JSON.parse(json);
+            } catch (err) {
+                value = choice;
+            }
+            send({ type: 'popup_choice', id: id, value: value });
+            closePopup(id);
+            return;
+        }
+
         // Msgbox buttons answer the modal (no form/ctrl context).
-        const msgboxBtn = e.target.closest('[data-k-msgbox-id][data-k-choice]');
+        const msgboxBtn = e.target.closest('[data-k-msgbox-id][data-k-value]');
         if (msgboxBtn) {
             const id = msgboxBtn.dataset.kMsgboxId;
-            const choice = msgboxBtn.dataset.kChoice;
-            send({ type: 'msgbox_choice', id: id, choice: choice });
+            const choice = msgboxBtn.dataset.kChoice || '';
+            const json = msgboxBtn.dataset.kValue;
+            let value;
+            try {
+                value = JSON.parse(json);
+            } catch (err) {
+                value = choice;
+            }
+            send({ type: 'msgbox_choice', id: id, value: value, choice: choice });
             closeMsgbox(id);
             return;
         }

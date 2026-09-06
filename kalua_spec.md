@@ -255,7 +255,7 @@ connection as a text frame / TCP write.
   lease ends. A reload failure leaves the current pool serving.
 
 **Interactions with the run-mode UI:** `serve` is headless (D18). UI/forms bindings
-(`k.form.*`, `k.ctrl.*`, `k.msgbox`, `k.status_*`) raise a runtime error in serve mode.
+(`k.form.*`, `k.ctrl.*`, `k.msgbox`, `k.popup`, `k.status_*`) raise a runtime error in serve mode.
 `k.print` writes to the log sink. The two modes share command parsing, the sandbox, the
 bindings registry, and the coerce layer; they differ only in lifecycle + event delivery.
 
@@ -320,6 +320,8 @@ One WS connection per session at `/ws/ui`. Messages are JSON.
 | `close_form` | `{name, top?}` | pop current / all-above on `return_to` |
 | `msgbox` | `{id, kind, html}` | show templ-rendered modal (info/warn/error/ok-cancel/yes-no) |
 | `close_msgbox` | `{id}` | dismiss modal |
+| `popup` | `{id, html}` | show multilevel menu-style popup (fly-out submenus) |
+| `close_popup` | `{id}` | remove popup from the DOM |
 | `status` | `{text}` | busy/status bar update |
 | `error` | `{msg, stack?}` | runtime error banner (app keeps running for event errors) |
 | `quit` | — | app ended; page shows terminal state |
@@ -331,6 +333,8 @@ One WS connection per session at `/ws/ui`. Messages are JSON.
 | `event` | `{form, ctrl, event_name, value}` | control event (`click`, `input`, `change`, `focus`, `blur`, checkbox/radio value) |
 | `key` | `{form, ctrl, key, code}` | keydown on focused control → `key_pressed` |
 | `msgbox_choice` | `{id, choice}` | button pressed in modal → resumes suspended coroutine |
+| `popup_choice` | `{id, value}` | leaf picked in popup → resumes suspended coroutine with typed value |
+| `popup_dismiss` | `{id}` | popup dismissed (Esc / outside) → resumes with nil |
 | `client_info` | `{w, h, locale}` | on connect: `screen_size` source, locale |
 | `ping` | — | keep-alive / detect dead session |
 
@@ -414,7 +418,7 @@ Legend: **T1** = MVP · **T2** = second milestone · **—** = out of scope (rea
 | Copy to Clipboard / Get Clipboard | `k.clipboard_set/get` (browser `navigator.clipboard`) | T1 |
 | Play Sound | `k.bell()` (WebAudio beep) | T1 |
 | Notification Message / Vibrate / Set Blinking / Post App Notification | — (mobile OS features) | — |
-| Show Popup / Exec JScript / Process/Create EAN128 | — (no equivalent) | — |
+| Show Popup | `k.popup(items)` — multilevel menu-style popup (leaves/branches, fly-out submenus); returns picked value or nil on dismiss; overview to follow | T2 |
 | Get Screen Dimensions | `k.screen_size()` (browser viewport from `client_info`) | T1 |
 | Check Internet Connection | `k.net_ok(timeout_ms)` | T2 |
 | Get Locale Information / Language get/set | `k.locale()` stub returning browser locale | T2 |
@@ -921,7 +925,7 @@ testdata/apps/api_demo.lua      ── serve-mode showcase app referenced by the
   iterate on the CLI output.
 - Pitfalls & conventions: `snake_case` naming; §5.9 expression functions are **flat globals, not
   `k.*`**; serve mode raises a runtime error on any UI binding (`k.form.*`, `k.ctrl.*`, `k.msgbox`,
-  `k.status_*`); Kalipso coercion (`0 = ""` true; use `K.tonum`/`K.tostr`/`K.truthy`); dates are
+  `k.popup`, `k.status_*`); Kalipso coercion (`0 = ""` true; use `K.tonum`/`K.tostr`/`K.truthy`); dates are
   strings `YYYY-MM-DD[ HH:MM[:SS]]` with Sunday=1 weekday; 16 MiB file cap; sandboxed VM (no
   `io`, `os.execute`, `require`).
 - Pointers to the `kalua-api` skill (`api.md`) and spec §5 for the full inventory.

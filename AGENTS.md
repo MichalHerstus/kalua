@@ -128,7 +128,8 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 
 ## Implemented Features (Phase 7 - Complete T1 Run Mode)
 
-- `k.msgbox(text[, kind])` — modal message box with user choice returned to script
+- `k.msgbox(opts)` — modal message box with user choice returned to script. Legacy `k.msgbox(text[, kind])` preserved; rich form `k.msgbox{title=, message=, type=, buttons=}` with left color strip (`info`/`warning`/`danger`), typed button return values (`{label, value}` pairs, default single `OK` returning `"ok"`) round-tripped via JSON (`data-k-value`)
+- `k.popup(items)` — multilevel menu-style popup (centered modal, fly-out submenus via CSS hover/focus + click-toggle for touch). Items are leaves `{label, value}` (positional `{label,value}` / bare string accepted) or branches `{label, items={...}}` (up to 8 levels); returns the picked value with type preserved or `nil` when dismissed (Esc/outside → `popup_dismiss`). Semantics mirrored from `k.msgbox` (option-table vs list form, JSON `data-k-value` round-trip via `popup_choice`; `renderPopupHTML`/`ShowPopup`/`HandlePopupChoice`/`DismissPopup`)
 - `k.clipboard_set(text)` / `k.clipboard_get()` — browser clipboard access
 - `k.bell()` — play system beep via WebAudio
 - `k.screen_size()` — returns viewport `{width, height}` from client_info

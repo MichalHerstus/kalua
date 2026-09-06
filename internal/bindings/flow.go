@@ -3,6 +3,7 @@
 package bindings
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -125,11 +126,27 @@ func registerFlow(e *Env) {
 		return 0
 	})
 
-// k.msgbox(text[, kind]) — show message box and wait for user choice
-	// Returns the user's choice ("ok", "yes", "no", "cancel", etc.)
+	// k.msgbox([opts]) — show a message box and wait for user choice.
+	//
+	// Two call forms:
+	//
+	//	k.msgbox(text[, kind])              // legacy (kind: info/warn/error/ok-cancel/yes-no)
+	//	k.msgbox{title=, message=, type=, buttons={...}}
+	//
+	// The rich form takes an options table: title, message, type ("info"/
+	// "warning"/"danger" → left color strip), and buttons = list of {label, value}
+	// pairs (or {label=.., value=..}, or bare strings). The clicked button's value
+	// is returned with its original type; buttons default to a single "OK".
+	// Returns the user's choice.
 	e.register("msgbox", "flow", func(L *lua.LState) int {
-		text := L.ToString(1)
-		kind := L.OptString(2, "info")
+		var opts common.MsgboxOptions
+		if t, ok := L.Get(1).(*lua.LTable); ok {
+			opts = msgboxFromTable(L, e, t)
+		} else {
+			text := L.ToString(1)
+			kind := L.OptString(2, "info")
+			opts = common.MsgboxOptions{Message: text, Kind: kind, Buttons: msgboxPresetButtons(kind)}
+		}
 
 		// Get the session from the env
 		if e.Sess == nil {
@@ -141,9 +158,42 @@ func registerFlow(e *Env) {
 		// coroutine L is already started (we are running inside it), so the
 		// actor can resume it later with the user's choice — creating a fresh
 		// thread here would make Resume panic on the never-started thread.
-		e.Sess.ShowMsgbox(L, func() {}, text, kind)
+		e.Sess.ShowMsgbox(L, func() {}, opts)
 
 		// Yield the coroutine - it will be resumed when user responds
+		return L.Yield(lua.LNil)
+	})
+
+	// k.popup(items) — show a multilevel menu-style popup and wait for a pick.
+	//
+	// Two call forms:
+	//
+	//	k.popup{{label=, value=}, {label=, items={...}}, "bare"}  // list form
+	//	k.popup{title=, items={{label=, value=}, {label=, items={...}}}} // options form
+	//
+	// Each item is a leaf ({label, value} — the clicked value is returned with
+	// its original type) or a branch ({label, items={...}} — opens a fly-out
+	// submenu). Positional {label, value} pairs and bare strings are accepted
+	// for leaves (bare string → label == value). Returns the picked value, or
+	// nil when the popup is dismissed (Esc / click outside).
+	e.register("popup", "flow", func(L *lua.LState) int {
+		opts, err := popupFromTable(L, e, L.Get(1))
+		if err != nil {
+			L.RaiseError("popup: %s", err)
+			return 0
+		}
+
+		// Get the session from the env
+		if e.Sess == nil {
+			L.RaiseError("popup: no session available")
+			return 0
+		}
+
+		// Send the popup to the browser and suspend. Resumed via the actor
+		// inbox with the picked value, or with no values when dismissed.
+		e.Sess.ShowPopup(L, func() {}, opts)
+
+		// Yield the coroutine - it will be resumed when the user picks an item
 		return L.Yield(lua.LNil)
 	})
 
@@ -429,6 +479,163 @@ func registerFlow(e *Env) {
 		return 1
 	})
 }
+
+// msgboxFromTable parses the rich options-table form of k.msgbox.
+func msgboxFromTable(L *lua.LState, e *Env, t *lua.LTable) common.MsgboxOptions {
+	opts := common.MsgboxOptions{Kind: "info"}
+	if v := t.RawGetString("title"); v != lua.LNil {
+		opts.Title = lua.LVAsString(v)
+	}
+	if v := t.RawGetString("message"); v != lua.LNil {
+		opts.Message = lua.LVAsString(v)
+	}
+	if v := t.RawGetString("type"); v != lua.LNil {
+		if k := lua.LVAsString(v); k != "" && k != "info" {
+			opts.Kind = k
+		}
+	}
+
+	btns := t.RawGetString("buttons")
+	if bt, ok := btns.(*lua.LTable); ok {
+		bt.ForEach(func(_, bv lua.LValue) {
+			label := ""
+			value := lua.LNil
+			switch b := bv.(type) {
+			case *lua.LTable:
+				label = lua.LVAsString(b.RawGetString("label"))
+				if label == "" {
+					label = lua.LVAsString(b.RawGetInt(1))
+				}
+				value = b.RawGetString("value")
+				if value == lua.LNil {
+					value = b.RawGetInt(2)
+				}
+			default:
+				label = lua.LVAsString(bv)
+				value = bv
+			}
+			if value == lua.LNil {
+				value = lua.LString(label)
+			}
+			opts.Buttons = append(opts.Buttons, common.MsgboxButton{Label: label, Value: jsonValue(e, value)})
+		})
+	}
+
+	if len(opts.Buttons) == 0 {
+		opts.Buttons = msgboxPresetButtons("info")
+	}
+	return opts
+}
+
+// msgboxPresetButtons returns the button set for a legacy k.msgbox kind.
+// Each button's return value is its lowercase choice string, matching the
+// historical k.msgbox contract.
+func msgboxPresetButtons(kind string) []common.MsgboxButton {
+	switch kind {
+	case "ok-cancel":
+		return []common.MsgboxButton{{Label: "OK", Value: "\"ok\""}, {Label: "CANCEL", Value: "\"cancel\""}}
+	case "yes-no":
+		return []common.MsgboxButton{{Label: "YES", Value: "\"yes\""}, {Label: "NO", Value: "\"no\""}}
+	default:
+		return []common.MsgboxButton{{Label: "OK", Value: "\"ok\""}}
+	}
+}
+
+// popupFromTable parses the arguments of k.popup. The first argument is either
+// an options table ({title=, items={...}}) or the menu item list itself. The
+// options form is detected by a non-nil "items" string key.
+func popupFromTable(L *lua.LState, e *Env, arg lua.LValue) (common.PopupOptions, error) {
+	t, ok := arg.(*lua.LTable)
+	if !ok {
+		return common.PopupOptions{}, errors.New("expected a menu table")
+	}
+
+	opts := common.PopupOptions{}
+	// The branch-max-depth guard lives here; children are appended by
+	// popupParseItems, which re-enters for the item list only.
+	if items := t.RawGetString("items"); items != lua.LNil {
+		if v := t.RawGetString("title"); v != lua.LNil {
+			opts.Title = lua.LVAsString(v)
+		}
+		itemsTbl, ok := items.(*lua.LTable)
+		if !ok {
+			return opts, errors.New("items must be a list of menu items")
+		}
+		opts.Items, _ = popupParseItems(L, e, itemsTbl, 0)
+		return opts, nil
+	}
+
+	opts.Items, _ = popupParseItems(L, e, t, 0)
+	return opts, nil
+}
+
+// popupParseItems converts a Lua list of menu items into PopupItem records.
+// depth caps nested submenus. Each item is a leaf ({label,value} / {label=,value=}
+// / bare string) or a branch ({label=, items={...}}).
+func popupParseItems(L *lua.LState, e *Env, t *lua.LTable, depth int) ([]common.PopupItem, error) {
+	if depth > 8 {
+		return nil, errors.New("menu nesting too deep (max 8 levels)")
+	}
+	var items []common.PopupItem
+	var err error
+	t.ForEach(func(_, iv lua.LValue) {
+		if err != nil {
+			return
+		}
+		label := ""
+		value := lua.LNil
+		var sub *lua.LTable
+		switch it := iv.(type) {
+		case *lua.LTable:
+			label = lua.LVAsString(it.RawGetString("label"))
+			if label == "" {
+				label = lua.LVAsString(it.RawGetInt(1))
+			}
+			if v := it.RawGetString("value"); v != lua.LNil {
+				value = v
+			} else if v := it.RawGetInt(2); v != lua.LNil {
+				value = v
+			}
+			if s := it.RawGetString("items"); s != lua.LNil {
+				if st, ok := s.(*lua.LTable); ok {
+					sub = st
+				}
+			}
+		default:
+			label = lua.LVAsString(iv)
+			value = iv
+		}
+		if label == "" {
+			label = "?"
+		}
+
+		if sub != nil {
+			children, err2 := popupParseItems(L, e, sub, depth+1)
+			if err2 != nil {
+				err = err2
+				return
+			}
+			items = append(items, common.PopupItem{Label: label, Items: children})
+			return
+		}
+		if value == lua.LNil {
+			value = lua.LString(label)
+		}
+		items = append(items, common.PopupItem{Label: label, Value: jsonValue(e, value)})
+	})
+	return items, err
+}
+
+// jsonValue JSON-encodes a Lua value for transport in a msgbox button's
+// data-k-value attribute.
+func jsonValue(e *Env, v lua.LValue) string {
+	s, err := stringifyJSON(e, v)
+	if err != nil {
+		return "\"" + strings.ReplaceAll(lua.LVAsString(v), "\"", "\\\"") + "\""
+	}
+	return s
+}
+
 func join(elems []string, sep string) string {
 	switch len(elems) {
 	case 0:
