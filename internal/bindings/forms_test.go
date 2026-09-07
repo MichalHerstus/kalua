@@ -273,6 +273,57 @@ func TestRenderVerticalAlignGap(t *testing.T) {
 	}
 }
 
+// TestNoNilBaked verifies that absent options render empty instead of the
+// literal string "nil": a label-less control keeps an empty <label> element,
+// a value-less textbox renders value="", a value-less multiline textarea is
+// empty, and an omitted form title renders no title row.
+func TestNoNilBaked(t *testing.T) {
+	L := setupTestState(t)
+
+	html := layoutTestForm(t, L, map[string]lua.LValue{}, [][]lua.LValue{
+		{str("menu"), str("list")},                              // no label, no items
+		{str("txt"), str("textbox")},                            // no label, no value
+		{str("area"), str("textbox"), str("multiline"), ltrue(), str("rows"), num(3)}, // textarea w/o value
+	})
+
+	if strings.Contains(html, "nil") {
+		t.Errorf("rendered a literal 'nil': %s", html)
+	}
+
+	// Label element stays present but empty.
+	if !strings.Contains(html, `<label class="kalua-label" for="c:f:menu"></label>`) {
+		t.Errorf("menu label should be an empty <label>: %s", html)
+	}
+	if !strings.Contains(html, `<label class="kalua-label" for="c:f:txt"></label>`) {
+		t.Errorf("txt label should be an empty <label>: %s", html)
+	}
+
+	// textbox value="" and textarea empty.
+	if !strings.Contains(html, `<input type="text" class="kalua-input" id="c:f:txt" name="txt" value=""`) {
+		t.Errorf("txt should render value=\"\": %s", html)
+	}
+	if !strings.Contains(html, `<textarea class="kalua-textarea" id="c:f:area" name="area" rows="3" cols="50" data-k-form`) {
+		t.Errorf("textarea should be empty: %s", html)
+	}
+
+	// A form with no title renders no title row.
+	L2 := setupTestState(t)
+	f2 := L2.NewTable()
+	f2.RawSetString("name", str("f2"))
+	f2.RawSetString("layout", str("vertical"))
+	f2.RawSetString("align", str("left"))
+	f2.RawSetString("controls", L2.NewTable())
+	f2.RawSetString("handlers", L2.NewTable())
+	L2.SetGlobal("f2", f2)
+	html2 := renderForm(L2, "f2")
+	if strings.Contains(html2, "kalua-form-title") {
+		t.Errorf("form without title rendered a title row: %s", html2)
+	}
+	if strings.Contains(html2, "nil") {
+		t.Errorf("form without title rendered a literal 'nil': %s", html2)
+	}
+}
+
 // TestRenderGridCellsOrder verifies §6 grid cells (array form): cells render in
 // declaration order with column spans, bg/border/align styles, and controls are
 // placed into their assigned cells.

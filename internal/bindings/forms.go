@@ -41,7 +41,9 @@ func registerForms(e *Env) {
 		}
 		formTbl := L.NewTable()
 		formTbl.RawSetString("name", lua.LString(name))
-		formTbl.RawSetString("title", lua.LString(opts.RawGetString("title").String()))
+		if v := opts.RawGetString("title"); v != lua.LNil {
+			formTbl.RawSetString("title", lua.LString(v.String()))
+		}
 		formTbl.RawSetString("layout", lua.LString(layout))
 		formTbl.RawSetString("align", lua.LString(align))
 		gapVal := opts.RawGetString("gap")
@@ -916,11 +918,17 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 	ctrlTbl.RawSetString("type", lua.LString(ctrlType))
 	ctrlTbl.RawSetString("form", lua.LString(formName))
 
-	// Label control uses "text" option, others use "label"
+	// Label control uses "text" option, others use "label". Only set when the
+	// source option exists so an absent label stays nil (renders empty, and
+	// k.ctrl.get_property returns nil rather than the string "nil").
 	if ctrlType == "label" {
-		ctrlTbl.RawSetString("label", lua.LString(opts.RawGetString("text").String()))
+		if v := opts.RawGetString("text"); v != lua.LNil {
+			ctrlTbl.RawSetString("label", lua.LString(v.String()))
+		}
 	} else {
-		ctrlTbl.RawSetString("label", lua.LString(opts.RawGetString("label").String()))
+		if v := opts.RawGetString("label"); v != lua.LNil {
+			ctrlTbl.RawSetString("label", lua.LString(v.String()))
+		}
 	}
 
 	ctrlTbl.RawSetString("value", opts.RawGetString("value"))
@@ -1067,7 +1075,10 @@ func renderForm(L *lua.LState, formName string) string {
 		return `<div class="error">Invalid form</div>`
 	}
 
-	title := escText(tbl.RawGetString("title").String())
+	title := ""
+	if tv := tbl.RawGetString("title"); tv != lua.LNil {
+		title = escText(tv.String())
+	}
 	layout := tbl.RawGetString("layout").String()
 	if layout == "" {
 		layout = "vertical"
@@ -1350,12 +1361,19 @@ func renderControl(ctrl *lua.LTable) string {
 	ctrlType := ctrl.RawGetString("type").String()
 	name := escAttr(ctrl.RawGetString("name").String())
 	formName := escAttr(ctrl.RawGetString("form").String())
-	label := escText(ctrl.RawGetString("label").String())
+	labelVal := ctrl.RawGetString("label")
+	label := ""
+	if labelVal != lua.LNil {
+		label = escText(labelVal.String())
+	}
 	v := ctrl.RawGetString("value")
 	if v == nil {
 		v = lua.LNil
 	}
-	value := escAttr(v.String())
+	value := ""
+	if v != lua.LNil {
+		value = escAttr(v.String())
+	}
 
 	id := "c:" + formName + ":" + name
 
@@ -1399,7 +1417,7 @@ func renderControl(ctrl *lua.LTable) string {
 			}
 			return `<div class="kalua-control"` + visible + `>
 				<label class="kalua-label" for="` + escAttr(id) + `">` + label + `</label>
-				<textarea class="kalua-textarea" id="` + escAttr(id) + `" name="` + name + `" rows="` + strconv.Itoa(rows) + `" cols="` + strconv.Itoa(cols) + `"` + attrs + enabled + `>` + escText(ctrl.RawGetString("value").String()) + `</textarea>
+				<textarea class="kalua-textarea" id="` + escAttr(id) + `" name="` + name + `" rows="` + strconv.Itoa(rows) + `" cols="` + strconv.Itoa(cols) + `"` + attrs + enabled + `>` + value + `</textarea>
 			</div>`
 		}
 		if datetime := ctrl.RawGetString("datetime"); datetime != lua.LNil && datetime != lua.LFalse {
@@ -1439,7 +1457,10 @@ func renderControl(ctrl *lua.LTable) string {
 		if value == "true" || value == "1" {
 			checked = ` checked`
 		}
-		hiddenValue := escAttr(ctrl.RawGetString("hidden_value").String())
+		hiddenValue := ""
+		if hv := ctrl.RawGetString("hidden_value"); hv != lua.LNil {
+			hiddenValue = escAttr(hv.String())
+		}
 		hiddenInput := ""
 		if hiddenValue != "" {
 			hiddenInput = `<input type="hidden" name="` + name + `_hidden" value="` + hiddenValue + `">`
@@ -1454,7 +1475,10 @@ func renderControl(ctrl *lua.LTable) string {
 		if value == "true" || value == "1" {
 			checked = ` checked`
 		}
-		hiddenValue := escAttr(ctrl.RawGetString("hidden_value").String())
+		hiddenValue := ""
+		if hv := ctrl.RawGetString("hidden_value"); hv != lua.LNil {
+			hiddenValue = escAttr(hv.String())
+		}
 		hiddenInput := ""
 		if hiddenValue != "" {
 			hiddenInput = `<input type="hidden" name="` + name + `_hidden" value="` + hiddenValue + `">`
