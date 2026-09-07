@@ -49,7 +49,7 @@ type formDef struct {
 	layout   string
 	align    string
 	gap      *int
-	cells    map[string]*Cell
+	cells    []*CellDef
 	controls []*Control
 }
 
@@ -427,7 +427,7 @@ func itemsToOrdered(t *ast.TableExpr) []any {
 
 // formOptsToJSON extracts title/layout/align/gap/cells from a k.form.new
 // opts table literal.
-func formOptsToJSON(t *ast.TableExpr, notes *[]string) (title, layout, align string, gap *int, cells map[string]*Cell) {
+func formOptsToJSON(t *ast.TableExpr, notes *[]string) (title, layout, align string, gap *int, cells []*CellDef) {
 	layout, align = "vertical", "left"
 	if t == nil {
 		return
@@ -453,17 +453,19 @@ func formOptsToJSON(t *ast.TableExpr, notes *[]string) (title, layout, align str
 			}
 		case "cells":
 			if tbl, ok := f.Value.(*ast.TableExpr); ok {
-				cells = cellsToJSON(tbl, notes)
+				cells = cellsToList(tbl)
 			}
 		}
 	}
 	return
 }
 
-// cellsToJSON normalizes both source forms of the cells option (array of
-// {id=...} entries, or map {id={...}}) into a map[string]*Cell.
-func cellsToJSON(t *ast.TableExpr, notes *[]string) map[string]*Cell {
-	cells := map[string]*Cell{}
+// cellsToList normalizes both source forms of the cells option (array of
+// {id=...} entries, or map {id={...}}) into an ordered []*CellDef. The array
+// form preserves the declared order (the runtime's canonical representation);
+// the map form falls back to lexical id order.
+func cellsToList(t *ast.TableExpr) []*CellDef {
+	var cells []*CellDef
 	if t == nil {
 		return cells
 	}
@@ -475,12 +477,14 @@ func cellsToJSON(t *ast.TableExpr, notes *[]string) map[string]*Cell {
 		if f.Key != nil {
 			id := keyName(f.Key)
 			if id != "" {
-				cells[id] = cellToJSON(cellTbl, notes)
+				d := cellToDef(cellTbl)
+				d.Id = id
+				cells = append(cells, d)
 			}
 			continue
 		}
-		id := ""
 		// array form: read the id field from the entry itself
+		id := ""
 		for _, cf := range cellTbl.Fields {
 			if keyName(cf.Key) == "id" {
 				id = exprString(cf.Value)
@@ -488,14 +492,16 @@ func cellsToJSON(t *ast.TableExpr, notes *[]string) map[string]*Cell {
 			}
 		}
 		if id != "" {
-			cells[id] = cellToJSON(cellTbl, notes)
+			d := cellToDef(cellTbl)
+			d.Id = id
+			cells = append(cells, d)
 		}
 	}
 	return cells
 }
 
-func cellToJSON(t *ast.TableExpr, notes *[]string) *Cell {
-	c := &Cell{}
+func cellToDef(t *ast.TableExpr) *CellDef {
+	c := &CellDef{}
 	for _, f := range t.Fields {
 		switch keyName(f.Key) {
 		case "width":
@@ -522,7 +528,6 @@ func cellToJSON(t *ast.TableExpr, notes *[]string) *Cell {
 			}
 		}
 	}
-	_ = notes
 	return c
 }
 

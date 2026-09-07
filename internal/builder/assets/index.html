@@ -14,21 +14,34 @@
       <span id="path"></span>
       <span id="format" class="badge"></span>
     </div>
-    <div class="actions">
-      <button id="btn-new" title="Start a new form">New</button>
-      <button id="btn-save" title="Save to the source file (Ctrl/Cmd+S)">Save</button>
-      <button id="btn-export" title="Regenerate Lua source (download)">Export Lua</button>
-      <button id="btn-validate" title="Run the KALUA static checker on the generated Lua">Validate</button>
+<div class="actions">
+      <button id="btn-theme" class="theme-toggle" title="Toggle light/dark theme" aria-label="Toggle light/dark theme">
+        <span id="theme-label"></span>
+      </button>
+      <button id="btn-undo" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
+      <button id="btn-redo" title="Redo (Ctrl/Cmd+Shift+Z / Ctrl/Cmd+Y)" disabled>Redo</button>
     </div>
   </header>
 
-  <section id="palette" aria-label="Control palette">
-    <h2>Controls</h2>
-    <ul id="palette-list"></ul>
-    <div class="palette-footer">
-      <button id="btn-add-control" title="Add the selected control type to the form">+ Add</button>
-    </div>
-  </section>
+  <div id="sidebar">
+    <section id="palette" aria-label="Control palette">
+      <h2>Controls</h2>
+      <ul id="palette-list"></ul>
+      <div class="palette-footer">
+        <button id="btn-add-control" title="Add the selected control type to the form">+ Add</button>
+      </div>
+    </section>
+
+    <section id="commands" aria-label="Commands">
+      <h2>Commands</h2>
+      <div class="commands-buttons">
+        <button id="btn-new" title="Start a new form">New</button>
+        <button id="btn-save" title="Save to the source file (Ctrl/Cmd+S)">Save</button>
+        <button id="btn-export" title="Regenerate Lua source (download)">Export Lua</button>
+        <button id="btn-validate" title="Run the KALUA static checker on the generated Lua">Validate</button>
+      </div>
+    </section>
+  </div>
 
   <main id="canvas">
     <div id="canvas-head">
@@ -63,12 +76,21 @@
         <label>Gap (px) <input id="f_gap" type="number" min="0" step="1" data-kpath="gap"></label>
       </div>
       <div class="cells-editor">
-        <label class="cellrow"><span>Cells (grid)</span><select id="f_cellsel"></select></label>
+        <label class="cellrow"><span>Cells (grid, ordered)</span><select id="f_cellsel"></select></label>
         <div class="cellrow">
-          <label>Width <input id="c_width" type="number" min="1" max="12" step="1"></label>
-          <label>Bg <input id="c_bg" type="text" placeholder="#ffffff"></label>
+          <label class="row">
+            <span>Move</span>
+            <button id="btn-cell-up" class="mv up" title="Move cell up">▲</button>
+            <button id="btn-cell-dn" class="mv dn" title="Move cell down">▼</button>
+          </label>
+          <button id="btn-del-cell" class="del" title="Delete this cell (reassigns its controls to ‘main’)">× Del</button>
         </div>
         <div class="cellrow">
+          <label>Id <input id="c_id" type="text" placeholder="cell1" title="Cell id (unique, Lua identifier)"></label>
+          <label>Width <input id="c_width" type="number" min="1" max="12" step="1"></label>
+        </div>
+        <div class="cellrow">
+          <label>Bg <input id="c_bg" type="text" placeholder="#ffffff"></label>
           <label>Align
             <select id="c_align">
               <option value="">default</option>
@@ -77,13 +99,20 @@
               <option value="right">right</option>
             </select>
           </label>
+        </div>
+        <div class="cellrow">
+          <label>Border w <input id="c_bw" type="number" min="0" step="1" title="Border width in px (0 = none)"></label>
+          <label>Border color <input id="c_bc" type="text" placeholder="#cccccc"></label>
+        </div>
+        <div class="cellrow">
           <button id="btn-add-cell" title="Add a new empty cell">+ Cell</button>
         </div>
       </div>
     </details>
 
     <details id="ctrl-props" open>
-      <summary><span id="ctrl-head">Control</span> <span id="ctrl-type" class="badge"></span></summary>
+      <summary><span id="ctrl-head">Control</span> <span id="ctrl-type" class="badge"></span>
+        <button id="ctrl-del" class="del ctrl-del-btn" title="Delete this control (Del)" hidden>×</button></summary>
       <div id="ctrl-editor" class="prop-grid">Select a control in the preview or the list below.</div>
     </details>
 

@@ -17,8 +17,10 @@ import (
 	"regexp"
 )
 
-// DocVersion is the schema version emitted by the builder.
-const DocVersion = 1
+// DocVersion is the schema version emitted by the builder. Version 2: cells
+// became an ordered array (CellDef) so cell order survives import/export;
+// version 1 object-form cells are migrated on load (server.go).
+const DocVersion = 2
 
 // Not a file extension but the canonical document file suffix used to detect
 // builder documents vs raw Lua sources.
@@ -40,19 +42,21 @@ type Document struct {
 
 // Form is the source-level form definition.
 type Form struct {
-	Name     string              `json:"name"`
-	Title    string              `json:"title,omitempty"`
-	Layout   string              `json:"layout,omitempty"`
-	Align    string              `json:"align,omitempty"`
-	Gap      *int                `json:"gap,omitempty"`
-	Cells    map[string]*Cell    `json:"cells,omitempty"`
-	Controls []*Control          `json:"controls"`
+	Name     string      `json:"name"`
+	Title    string      `json:"title,omitempty"`
+	Layout   string      `json:"layout,omitempty"`
+	Align    string      `json:"align,omitempty"`
+	Gap      *int        `json:"gap,omitempty"`
+	Cells    []*CellDef  `json:"cells,omitempty"` // ordered (v2; array form)
+	Controls []*Control  `json:"controls"`
 	Handlers map[string][]string `json:"handlers,omitempty"`
-	Notes    []string            `json:"notes,omitempty"` // import/export notices
+	Notes    []string    `json:"notes,omitempty"` // import/export notices
 }
 
-// Cell describes one grid cell in a grid layout.
-type Cell struct {
+// CellDef is one grid cell in a grid layout. Stored in an ordered array so the
+// declared layout order (header, sidebar, main, …) survives round-tripping.
+type CellDef struct {
+	Id     string  `json:"id"`
 	Width  int     `json:"width,omitempty"`
 	Bg     string  `json:"bg,omitempty"`
 	Border *Border `json:"border,omitempty"`
@@ -95,6 +99,23 @@ func (d *Document) Validate() []string {
 	}
 	if f.Align != "" && f.Align != "left" && f.Align != "center" && f.Align != "right" {
 		msgs = append(msgs, fmt.Sprintf("form.align %q must be left|center|right", f.Align))
+	}
+	seenCells := map[string]bool{}
+	for _, cf := range f.Cells {
+		if cf == nil || cf.Id == "" {
+			msgs = append(msgs, "grid cell with empty id")
+			continue
+		}
+		if !identRe.MatchString(cf.Id) {
+			msgs = append(msgs, fmt.Sprintf("cell %q is not a valid Lua identifier", cf.Id))
+		}
+		if cf.Width < 1 || cf.Width > 12 {
+			msgs = append(msgs, fmt.Sprintf("cell %q: width %d must be 1..12", cf.Id, cf.Width))
+		}
+		if seenCells[cf.Id] {
+			msgs = append(msgs, fmt.Sprintf("duplicate cell id %q", cf.Id))
+		}
+		seenCells[cf.Id] = true
 	}
 	seen := map[string]bool{}
 	for _, c := range f.Controls {

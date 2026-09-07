@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -290,11 +291,52 @@ func (s *Server) load() (doc *Document, message string, err error) {
 		}
 		return doc, "Imported from Lua source (structure extraction). Non-form code is kept only in the source file.", nil
 	}
+	raw := map[string]any{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, "", err
+	}
+	raw = migrateLegacyCells(raw)
+	b, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, "", err
+	}
 	doc = &Document{}
-	if err := json.Unmarshal(data, doc); err != nil {
+	if err := json.Unmarshal(b, doc); err != nil {
 		return nil, "", err
 	}
 	return doc, "Loaded JSON document.", nil
+}
+
+// migrateLegacyCells upgrades a v1 document (form.cells as an object map) to
+// the v2 ordered-array form. Array-form cells (v2, or already migrated) pass
+// through untouched. Map keys are sorted so the migration is deterministic.
+func migrateLegacyCells(raw map[string]any) map[string]any {
+	form, ok := raw["form"].(map[string]any)
+	if !ok {
+		return raw
+	}
+	if cells, isMap := form["cells"].(map[string]any); isMap {
+		var list []any
+		keys := make([]string, 0, len(cells))
+		for k := range cells {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, id := range keys {
+			var cell any = cells[id]
+			m, ok := cell.(map[string]any)
+			if !ok {
+				m = map[string]any{}
+			}
+			m["id"] = id
+			list = append(list, m)
+		}
+		form["cells"] = list
+	}
+	if ver, isNum := raw["version"].(float64); isNum && ver < 2 {
+		raw["version"] = float64(DocVersion)
+	}
+	return raw
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

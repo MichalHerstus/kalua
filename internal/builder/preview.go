@@ -39,13 +39,14 @@ func previewState(d *Document) (*lua.LState, error) {
 	formTbl.RawSetString("handlers", L.NewTable())
 	if len(f.Cells) > 0 {
 		cells := L.NewTable()
-		for id, c := range f.Cells {
-			cell := L.NewTable()
+		for i, c := range f.Cells {
+			entry := L.NewTable()
+			entry.RawSetString("id", lua.LString(c.Id))
 			if c.Width > 0 {
-				cell.RawSetString("width", lua.LNumber(c.Width))
+				entry.RawSetString("width", lua.LNumber(c.Width))
 			}
 			if c.Bg != "" {
-				cell.RawSetString("bg", lua.LString(c.Bg))
+				entry.RawSetString("bg", lua.LString(c.Bg))
 			}
 			if c.Border != nil {
 				b := L.NewTable()
@@ -55,12 +56,12 @@ func previewState(d *Document) (*lua.LState, error) {
 				if c.Border.Color != "" {
 					b.RawSetString("color", lua.LString(c.Border.Color))
 				}
-				cell.RawSetString("border", b)
+				entry.RawSetString("border", b)
 			}
 			if c.Align != "" {
-				cell.RawSetString("align", lua.LString(c.Align))
+				entry.RawSetString("align", lua.LString(c.Align))
 			}
-			cells.RawSetString(id, cell)
+			cells.RawSetInt(i+1, entry)
 		}
 		formTbl.RawSetString("cells", cells)
 	}

@@ -1,4 +1,21 @@
-:root {
+/* Theme: light is the default; [data-theme="dark"] overrides the custom
+ * properties the rest of the sheet is built on. The <html> data-theme
+ * attribute is set early by an inline script in index.html so there is no
+ * flash of the wrong theme. */
+:root, [data-theme="light"] {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --panel2: #eef1f5;
+  --border: #d8dde4;
+  --fg: #1c2024;
+  --muted: #6b7280;
+  --accent: #2f7df6;
+  --sel: rgba(47, 125, 246, .13);
+  --green: #2f9e44;
+  --red: #d93025;
+  --amber: #b7791f;
+}
+[data-theme="dark"] {
   --bg: #1e2227;
   --panel: #262b31;
   --panel2: #2d333b;
@@ -6,6 +23,7 @@
   --fg: #dfe3e8;
   --muted: #8b95a1;
   --accent: #4ea1ff;
+  --sel: rgba(78, 161, 255, .15);
   --green: #3fb950;
   --red: #f85149;
   --amber: #d29922;
@@ -22,7 +40,7 @@ body {
   grid-template-columns: 190px 1fr 300px;
   grid-template-areas:
     "topbar topbar topbar"
-    "palette canvas inspector"
+    "sidebar canvas inspector"
     "status status status";
   height: 100vh;
 }
@@ -42,8 +60,11 @@ button {
 }
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.theme-toggle { min-width: 56px; }
+button:disabled { opacity: .45; cursor: default; }
+button:disabled:hover { border-color: var(--border); }
 
-#palette { grid-area: palette; background: var(--panel); border-right: 1px solid var(--border); padding: 10px; overflow-y: auto; }
+#sidebar { grid-area: sidebar; background: var(--panel); border-right: 1px solid var(--border); padding: 10px; overflow-y: auto; }
 h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 4px 0 8px; }
 #palette-list { list-style: none; margin: 0 0 10px; padding: 0; }
 #palette-list li {
@@ -51,9 +72,13 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: v
   border-radius: 5px; user-select: none;
 }
 #palette-list li:hover { background: var(--panel2); }
-#palette-list li.sel { background: rgba(78, 161, 255, .15); outline: 1px solid var(--accent); }
+#palette-list li.sel { background: var(--sel); outline: 1px solid var(--accent); }
 #palette-list .dot { width: 8px; height: 8px; border-radius: 2px; background: var(--accent); display: inline-block; }
 .palette-footer { text-align: center; }
+
+#commands { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 4px; }
+#commands .commands-buttons { display: flex; flex-direction: column; gap: 6px; }
+#commands .commands-buttons button { width: 100%; text-align: left; }
 
 #canvas { grid-area: canvas; overflow: auto; background: var(--bg); }
 #canvas-head { display: flex; align-items: baseline; gap: 12px; padding: 12px 18px 2px; }
@@ -62,8 +87,18 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: v
 .hint { color: var(--muted); font-size: 11px; }
 .preview { padding: 4px 18px 30px; }
 .preview .kalua-form { background: #fff; color: #333; border-radius: 8px; padding: 14px; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+[data-theme="light"] .preview .kalua-form { box-shadow: 0 1px 3px rgba(0,0,0,.14); border: 1px solid var(--border); }
 .preview .kalua-form input, .preview .kalua-form textarea, .preview .kalua-form select, .preview .kalua-form button {
   font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+/* Grid editing: make cells visible and selectable as regions in the canvas. */
+.preview[data-layout="grid"] .kalua-cell {
+  outline: 1px dashed var(--border); outline-offset: -1px;
+  min-height: 48px; cursor: pointer;
+}
+.preview[data-layout="grid"] .kalua-cell:hover { outline-color: var(--accent); }
+.preview[data-layout="grid"] .kalua-cell.selected-cell {
+  outline: 2px solid var(--accent); outline-offset: -2px;
 }
 .selected-in-canvas { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 
@@ -85,11 +120,14 @@ textarea.baderr { border-color: var(--red); }
 
 .cells-editor { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
 .cellrow { display: flex; gap: 6px; align-items: end; margin-bottom: 6px; }
+.cellrow .mv { padding: 0 6px; }
+.cellrow .del { color: var(--red); }
+.cellrow .del:hover { border-color: var(--red); }
 
 #control-list { list-style: none; margin: 6px 0 0; padding: 0; }
 #control-list li { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 4px; }
 #control-list li:hover { background: var(--panel2); }
-#control-list li.sel { background: rgba(78, 161, 255, .15); }
+#control-list li.sel { background: var(--sel); }
 #control-list .cname { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 #control-list .badge { background: var(--panel2); padding: 0 6px; border-radius: 8px; font-size: 10px; color: var(--muted); }
 #control-list .mv, #control-list .del { padding: 0 5px; font-size: 10px; line-height: 1.4; }
@@ -127,3 +165,5 @@ textarea.baderr { border-color: var(--red); }
   color: var(--muted); font-size: 18px; cursor: pointer;
 }
 .error { color: var(--red); }
+summary .ctrl-del-btn { margin-left: 8px; padding: 0 6px; line-height: 1.3; color: var(--red); }
+summary .ctrl-del-btn:hover { border-color: var(--red); }

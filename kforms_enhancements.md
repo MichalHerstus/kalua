@@ -985,6 +985,10 @@ A visual form builder for KALUA that allows drag-and-drop form design with live 
 | **Multi-form** | One form per workspace file (per spec) |
 | **Save model** | CLI path + Go HTTP **GET/PUT** of the workspace file |
 | **File format** | `.kalua-form.json` primary; Lua is export-only (and import-only) |
+| **Cells (2026-09-07)** | **Ordered array (v2)** — cell order survives import/export/preview; array form is the runtime's canonical repr. v1 object-form docs auto-migrate on load |
+| **Layout edit (2026-09-07)** | Rename / reorder / delete cells in the inspector; border width+color; grid cells are clickable dashed regions in the canvas; delete-cell reassigns its controls to `main` |
+| **Deletion (2026-09-07)** | Controls: list `×`, editor-header `×`, and **Delete/Backspace** (when no input is focused) |
+| **Undo/Redo (2026-09-07)** | One-step, client-side snapshot history (coalesced typing bursts), toolbar buttons + Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z / Ctrl/Cmd+Y; reset on New/Load |
 
 ---
 
@@ -1016,20 +1020,24 @@ k.ctrl.button("main", "btn1", {label="Click Me", onclick=function() ... end})
 ```
 
 ```jsonc
-// Equivalent JSON representation
+// Equivalent JSON representation (v2 — cells are an ordered array)
 {
-  "version": 1,
+  "version": 2,
   "form": {
     "name": "main",
     "title": "Test Form",
     "layout": "vertical",
     "align": "left",
     "gap": 16,
-    "cells": {},
+    "cells": [
+      { "id": "header", "width": 12, "bg": "#f5f5f5",
+        "border": { "width": 1, "color": "#ddd" }, "align": "center" },
+      { "id": "sidebar", "width": 3 }
+    ],
     "controls": [
       { "name": "lbl1", "type": "label",    "text": "Hello KALUA!" },
       { "name": "txt1", "type": "textbox",  "label": "Name", "value": "World" },
-      { "name": "btn1", "type": "button",   "label": "Click Me" }
+      { "name": "btn1", "type": "button",   "label": "Click Me", "cell": "header" }
       // onclick: not serializable — held in "handlers" metadata
     ],
     "handlers": { "btn1": ["click"] }

@@ -1567,6 +1567,22 @@ The file need not exist: a new empty form is served, and **Save** creates it. Lu
 4. The preview updates via a debounced server round-trip (the Go renderer is the source of truth).
 5. **Save:** for a `.lua` target, KALUA exports the generated `k.form.new` / `k.ctrl.*` / `k.form.on` source; for `.json`, it writes the document.
 
+### 7.2.1 Grid layout editing
+
+- **Cells are an ordered array** (header → sidebar → main → footer renders in that order). In the form editor you can:
+  - **Add** a cell (`+ Cell`), **rename** it (`Id`), **reorder** it (**▲/▼**), and **set** width, background, alignment, border width and border color.
+  - **Delete** a cell (`× Del`); controls assigned to it are reassigned to `main` (the runtime fallback cell) and a note is shown.
+- In the canvas, grid cells render as dashed, tappable regions — click an empty cell to select it in the inspector.
+- Controls are assigned to a cell via the control's **Grid cell** property (or their `cell` opt directly).
+
+### 7.2.2 Undo / Redo
+
+One-step **Undo / Redo** (toolbar buttons, `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` / `Ctrl/Cmd+Y`). A single step covers a typing burst in a field; form/cell/control structural changes and property edits each get their own step. `New` and loading a file reset the history.
+
+### 7.2.3 Deleting controls
+
+Delete the selected control with **Delete/Backspace** (when no input field is focused), the **`×`** in the control list, or the **`×`** in the control editor header.
+
 ## 7.3 Importing existing Lua
 
 - Structure is extracted from the AST: the **first** `k.form.new` wins.
@@ -1579,14 +1595,18 @@ The file need not exist: a new empty form is served, and **Save** creates it. Lu
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,                        // v1 (object-form cells) is auto-migrated on load
   "form": {
     "name": "main",
     "title": "Test Form",
     "layout": "vertical",
     "align": "left",
     "gap": 16,
-    "cells": {},                    // grid: { "id": { "width": 1-12, "bg": "...", "border": {"width":1,"color":"#ddd"}, "align": "..." } }
+    "cells": [                          // ordered array (declaration order is preserved)
+      { "id": "header", "width": 12, "bg": "#f5f5f5", "align": "center",
+        "border": { "width": 1, "color": "#ddd" } },
+      { "id": "sidebar", "width": 3 }
+    ],
     "controls": [
       { "name": "lbl1", "type": "label", "text": "Hello" },
       { "name": "txt1", "type": "textbox", "label": "Name", "value": "World" }

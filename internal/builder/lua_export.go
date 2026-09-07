@@ -67,21 +67,14 @@ func exportFormNew(sb *strings.Builder, f *Form) {
 	fmt.Fprintf(sb, "  k.form.new(%q, {%s})\n\n", f.Name, strings.Join(opts, ", "))
 }
 
-func exportCells(cells map[string]*Cell) string {
-	ids := make([]string, 0, len(cells))
-	for id := range cells {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+func exportCells(cells []*CellDef) string {
 	var parts []string
-	for _, id := range ids {
-		c := cells[id]
-		if c == nil {
-			parts = append(parts, fmt.Sprintf("{id=%q}", id))
+	for _, c := range cells {
+		if c == nil || c.Id == "" {
 			continue
 		}
 		var f []string
-		f = append(f, fmt.Sprintf("id=%q", id))
+		f = append(f, fmt.Sprintf("id=%q", c.Id))
 		if c.Width > 0 {
 			f = append(f, fmt.Sprintf("width=%d", c.Width))
 		}

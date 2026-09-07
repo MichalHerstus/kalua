@@ -61,8 +61,8 @@ func TestImportLua(t *testing.T) {
 	if len(f.Cells) != 3 {
 		t.Fatalf("cells=%d want 3", len(f.Cells))
 	}
-	h := f.Cells["header"]
-	if h.Width != 12 || h.Bg != "#f5f5f5" || h.Align != "center" || h.Border == nil || h.Border.Color != "#ddd" {
+	h := findCell(f, "header")
+	if h == nil || h.Width != 12 || h.Bg != "#f5f5f5" || h.Align != "center" || h.Border == nil || h.Border.Color != "#ddd" {
 		t.Errorf("header cell wrong: %+v", h)
 	}
 	if len(f.Controls) != 6 {
@@ -130,7 +130,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 }
 
 func TestValidateDocument(t *testing.T) {
-	d := &Document{Version: 1, Form: &Form{Name: "main", Layout: "grid", Controls: []*Control{
+	d := &Document{Version: DocVersion, Form: &Form{Name: "main", Layout: "grid", Controls: []*Control{
 		{Name: "a", Type: "label", Opts: map[string]any{}},
 		{Name: "a", Type: "textbox", Opts: map[string]any{}},
 	}}}
@@ -166,9 +166,111 @@ func TestPreview(t *testing.T) {
 	}
 }
 
+func TestCellsOrderPreserved(t *testing.T) {
+	src := `function main()
+  k.form.new("dash", {layout = "grid", cells = {
+    {id = "footer", width = 12},
+    {id = "header", width = 12},
+    {id = "sidebar", width = 3},
+  }})
+  k.ctrl.label("dash", "title_lbl", {cell = "header"})
+  k.ctrl.button("dash", "b1", {label = "Go", cell = "footer"})
+  k.form.show("dash")
+end`
+	d, err := Import(src, "sample.lua")
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	ids := make([]string, 0, len(d.Form.Cells))
+	for _, c := range d.Form.Cells {
+		ids = append(ids, c.Id)
+	}
+	if len(ids) != 3 || ids[0] != "footer" || ids[1] != "header" || ids[2] != "sidebar" {
+		t.Errorf("import must preserve declared cell order, got %v", ids)
+	}
+
+	// Export round trip keeps the order.
+	lua := ExportLua(d)
+	d2, err := Import(lua, "sample.lua")
+	if err != nil {
+		t.Fatalf("re-Import: %v", err)
+	}
+	ids2 := make([]string, 0, len(d2.Form.Cells))
+	for _, c := range d2.Form.Cells {
+		ids2 = append(ids2, c.Id)
+	}
+	if strings.Join(ids2, ",") != "footer,header,sidebar" {
+		t.Errorf("cell order lost on round trip, got %v", ids2)
+	}
+
+	// Preview must render the cells in declared order.
+	html, err := Preview(d)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	iFooter := strings.Index(html, `data-k-cell="footer"`)
+	iHeader := strings.Index(html, `data-k-cell="header"`)
+	iSidebar := strings.Index(html, `data-k-cell="sidebar"`)
+	if iFooter < 0 || iHeader < 0 || iSidebar < 0 {
+		t.Error("preview missing a cell")
+	} else if !(iFooter < iHeader && iHeader < iSidebar) {
+		t.Errorf("preview cell order wrong: footer@%d header@%d sidebar@%d", iFooter, iHeader, iSidebar)
+	}
+}
+
+func TestLegacyCellsMigration(t *testing.T) {
+	// A v1 document with object-form cells must upgrade to an ordered v2 array.
+	legacy := map[string]any{
+		"version": float64(1),
+		"form": map[string]any{
+			"name":     "old",
+			"layout":   "grid",
+			"cells": map[string]any{
+				"main": map[string]any{"width": float64(9)},
+				"side": map[string]any{"width": float64(3)},
+			},
+		},
+	}
+	b, _ := json.MarshalIndent(legacy, "", "  ")
+	srv, _ := startTestServer(t, "form.json", string(b))
+	base := "http://" + srv.Addr()
+	code, body := httpJSON(t, "GET", base+"/api/form", nil)
+	if code != 200 {
+		t.Fatalf("GET status=%d body=%s", code, body)
+	}
+	var got struct {
+		Doc Document `json:"doc"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Doc.Version != DocVersion {
+		t.Errorf("expected version %d, got %d", DocVersion, got.Doc.Version)
+	}
+	if len(got.Doc.Form.Cells) != 2 {
+		t.Errorf("expected 2 cells, got %d", len(got.Doc.Form.Cells))
+	}
+	ids := make([]string, 0, len(got.Doc.Form.Cells))
+	for _, c := range got.Doc.Form.Cells {
+		ids = append(ids, c.Id)
+	}
+	if strings.Join(ids, ",") != "main,side" {
+		t.Errorf("migration must preserve sorted cell ids, got %v", ids)
+	}
+}
+
 func findCtrl(f *Form, name string) *Control {
 	for _, c := range f.Controls {
 		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func findCell(f *Form, id string) *CellDef {
+	for _, c := range f.Cells {
+		if c != nil && c.Id == id {
 			return c
 		}
 	}
@@ -286,7 +388,7 @@ func TestServerLuaEndpoints(t *testing.T) {
 }
 
 func TestServerJSONDocument(t *testing.T) {
-	doc := Document{Version: 1, Form: &Form{Name: "main", Title: "JSON form", Layout: "vertical", Align: "left", Controls: []*Control{
+	doc := Document{Version: DocVersion, Form: &Form{Name: "main", Title: "JSON form", Layout: "vertical", Align: "left", Controls: []*Control{
 		{Name: "lbl1", Type: "label", Opts: map[string]any{"text": "Hello"}},
 	}}}
 	srv, path := startTestServer(t, "form.json", "")

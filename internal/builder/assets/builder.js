@@ -62,6 +62,7 @@ const LABELS = {
 const state = {
   path: null, format: 'lua', doc: null, selected: -1, dirty: false,
   previewTimer: null, jsonErrors: {},
+  undoStack: [], redoStack: [], lastSnapAt: 0,
 };
 
 let currentCell = '';
@@ -97,7 +98,7 @@ function normalizeDoc(doc) {
   if (!f.layout) f.layout = 'vertical';
   if (!f.align) f.align = 'left';
   if (!f.controls) f.controls = [];
-  if (!f.cells) f.cells = {};
+  f.cells = normalizeCells(f.cells);
   if (!f.handlers) f.handlers = {};
   if (!f.notes) f.notes = [];
   for (const c of f.controls) {
@@ -109,12 +110,29 @@ function normalizeDoc(doc) {
   return doc;
 }
 
+/* Cells are an ordered array of {id,width,bg,border,align} (v2). Defensively
+ * accept the v1 object form too and normalize to a sorted array. */
+function normalizeCells(cells) {
+  if (cells === undefined || cells === null) return [];
+  if (Array.isArray(cells)) return cells.filter(c => c && c.id).map(c => ({
+    id: c.id, width: c.width, bg: c.bg, align: c.align,
+    border: c.border && (c.border.width || c.border.color) ? c.border : undefined,
+  }));
+  const ids = Object.keys(cells).sort();
+  return ids.map(id => {
+    const c = cells[id] || {};
+    return { id, width: c.width, bg: c.bg, align: c.align,
+      border: c.border && (c.border.width || c.border.color) ? c.border : undefined };
+  });
+}
+
 /* ---------- API endpoints (document-driven) ---------- */
 async function loadInitial() {
   const data = await api('GET', '/api/form');
   state.path = data.path;
   state.format = data.format;
   state.doc = normalizeDoc(data.doc);
+  resetUndo();
   render();
   setStatus(data.message || (state.format === 'lua' ? 'Imported from Lua source' : 'Loaded JSON document'));
 }
@@ -166,11 +184,20 @@ async function preview() {
   if (!state.doc) return;
   try {
     const r = await api('POST', '/api/preview', { doc: state.doc });
-    $('#preview').innerHTML = r.html;
+    const wrap = $('#preview');
+    wrap.innerHTML = r.html;
+    wrap.dataset.layout = (form().layout || 'vertical');
     if (state.selected >= 0) flashSelected(form().controls[state.selected]?.name);
+    flashCell();
   } catch (e) {
     $('#preview').innerHTML = '<div class="error">' + escapeHtml(e.message) + '</div>';
   }
+}
+
+function flashCell() {
+  $$('#preview .kalua-cell').forEach(el => {
+    el.classList.toggle('selected-cell', currentCell && el.getAttribute('data-k-cell') === currentCell);
+  });
 }
 
 /* ---------- rendering ---------- */
@@ -224,12 +251,16 @@ function renderEditor() {
   if (state.selected < 0 || !form().controls[state.selected]) {
     head.textContent = 'Control';
     $('#ctrl-type').textContent = '';
+    const del = $('#ctrl-del');
+    del.hidden = true;
     editor.innerHTML = '<span class="hint">Select a control in the preview or the list.</span>';
     return;
   }
   const c = ctrl();
   head.textContent = c.name;
   $('#ctrl-type').textContent = TYPE_NAMES[c.type] || c.type;
+  const del = $('#ctrl-del');
+  del.hidden = false;
   const fields = [];
   for (const [k, s] of Object.entries({ ...TYPE_OPTS[c.type], ...COMMON_OPTS })) {
     fields.push(fieldHTML(k, s, c));
@@ -263,9 +294,8 @@ function fieldHTML(k, s, c) {
     case 'dt':
       return datetimeFieldHTML(k, v);
     case 'cell': {
-      const dots = Object.keys(form().cells || {}).map(id =>
-        `<option value="${id}" ${v === id ? 'selected' : ''}>${id}</option>`).join('');
-      return `<label>${label}<select data-k="${k}" data-sel=""><option value="">—</option>${dots}</select></label>`;
+      const opts = cellsArr().map(c => `<option value="${escapeAttr(c.id)}" ${v === c.id ? 'selected' : ''}>${escapeAttr(c.id)}</option>`).join('');
+      return `<label>${label}<select data-k="${k}" data-sel=""><option value="">—</option>${opts}</select></label>`;
     }
     case 'align': {
       const dots = ['left', 'center', 'right'].map(o =>
@@ -298,16 +328,30 @@ function itemsToLines(v) {
   return v.map(it => `${it.key}=${it.display}`).join('\n');
 }
 
+function cellsArr() {
+  return Array.isArray(form().cells) ? form().cells : [];
+}
+function currentCellDef() {
+  return cellsArr().find(c => c.id === currentCell);
+}
+
 function renderCells() {
   const f = form();
   const sel = $('#f_cellsel');
-  const ids = Object.keys(f.cells || {});
+  const cells = f.cells || [];
   sel.innerHTML = `<option value="">(none)</option>` +
-    ids.map(id => `<option value="${id}" ${id === currentCell ? 'selected' : ''}>${id}</option>`).join('');
-  const cell = f.cells[currentCell];
-  $('#c_width').value = cell ? cell.width || '' : '';
-  $('#c_bg').value = cell ? cell.bg || '' : '';
-  $('#c_align').value = cell ? cell.align || '' : '';
+    cells.map(c => `<option value="${escapeAttr(c.id)}" ${c.id === currentCell ? 'selected' : ''}>${escapeAttr(c.id)}</option>`).join('');
+  const i = cells.findIndex(c => c.id === currentCell);
+  const cell = i >= 0 ? cells[i] : null;
+  $('#btn-cell-up').disabled = !(i > 0);
+  $('#btn-cell-dn').disabled = !(i >= 0 && i < cells.length - 1);
+  $('#btn-del-cell').disabled = cell === null;
+  $('#c_id').value = cell ? cell.id : '';
+  $('#c_width').value = cell && cell.width ? cell.width : '';
+  $('#c_bg').value = cell && cell.bg ? cell.bg : '';
+  $('#c_align').value = cell && cell.align ? cell.align : '';
+  $('#c_bw').value = cell && cell.border && cell.border.width ? cell.border.width : '';
+  $('#c_bc').value = cell && cell.border && cell.border.color ? cell.border.color : '';
 }
 
 function flashSelected(name) {
@@ -326,6 +370,7 @@ function selectControl(i) {
 }
 
 function addControl(type) {
+  snapshot('add');
   const f = form();
   const n = f.controls.filter(c => c.type === type).length + 1;
   const name = type + '_' + n;
@@ -345,6 +390,7 @@ function addControl(type) {
 }
 
 function deleteControl(i) {
+  snapshot('delete');
   const f = form();
   f.controls.splice(i, 1);
   delete f.handlers[f.controls[i]?.name || ''];
@@ -354,6 +400,7 @@ function deleteControl(i) {
 }
 
 function moveControl(i, dir) {
+  snapshot('move');
   const f = form();
   const j = i + dir;
   if (j < 0 || j >= f.controls.length) return;
@@ -365,12 +412,59 @@ function moveControl(i, dir) {
 
 function addCell() {
   const f = form();
-  const id = 'c' + (Object.keys(f.cells || {}).length + 1);
-  if (!f.cells) f.cells = {};
-  f.cells[id] = { width: 12 };
+  if (!Array.isArray(f.cells)) f.cells = [];
+  const used = new Set(f.cells.map(c => c.id));
+  let n = 1;
+  while (used.has('c' + n)) n++;
+  const id = 'c' + n;
+  f.cells.push({ id, width: 12 });
   currentCell = id;
   renderCells();
   schedulePreview();
+}
+
+function deleteCell(id) {
+  const f = form();
+  const cells = Array.isArray(f.cells) ? f.cells : [];
+  const i = cells.findIndex(c => c.id === id);
+  if (i < 0) return;
+  cells.splice(i, 1);
+  let moved = 0;
+  for (const c of f.controls) {
+    if (c.opts.cell === id) { c.opts.cell = 'main'; moved++; }
+  }
+  if (currentCell === id) currentCell = cells.length ? cells[0].id : '';
+  if (moved) setStatus(`Deleted cell “${id}” — ${moved} control(s) reassigned to “main”.`);
+  render();
+}
+
+function moveCell(i, dir) {
+  const cells = cellsArr();
+  const j = i + dir;
+  if (j < 0 || j >= cells.length) return;
+  snapshot('cell');
+  [cells[i], cells[j]] = [cells[j], cells[i]];
+  renderCells();
+  schedulePreview();
+}
+
+function renameCell(newId) {
+  const cells = cellsArr();
+  const i = cells.findIndex(c => c.id === currentCell);
+  if (i < 0) return;
+  const id = String(newId || '').trim();
+  if (!id) { renderCells(); return; }
+  if (id !== cells[i].id && cells.some(c => c.id === id)) {
+    setStatus('Cell id already exists.', true);
+    renderCells();
+    return;
+  }
+  snapshot('cell');
+  const old = cells[i].id;
+  cells[i].id = id;
+  for (const c of form().controls) if (c.opts.cell === old) c.opts.cell = id;
+  currentCell = id;
+  render();
 }
 
 /* ---------- event wiring ---------- */
@@ -418,18 +512,20 @@ function wireFormProps() {
     renderCells();
     schedulePreview();
   });
-  bind('#f_name', e => { form().name = e.target.value; state.dirty = true; });
-  bind('#f_layout', e => { form().layout = e.target.value; state.dirty = true; });
-  bind('#f_align', e => { form().align = e.target.value; state.dirty = true; });
+  bind('#f_name', e => { snapshot('form'); form().name = e.target.value; state.dirty = true; });
+  bind('#f_layout', e => { snapshot('form'); form().layout = e.target.value; state.dirty = true; });
+  bind('#f_align', e => { snapshot('form'); form().align = e.target.value; state.dirty = true; });
   bind('#f_title', e => {
+    snapshot('form');
     const v = e.target.value;
     form().title = v;
     if (!v) delete form().title;
     state.dirty = true;
   });
   bind('#f_gap', e => {
+    snapshot('form');
     const v = e.target.value;
-    if (v === '') { state.dirty = true; return; }
+    if (v === '') { delete form().gap; state.dirty = true; return; }
     form().gap = +v;
     state.dirty = true;
   });
@@ -437,8 +533,27 @@ function wireFormProps() {
   $('#f_cellsel').addEventListener('change', e => {
     currentCell = e.target.value;
     renderCells();
+    flashCell();
   });
-  $('#btn-add-cell').addEventListener('click', addCell);
+  $('#btn-add-cell').addEventListener('click', () => { snapshot('cell'); addCell(); });
+  $('#btn-cell-up').addEventListener('click', () => {
+    const i = cellsArr().findIndex(c => c.id === currentCell);
+    if (i > 0) moveCell(i, -1);
+  });
+  $('#btn-cell-dn').addEventListener('click', () => {
+    const i = cellsArr().findIndex(c => c.id === currentCell);
+    if (i >= 0) moveCell(i, 1);
+  });
+  $('#btn-del-cell').addEventListener('click', () => {
+    if (!currentCell) return;
+    snapshot('cell');
+    deleteCell(currentCell);
+  });
+  $('#c_id').addEventListener('change', e => {
+    if (!currentCell) return;
+    renameCell(e.target.value);
+    flashCell();
+  });
   const cellInput = (id, fn) => $(id).addEventListener('change', e => {
     if (!currentCell) { setStatus('Select a cell first', true); return; }
     fn(e);
@@ -446,21 +561,62 @@ function wireFormProps() {
   });
   cellInput('#c_width', e => {
     const v = +e.target.value;
-    if (v >= 1 && v <= 12) form().cells[currentCell].width = v;
+    const cell = currentCellDef();
+    if (!cell) return;
+    if (v >= 1 && v <= 12) { snapshot('cell'); cell.width = v; }
+    else if (v === 0) { snapshot('cell'); delete cell.width; }
   });
   cellInput('#c_bg', e => {
+    const cell = currentCellDef();
+    if (!cell) return;
     const v = e.target.value;
-    if (v) form().cells[currentCell].bg = v; else delete form().cells[currentCell].bg;
+    snapshot('cell');
+    if (v) cell.bg = v; else delete cell.bg;
   });
   cellInput('#c_align', e => {
+    const cell = currentCellDef();
+    if (!cell) return;
     const v = e.target.value;
-    if (v) form().cells[currentCell].align = v; else delete form().cells[currentCell].align;
+    snapshot('cell');
+    if (v) cell.align = v; else delete cell.align;
   });
+  cellInput('#c_bw', e => {
+    const cell = currentCellDef();
+    if (!cell) return;
+    const v = +e.target.value;
+    snapshot('cell');
+    if (v >= 1) {
+      if (!cell.border) cell.border = {};
+      cell.border.width = v;
+    } else if (cell.border) {
+      delete cell.border.width;
+      if (!Object.keys(cell.border).length) delete cell.border;
+    }
+  });
+  cellInput('#c_bc', e => {
+    const cell = currentCellDef();
+    if (!cell) return;
+    const v = e.target.value;
+    snapshot('cell');
+    if (v) {
+      if (!cell.border) cell.border = {};
+      cell.border.color = v;
+    } else if (cell.border) {
+      delete cell.border.color;
+      if (!Object.keys(cell.border).length) delete cell.border;
+    }
+  });
+}
+
+function deleteControlSelected() {
+  if (state.selected < 0) return;
+  deleteControl(state.selected);
 }
 
 function wireEditor() {
   $('#ctrl-editor').addEventListener('input', onEditorInput);
   $('#ctrl-editor').addEventListener('change', onEditorInput);
+  $('#ctrl-del').addEventListener('click', deleteControlSelected);
 }
 
 function onEditorInput(e) {
@@ -469,14 +625,19 @@ function onEditorInput(e) {
   if (!k || state.selected < 0) return;
   const c = ctrl();
   if (t.dataset.bool !== undefined) {
+    snapshot('edit');
     if (t.checked) setOpt(c, k, true); else delete c.opts[k];
   } else if (t.dataset.num !== undefined) {
+    snapshot('edit');
     if (t.value === '') delete c.opts[k]; else setOpt(c, k, +t.value);
   } else if (t.dataset.str !== undefined) {
+    snapshot('edit');
     setOpt(c, k, t.value);
   } else if (t.dataset.sel !== undefined) {
+    snapshot('edit');
     if (t.value) setOpt(c, k, t.value); else delete c.opts[k];
   } else if (t.dataset.json !== undefined) {
+    snapshot('edit');
     const raw = t.value.trim();
     if (!raw) { delete c.opts[k]; delete state.jsonErrors[k]; t.classList.remove('baderr'); }
     else {
@@ -484,17 +645,21 @@ function onEditorInput(e) {
       catch (err) { state.jsonErrors[k] = 'Invalid JSON: ' + err.message; t.classList.add('baderr'); }
     }
   } else if (t.dataset.items !== undefined) {
+    snapshot('edit');
     c.opts.items = linesToItems(t.value);
   } else if (t.dataset.dton !== undefined) {
+    snapshot('edit');
     if (t.checked) { c.opts[k] = { mode: 'datetime' }; renderEditor(); }
     else delete c.opts[k];
   } else if (t.dataset.dtm !== undefined) {
-    const cur = c.opts[k] && typeof c.opts[k] === 'object' ? c.opts[k] : { mode: 'datetime' };
-    cur.mode = t.value; c.opts[k] = cur;
+    snapshot('edit');
+    const dst = c.opts[k] && typeof c.opts[k] === 'object' ? c.opts[k] : { mode: 'datetime' };
+    dst.mode = t.value; c.opts[k] = dst;
   } else if (t.dataset.dtf !== undefined) {
-    const cur = c.opts[k] && typeof c.opts[k] === 'object' ? c.opts[k] : { mode: 'datetime' };
-    if (t.value) cur.format = t.value; else delete cur.format;
-    c.opts[k] = cur;
+    snapshot('edit');
+    const dt = c.opts[k] && typeof c.opts[k] === 'object' ? c.opts[k] : { mode: 'datetime' };
+    if (t.value) dt.format = t.value; else delete dt.format;
+    c.opts[k] = dt;
   }
   schedulePreview();
 }
@@ -514,18 +679,37 @@ function linesToItems(text) {
 
 function wirePreview() {
   $('#preview').addEventListener('click', e => {
-    const el = e.target.closest('[data-k-ctrl]');
-    if (!el) return;
-    const name = el.getAttribute('data-k-ctrl');
-    const i = form().controls.findIndex(c => c.name === name);
-    if (i >= 0) selectControl(i);
+    const ctrlEl = e.target.closest('[data-k-ctrl]');
+    if (ctrlEl) {
+      const name = ctrlEl.getAttribute('data-k-ctrl');
+      const i = form().controls.findIndex(c => c.name === name);
+      if (i >= 0) selectControl(i);
+      return;
+    }
+    const cellEl = e.target.closest('.kalua-cell');
+    if (cellEl) {
+      currentCell = cellEl.getAttribute('data-k-cell') || '';
+      selectCell(currentCell);
+    }
   });
+}
+
+function selectCell(id) {
+  currentCell = id;
+  renderCells();
+  flashCell();
+  state.selected = -1;
+  renderControlList();
+  renderEditor();
+  flashSelected(null);
 }
 
 function wireTopbar() {
   $('#btn-new').addEventListener('click', async () => {
-    state.doc = { version: 1, form: { name: 'main', layout: 'vertical', align: 'left', controls: [] } };
+    resetUndo();
+    state.doc = { version: 2, form: { name: 'main', layout: 'vertical', align: 'left', controls: [], cells: [] } };
     state.selected = -1;
+    currentCell = '';
     state.dirty = true;
     render();
     setStatus('New empty form');
@@ -533,8 +717,20 @@ function wireTopbar() {
   $('#btn-save').addEventListener('click', save);
   $('#btn-export').addEventListener('click', exportLua);
   $('#btn-validate').addEventListener('click', validate);
+  $('#btn-undo').addEventListener('click', undo);
+  $('#btn-redo').addEventListener('click', redo);
   document.addEventListener('keydown', e => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+      if (e.shiftKey) { e.preventDefault(); redo(); }
+      else { e.preventDefault(); undo(); }
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+    if ((e.key === 'Delete' || e.key === 'Backspace') &&
+        !(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
+      deleteControlSelected();
+    }
   });
   $('#modal-close').addEventListener('click', () => $('#overlay').classList.add('hidden'));
   $('#overlay').addEventListener('click', e => {
@@ -563,6 +759,98 @@ function escapeHtml(s) {
 }
 function escapeAttr(s) { return escapeHtml(s); }
 
+/* ---------- undo / redo (one step) ---------- */
+function snapDoc() {
+  return JSON.parse(JSON.stringify(state.doc));
+}
+
+/* Snapshot the pre-mutation document. Consecutive snapshots of the same kind
+ * within 600 ms coalesce (replace the top entry) so a typing burst in a field
+ * is a single undo step. */
+function snapshot(kind) {
+  const now = Date.now();
+  const candidate = snapDoc();
+  const top = state.undoStack[state.undoStack.length - 1];
+  if (top && top.kind === kind && now - state.lastSnapAt < 600) {
+    top.doc = candidate;
+    top.selected = state.selected;
+    top.cell = currentCell;
+  } else if (top && JSON.stringify(top.doc) === JSON.stringify(candidate)) {
+    top.selected = state.selected; /* no-op edit (e.g. blur after typing) — don't push */
+    state.redoStack = [];
+    state.lastSnapAt = now;
+    state.dirty = true;
+    updateUndoButtons();
+    return;
+  } else {
+    state.undoStack.push({ kind, doc: candidate, selected: state.selected, cell: currentCell });
+    if (state.undoStack.length > 100) state.undoStack.shift();
+  }
+  state.redoStack = [];
+  state.lastSnapAt = now;
+  state.dirty = true;
+  updateUndoButtons();
+}
+
+function undo() {
+  if (!state.undoStack.length) return;
+  state.redoStack.push({ doc: snapDoc(), selected: state.selected, cell: currentCell });
+  restore(state.undoStack.pop());
+}
+
+function redo() {
+  if (!state.redoStack.length) return;
+  state.undoStack.push({ doc: snapDoc(), selected: state.selected, cell: currentCell });
+  restore(state.redoStack.pop());
+}
+
+function restore(snap) {
+  state.doc = snap.doc;
+  state.selected = snap.selected;
+  currentCell = snap.cell;
+  state.jsonErrors = {};
+  state.dirty = true;
+  render();
+  updateUndoButtons();
+}
+
+function updateUndoButtons() {
+  $('#btn-undo').disabled = state.undoStack.length === 0;
+  $('#btn-redo').disabled = state.redoStack.length === 0;
+}
+
+function resetUndo() {
+  state.undoStack = [];
+  state.redoStack = [];
+  state.lastSnapAt = 0;
+  updateUndoButtons();
+}
+
+/* ---------- theme ---------- */
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem('kalua-builder-theme', theme); } catch (e) {}
+  /* Switch semantics: the label names the theme you'll switch TO. */
+  const next = theme === 'dark' ? 'Light' : 'Dark';
+  $('#theme-label').textContent = next;
+  $('#btn-theme').title = 'Switch to ' + next.toLowerCase() + ' theme';
+}
+function wireTheme() {
+  var theme = null;
+  try { theme = localStorage.getItem('kalua-builder-theme'); } catch (e) {}
+  if (theme !== 'light' && theme !== 'dark') {
+    theme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+      ? 'dark' : 'light';
+  }
+  applyTheme(theme);
+  $('#btn-theme').addEventListener('click', () => {
+    applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+  });
+}
+
 /* ---------- init ---------- */
 wirePalette();
 wireControlList();
@@ -570,6 +858,7 @@ wireFormProps();
 wireEditor();
 wirePreview();
 wireTopbar();
+wireTheme();
 loadInitial().catch(e => {
   $('#preview').innerHTML = '<div class="error">Failed to load: ' + escapeHtml(e.message) + '</div>';
   setStatus(e.message, true);
