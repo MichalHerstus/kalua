@@ -646,6 +646,11 @@ Status legend: ✅ implemented · ⏳ pending.
     - **UI bindings (subset, like serve mode)**: `k.msgbox`, `k.status_show/close`, `k.clipboard_get/set`, `k.bell`, `k.screen_size`, `k.net_ok`, `k.locale`, `k.ping` work; `k.form.*` and `k.ctrl.*` raise runtime error.
     - **Frontend**: split view (Monaco editor top, output console bottom); Ctrl+Enter executes, Shift+Enter newlines; color-coded output (print/result/error); modal for msgbox; status bar for status_show.
     - **Build**: `make assets-monaco` downloads Monaco min bundle to `internal/web/assets/monaco/`; embedded via `go:embed`.
+12. ⏳ **WASM in browser (run mode)** — fully offline static page (`index.html` + `KALUA.wasm`)
+    running any app client-side with no server; wa-sqlite for `k.db_*`, real browser FS +
+    IndexedDB for `k.file_*`, optional localhost `KALUA relay` for the non-browserable
+    protocol bindings (MySQL/PG/MSSQL, FTP/SMTP/POP3, TCP sockets). Run-mode semantics per
+    wasm instance; serve mode stays native-only. See §14.
 
 > Note: implementation order differed from this list — the LSP/editor phase (5) and server mode (8/10)
 > shipped before the database (4) and data/comms (5) groups were fully completed. See §10 for the
@@ -715,24 +720,37 @@ UI bindings subset (like serve mode): `msgbox`, `status_*`, `clipboard_*`, `bell
 `net_ok`, `locale`, `ping`; forms/controls disabled. Split-view frontend (editor + output console),
 modal for msgbox, status bar for status_show. Assets embedded via `go:embed` (Monaco min bundle).
 
+**Planned (Phase 12):** WASM run mode in the browser — fully offline static page
+(`index.html` + `KALUA.wasm`, built by `KALUA wasm-bundle <app.lua>`), wa-sqlite for SQLite,
+real browser FS + IndexedDB for `k.file_*`, optional localhost `KALUA relay` for
+MySQL/PG/MSSQL + FTP/SMTP/POP3/TCP. Run-mode semantics per wasm instance; serve mode stays
+native-only. See §14.
+
 Next steps:
 1. File picker (phase 9 remainder) — browser-integrated `k.pick_file`.
 2. REPL mode (phase 11) — `KALUA repl` with Monaco Editor.
+3. WASM run mode (phase 12) — strictly ordered by the §14 milestones M0→M4; M0 (toolchain
+   spike) gates the rest.
 
 ---
 
 ## 11. Debugging Capabilities — Design Plan
 
-*(Unchanged from the TUI version — the debugger attaches to the Lua VM server-side and is
-UI-transport agnostic. Notable interactions with the web runtime:*
+*(2026-09-07 revision: the sandbox-debug decision and the wire-protocol decision are now
+locked — Tier 2 uses **DAP, not EmmyLua**, and the Lua `debug` library is **gated behind
+`--debug`** (§11.5). EmmyLua references below are superseded by the DAP decisions.)*
+
+*(The debugger attaches to the Lua VM server-side and is UI-transport agnostic. Notable
+interactions with the web runtime:*
 
 - *`--verbose` tracing and `--repl-on-error` operate inside the session actor, before
   outbox flush, so frame inspection sees the exact handler state.*
 - *Post-mortem dumps on event-handler errors are sent as part of the `error` WS message
   when `--verbose` is on.*
-- *Breakpoints (Tier 2, EmmyLua) pause the session actor; the page shows a "paused"
+- *Breakpoints (Tier 2, DAP) pause the session actor; the render shows a "paused"
   indicator via a new WS `pause`/`resume` message pair.*
-- *Server-mode worker debugging is unchanged (§11.4 Phase C).*)
+- *Server-mode worker debugging is unchanged (§11.4 Phase C), targeted at a single
+  `--debug-worker`.)*
 
 ### 11.1 What gopher-lua Provides (Built-in)
 
@@ -745,14 +763,19 @@ UI-transport agnostic. Notable interactions with the web runtime:*
 | Local names | `LFunction.LocalName(regno, pc)` | Variable names at instruction pointer |
 | Debug library | `OpenDebug(L)` | Exposes `debug.*` to Lua (traceback, getinfo, getlocal, setupvalue, etc.) |
 
-**Critical gap**: gopher-lua **does not implement `debug.sethook()` / `debug.hook()`** — no line/Call/Return hooks for breakpoints or stepping.
+**Critical gap (resolved)**: the vendored patched fork (`third_party/gopher-lua`, from
+edolphin-ydf/gopher-lua) **adds `debug.hook()` / `SetHook`** — line/Call/Return hooks for
+breakpoints and stepping are available. The `debug` library that exposes this is **gated
+behind `--debug`** (§11.5), so production scripts never see it.
 
-### 11.2 Existing Solution: gopherlua-debugger (EmmyLua Protocol)
+### 11.2 Wire protocol: DAP (decided 2026-09-07)
 
-- Implements debugger via **patched gopher-lua fork** that adds `debug.hook()`
-- Uses **EmmyLua protocol** (IDE as server, Lua as client via TCP)
-- Works with VS Code / IntelliJ via EmmyLua plugin
-- Requires `replace github.com/yuin/gopher-lua => github.com/edolphin-ydf/gopher-lua` in go.mod
+- Tier 2 uses the **Microsoft Debug Adapter Protocol (DAP)** — JSON-RPC 2.0 over TCP, IDE = client, KALUA = adapter server listening on `--debug-port` (default 9966).
+- **Not EmmyLua**: no EmmyLua/emmy_core code exists in the tree (the edolphin-ydf fork contributes only the hook capability, not a protocol), EmmyLua requires a specific IDE plugin, and the spec's previous "EmmyLua now, DAP later" plan meant throwaway work.
+- DAP gives native Run & Debug in VS Code / VSCodium / nvim-dap with **no extra extension**; the shipped `extensions/vscode-kalua` can contribute an attach configuration (`debugServer`, `KALUA run --debug --debug-port 9966`).
+- The adapter maps the same VM surface `k.debug.stack()`/`postMortemDump` already traverse:
+  `stackTrace`/`scopes`/`variables`/`evaluate` ← `LState.GetStack`/`GetLocal`/`GetUpvalue`/`GetInfo`;
+  `setBreakpoints`/`continue`/`next`/`stepIn`/`stepOut`/`pause` ← the `debug.hook` callback + session pause/resume.
 
 ### 11.3 Recommended Debugging Architecture for KALUA
 
@@ -769,16 +792,16 @@ UI-transport agnostic. Notable interactions with the web runtime:*
 
 | Feature | Approach |
 |---------|----------|
-| Line breakpoints | Use gopherlua-debugger's patched VM + EmmyLua protocol |
-| Conditional breakpoints | Same; evaluate condition in hook callback |
-| Step over/into/out | Hook returns control to debugger on line/call/return events |
-| Variable watch | Evaluate expressions in current frame context |
+| Line breakpoints | DAP `setBreakpoints` wired into the vendored `debug.hook` callback (`third_party/gopher-lua/hook.go`) |
+| Condition breakpoints | Evaluate condition in the hook callback; honor line events only when it passes |
+| Step over/into/out | Hook returns control to the DAP loop on line/call/return events |
+| Variable watch | Evaluate expressions in current frame via `GetStack`/`GetLocal`/`GetUpvalue`/`GetInfo` |
 
-**Integration**: Add `--debug` flag that:
-1. Uses patched gopher-lua (vendored fork)
-2. Starts EmmyLua TCP server on port (default 9966)
-3. Auto-injects `require('emmy_core').tcpConnect('localhost', 9966)` at script start
-4. Works with VS Code (EmmyLua extension) / GoLand / IntelliJ
+**Integration**: Add `--debug`/`--debug-port` flags that:
+1. Enable the gated `debug` library in the sandbox (and keep `k.debug.*` always-on, §11.5)
+2. Start the **DAP adapter** as a TCP server on port (default 9966) — IDE attaches as client
+3. Wire breakpoint/step/pause commands back into the session actor's `debug.hook`
+4. No script-side injection needed (unlike EmmyLua's `emmy_core`; the sandbox has no `require`)
 
 #### Tier 3: KALUA-Specific Enhancements
 
@@ -800,13 +823,18 @@ UI-transport agnostic. Notable interactions with the web runtime:*
 5. **k.debug API** — `k.debug.trace()`, `k.debug.locals()`, `k.debug.stack()`
 6. **CLI flags** — `--debug`, `--debug-port`, `--repl-on-error`, `--verbose` (enhanced)
 
-#### Phase B: EmmyLua Integration (Week 2-3) — TIER 2
-1. **EmmyLua transport** — TCP server, protocol handler (adapt gopherlua-debugger)
-2. **Auto-inject connection** — `require('emmy_core').tcpConnect('localhost', port)` at script start
-3. **Breakpoint support** — line/conditional breakpoints via hook; and the actor `pause`/`resume` WS messages
-4. **Step controls** — step over/into/out, continue, pause
-5. **Variable watch** — evaluate expressions in current frame
-6. **Breakpoint persistence** — `.kalua/breakpoints.json` per project
+**Phase A status (2026-09-07):** #1, #3, #4, #5 implemented. #2 partial — `--verbose` traces
+`k.*` API calls only, not general Lua function-call tracing / variable assignments / control
+flow. #6 partial — `--repl-on-error`/`--verbose` wired; `--debug`/`--debug-worker` are CLI
+stubs and `--debug-port` is not yet added; the sandbox `debug`-lib gating (§11.5) is not yet
+implemented.
+
+#### Phase B: DAP Integration (Week 2-3) — TIER 2
+1. **DAP transport** — JSON-RPC 2.0 TCP server on `--debug-port` (default 9966); `initialize`/`launch`(or `attach`)/`disconnect` capabilities; IDE attaches as client
+2. **Hook wiring** — connect the DAP loop to the vendored `debug.hook`; breakpoints (line + condition, condition evaluated in the hook), actor `pause`/`resume` WS messages
+3. **Breakpoint/step controls** — line/conditional breakpoints via hook; step over/into/out, continue, pause (DAP `setBreakpoints`/`next`/`stepIn`/`stepOut`/`continue`/`pause`)
+4. **Variable watch** — DAP `scopes`/`variables`/`evaluate`, mapped from `GetStack`/`GetLocal`/`GetUpvalue`/`GetInfo`
+5. **Breakpoint persistence** — `.kalua/breakpoints.json` per project (client may own them instead; revisit)
 
 #### Phase C: KALUA Domain Features (Week 3-4) — TIER 3
 1. **Custom formatters** — pretty-print `k.form`, `k.ctrl`, `k.db` handles in debugger UI
@@ -819,32 +847,34 @@ UI-transport agnostic. Notable interactions with the web runtime:*
 
 | Decision | Options | **Decision** |
 |----------|---------|--------------|
-| Protocol | EmmyLua (existing) vs DAP (standard) | **EmmyLua** — working code exists; migrate to DAP later |
-| Patched VM | Vendor fork vs upstream PR | **Vendor fork** for v1; upstream `debug.hook` if maintainable |
-| Sandboxing | Allow `debug` library in sandbox? | **Only under `--debug`** — keep production sandbox clean |
-| Server mode | Debug all workers or single? | **Single "debug worker"** + `--debug-worker=1` flag |
-| Priority | Interactive breakpoints vs enhanced tracing | **Enhanced tracing (Tier 1+)** first; breakpoints as follow-up |
+| Protocol | EmmyLua (community, Lua-only) vs DAP (standard) | **DAP (2026-09-07)** — no EmmyLua code exists in-tree (only the hook capability); open standard gets native IDE support; no throwaway protocol work |
+| Patched VM | Vendor fork vs upstream PR | **Vendor fork** (already landed, `third_party/gopher-lua/hook.go`); upstream `debug.hook` if maintainable |
+| Sandboxing | Allow `debug` library in sandbox? | **Gated behind `--debug`** (decided 2026-09-07) — `debug` lib only opens with the flag; `k.debug.*`, `--verbose` tracing and post-mortem dumps are Go-side and stay always-on. `--repl-on-error` uses gopher-lua's Go-side `stackTrace()` so it needs no `debug.*` global |
+| Server mode | Debug all workers or single? | **Single "debug worker"** + `--debug-worker=1` flag; that worker gets the gated `debug` lib + DAP adapter, the rest stay clean |
+| Priority | Interactive breakpoints vs enhanced tracing | **Enhanced tracing (Tier 1+)** first (implemented); DAP breakpoints/stepping as follow-up |
 
 ### 11.6 Minimal MVP (Week 1) — TIER 1 ONLY
 
 ```go
 // internal/vm/debug.go
 func NewDebugState(opts DebugOptions) (*lua.LState, *DebugSession) {
-    // Use patched gopher-lua (vendored fork with debug.hook)
+    // Sandboxed gopher-lua (vendored fork with debug.hook).
+    // The debug library is opened ONLY when opts.Debug is set (§11.5).
     L := lua.NewState(lua.Options{
         SkipOpenLibs: true,
         // ... KALUA sandbox options
     })
-    lua.OpenDebug(L)  // Enable debug.* library (only in --debug mode)
+    if opts.Debug {
+        lua.OpenDebug(L) // Enable debug.* library (only in --debug mode)
+    }
 
     if opts.Port > 0 {
-        // Start EmmyLua TCP listener (Phase B)
-        session := StartEmmyLuaServer(L, opts.Port)
-        L.DoString(`require('emmy_core').tcpConnect('localhost', ` + port + `)`)
+        // Start DAP TCP listener (Phase B); IDE attaches as the client.
+        session := StartDAPServer(L, opts.Port)
         return L, session
     }
 
-    // Phase A: Enhanced tracing only
+    // Phase A: Enhanced tracing only (Go-side, no debug lib required)
     return L, nil
 }
 ```
@@ -862,11 +892,11 @@ KALUA check  <app.lua>                  # reports syntax/global misuse
 KALUA version
 ```
 
-- `--verbose`: enhanced tracing (function calls, args, returns, variable assignments, control flow, k.* API calls)
-- `--repl-on-error`: drop into interactive Lua REPL at crash site with full frame access
-- `--debug`: enable EmmyLua debugger (requires patched VM)
-- `--debug-port`: TCP port for debugger (default 9966)
-- `--debug-worker`: which worker to debug in server mode (1-based, default 1)
+- `--verbose`: enhanced tracing (k.* API calls, args, returns — Go-side, always available)
+- `--repl-on-error`: drop into interactive Lua REPL at crash site with full frame access; uses Go-side `stackTrace()`, not the `debug.*` global
+- `--debug`: enable the gated `debug` library in the sandbox (§11.5) + start the DAP adapter (requires patched VM, which is vendored)
+- `--debug-port`: TCP port for the DAP adapter (default 9966); IDE attaches as client
+- `--debug-worker`: which worker to debug in server mode (1-based, default 1); that single worker gets the `debug` lib + DAP adapter, the rest stay clean
 
 ---
 
@@ -1062,5 +1092,84 @@ each removed identifier; generated `api.md` unchanged (or regenerated if a remov
 items land. Phase E (efficiency/perf) is a separate, unplanned follow-up.**
 
 ---
+
+## 14. WASM in Browser — Run Mode Client-Side
+
+*(Plan mode, 2026-09-07. Feed: "adjust scope" decisions — fully offline static page that
+runs the whole app in-browser with no server; run-mode semantics only; serve mode stays
+native-only. DB/network scope: full relay included. SQLite via wa-sqlite. Files via the real
+browser FS.)*
+
+### 14.1 Goal & non-goals
+
+Ship `index.html` + `KALUA.wasm` (bundled by a new `KALUA wasm-bundle <app.lua>`
+subcommand) that runs any `run`-mode KALUA app 100% client-side. The existing browser
+client (`app.js`, `shell.html`) already speaks the session's outbox/inbox JSON protocol, so
+this phase replaces one transport (WS/HTTP in `internal/web/server.go`) with an in-page
+bridge — it does not rewrite the UI.
+
+- **In scope:** run-mode semantics per wasm instance (gopher-lua VM, session actor,
+  forms/controls, timers, coroutine suspension); pure bindings unchanged; a browser
+  host-IO profile; wa-sqlite; a localhost relay for the protocol bindings that cannot exist
+  in-browser.
+- **Non-goals:** serve mode worker pool, `k.shared.*`, multi-session — native only. Tab
+  isolation = one separate wasm instance per tab. No HTTP server in the page.
+
+### 14.2 Hard constraints (why the relay exists)
+
+The browser cannot open raw TCP, so FTP/SMTP/POP3/TCP-socket and MySQL/PG/MSSQL wire
+protocols cannot be implemented in-page. Architecture: **pure offline by default** (SQLite
+via wa-sqlite, `k.http_request`/SOAP/WS via `fetch`/WebSocket), and the remaining
+network/DB bindings route through an **optional localhost relay** — a tiny companion binary
+reusing the existing `net.go`/`ftp.go`/`smtp.go`/`pop3.go`/`db.go` drivers, exposed over
+WebSocket/fetch with CORS. The static page + wasm stays the only runtime on the UI path.
+
+### 14.3 Milestones
+
+**M0 — Toolchain spike (gating).** Build `gopher-lua` + `internal/session` + pure/UI
+bindings with `GOOS=js GOARCH=wasm` (Go 1.26.3 fork). Expect `net/*`, `modernc.org/sqlite`,
+and the DB drivers to fail — they are profile-gated out of the wasm build via
+`//go:build !wasm`. Prove cooperative scheduling (goroutines, `k.timer`/idle timers,
+coroutine suspend/resume via the existing `RequestX/PostXResp` pattern) on the JS event
+loop. Exit criterion: a hello-form renders in Chrome with no server.
+
+**M1 — Transport refactor.** Extract `internal/web/server.go`'s protocol dispatch
+(`handleWSMessage` + outbox pump) into a transport-neutral `internal/web/bridge.go` with
+injectable `Send(outbox)`/`recv(inbox)`. New `internal/wasm` entry: `startApp(source)`
+calling `bindings.Setup` + session, outbox handler = JS hook via `syscall/js`; the `.lua`
+script is embedded in the page or `fetch`ed (replaces `os.ReadFile` at `host/run.go:52`).
+Refactor `app.js` so every DOM handler calls an abstract `send(msg)` (WS today, wasm bridge
+in page) — charts/tabulator/looper/msgbox/popup/clipboard/pick_file round-trips already
+live browser-side. Ship shape: `index.html` + `KALUA.wasm` + `wasm_exec.js` + embedded
+assets.
+
+**M2 — Browser binding profile.** `k.file_*` → File System Access API + IndexedDB;
+`k.param_*` → localStorage (instead of `.kalua.params.json`); `k.http_request` → `fetch`
+(CORS caveat, relay fallback). Pure surface (expressions, coerce, crypto, yaml/json/xml/
+csv/ini, rows) unchanged. Host-IO profile registered under the new build tag via the
+existing `bindings.Options`.
+
+**M3 — DB + network.** Link **wa-sqlite** (real SQLite compiled to WASM) for
+`sqlite::file/memory`; `k.db_*` row paths target it. New localhost-only `KALUA relay`
+subcommand exposing MySQL/PG/MSSQL + FTP/SMTP/POP3/TCP over WebSocket/fetch with CORS; a JS
+relay client in the page routes non-offline protocols to it. Blocking/streaming semantics
+reuse the existing coroutine-suspension pattern (`internal/bindings/net.go`).
+`k.ping`/`k.tcp.accept` map to relay async calls.
+
+**M4 — Packaging & verification.** `KALUA wasm-bundle <app.lua>` emits a self-contained
+`dist/`. E2E via headless Chrome covering the pure-offline path and the relay path.
+`go test ./...` stays green (all refactors additive). Update AGENTS.md/docs; add a wasm
+demo app under `testdata/apps/`.
+
+### 14.4 Out of scope (v1)
+
+- Serve mode worker pool / `k.shared.*` / multi-client serving — native only.
+- Session-limit and HTTP-server lifecycle concepts — N/A without a server.
+- Monaco REPL and LSP — unrelated to this phase; the LSP stays native (executable-boundary
+  work, not a browser concern).
+
+### 14.5 Status
+
+Pending (plan only). No implementation yet; §8 phase 12 references this plan.
 
 (End of file)
