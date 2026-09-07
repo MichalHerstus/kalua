@@ -17,15 +17,15 @@ import (
 
 // RunConfig holds the parameters for a run invocation.
 type RunConfig struct {
-	ScriptPath   string
-	Args         []string // seeds ARGS global
-	DBs          []string // --db NAME=DSN (parsed elsewhere)
-	AllowFS      []string // --allow-fs paths
-	MaxFileSize  int64    // cap for k.file_load/k.json_load (0 = default 16 MiB)
-	Verbose      bool
-	ReplOnError  bool     // --repl-on-error: drop into REPL on runtime error
-	Logger       *Logger
-	Out          io.Writer // for k.print output
+	ScriptPath  string
+	Args        []string // seeds ARGS global
+	DBs         []string // --db NAME=DSN (parsed elsewhere)
+	AllowFS     []string // --allow-fs paths
+	MaxFileSize int64    // cap for k.file_load/k.json_load (0 = default 16 MiB)
+	Verbose     bool
+	ReplOnError bool // --repl-on-error: drop into REPL on runtime error
+	Logger      *Logger
+	Out         io.Writer // for k.print output
 }
 
 // ExitCode maps errors to process exit codes per §4.
@@ -252,7 +252,7 @@ func isStatement(line string) bool {
 			return true
 		}
 	}
-	// Assignment pattern: name = or name, name = 
+	// Assignment pattern: name = or name, name =
 	if strings.Contains(trimmed, "=") && !strings.Contains(trimmed, "==") && !strings.Contains(trimmed, "~=") && !strings.Contains(trimmed, "<=") && !strings.Contains(trimmed, ">=") {
 		parts := strings.SplitN(trimmed, "=", 2)
 		left := strings.TrimSpace(parts[0])

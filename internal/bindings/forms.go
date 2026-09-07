@@ -60,6 +60,50 @@ func registerForms(e *Env) {
 		return 0
 	})
 
+	// k.set_property(form, prop, value) - set a form-level property (title,
+	// align, gap, or a dynamic styling prop: bg, color, font, font_size, style)
+	// and re-render the whole form.
+	e.register("set_property", "forms", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		prop := L.CheckString(2)
+		value := L.Get(3)
+
+		// Structural keys hold the form's control/handler registry and must
+		// not be clobbered through the generic setter.
+		switch prop {
+		case "name", "controls", "handlers", "order":
+			return e.fail(L, KErrorInvalidParam, "set_property: cannot set reserved form key: "+prop)
+		}
+
+		tbl := getForm(L, formName)
+		if tbl == nil {
+			return e.fail(L, KErrorInvalidParam, "set_property: form not found: "+formName)
+		}
+		tbl.RawSetString(prop, value)
+
+		html := renderForm(L, formName)
+		sendOutbox(e, common.OutboxMsg{
+			Type: "render_form",
+			Form: formName,
+			HTML: html,
+		})
+		return 0
+	})
+
+	// k.get_property(form, prop) - read a form-level property; nil when unset.
+	e.register("get_property", "forms", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		prop := L.CheckString(2)
+
+		tbl := getForm(L, formName)
+		if tbl == nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		L.Push(tbl.RawGetString(prop))
+		return 1
+	})
+
 	// k.form.show(name) - show form (modal, suspends caller)
 	e.register("form.show", "forms", func(L *lua.LState) int {
 		name := L.CheckString(1)
@@ -1100,7 +1144,11 @@ func renderForm(L *lua.LState, formName string) string {
 	if align != "" && align != "left" {
 		html += ` align="` + escAttr(align) + `"`
 	}
-	html += ` style="--kalua-gap:` + strconv.Itoa(gap) + `px"`
+	style := "--kalua-gap:" + strconv.Itoa(gap) + "px"
+	if props := styleFromProps(tbl); props != "" {
+		style += ";" + props
+	}
+	html += ` style="` + escAttr(style) + `"`
 	html += `>`
 
 	if title != "" {
@@ -1215,6 +1263,94 @@ func renderGridForm(tbl *lua.LTable) string {
 		html += renderCell(c, buckets[c.id], controlsTbl)
 	}
 	return html
+}
+
+// styleFromProps translates dynamic styling properties (set at runtime via
+// k.set_property / k.ctrl.set_property) into a "name:value;name:value" CSS
+// string for a form or control. Supported props:
+//
+//	bg, color        — raw CSS color values
+//	font             — CSS font-family string, or an h1–h6/p text preset
+//	font_size        — numeric px; overrides the preset/em font-size
+//	style            — h1–h6/p text preset (font-size + font-weight)
+//
+// An empty string is returned when no styling props are set.
+func styleFromProps(tbl *lua.LTable) string {
+	var sb strings.Builder
+	if v := tbl.RawGetString("bg"); v != lua.LNil && v.String() != "" {
+		sb.WriteString("background:" + v.String() + ";")
+	}
+	if v := tbl.RawGetString("color"); v != lua.LNil && v.String() != "" {
+		sb.WriteString("color:" + v.String() + ";")
+	}
+
+	fontFamily := ""
+	preset := ""
+	if v := tbl.RawGetString("font"); v != lua.LNil && v.String() != "" {
+		if fontPreset(v.String()) != "" {
+			preset = strings.ToLower(v.String())
+		} else {
+			fontFamily = v.String()
+		}
+	}
+	if v := tbl.RawGetString("style"); v != lua.LNil && v.String() != "" {
+		if fontPreset(v.String()) != "" {
+			preset = strings.ToLower(v.String())
+		}
+	}
+
+	if v := tbl.RawGetString("font_size"); v != lua.LNil {
+		if n := int(lua.LVAsNumber(v)); n > 0 {
+			preset = "" // explicit px wins over the em preset
+			sb.WriteString("font-size:" + strconv.Itoa(n) + "px;")
+		}
+	}
+	if fontFamily != "" {
+		sb.WriteString("font-family:" + fontFamily + ";")
+	}
+	if preset != "" {
+		sb.WriteString("font-size:" + fontPresetSize(preset) + ";")
+		sb.WriteString("font-weight:" + fontPresetWeight(preset) + ";")
+	}
+	return strings.TrimSuffix(sb.String(), ";")
+}
+
+// fontPreset reports whether s is a supported text preset (h1–h6 or p).
+func fontPreset(s string) string {
+	switch strings.ToLower(s) {
+	case "h1", "h2", "h3", "h4", "h5", "h6", "p":
+		return strings.ToLower(s)
+	}
+	return ""
+}
+
+// fontPresetSize returns the CSS font-size for a text preset.
+func fontPresetSize(preset string) string {
+	switch preset {
+	case "h1":
+		return "2em"
+	case "h2":
+		return "1.5em"
+	case "h3":
+		return "1.17em"
+	case "h4":
+		return "1em"
+	case "h5":
+		return "0.83em"
+	case "h6":
+		return "0.67em"
+	case "p":
+		return "1em"
+	}
+	return ""
+}
+
+// fontPresetWeight returns the CSS font-weight for a text preset.
+func fontPresetWeight(preset string) string {
+	if preset == "p" {
+		return "400"
+	}
+	return "700"
 }
 
 // parseCells reads the form's "cells" table into ordered defs. gopher-lua does
@@ -1793,14 +1929,23 @@ func sendOutbox(e *Env, msg common.OutboxMsg) {
 	}
 }
 
-// getControl retrieves a control table from a form.
-func getControl(L *lua.LState, formName, name string) *lua.LTable {
+// getForm retrieves a form definition table, or nil when no such form exists.
+func getForm(L *lua.LState, formName string) *lua.LTable {
 	formTbl := L.GetGlobal(formName)
 	if formTbl == lua.LNil {
 		return nil
 	}
 	tbl, ok := formTbl.(*lua.LTable)
 	if !ok {
+		return nil
+	}
+	return tbl
+}
+
+// getControl retrieves a control table from a form.
+func getControl(L *lua.LState, formName, name string) *lua.LTable {
+	tbl := getForm(L, formName)
+	if tbl == nil {
 		return nil
 	}
 

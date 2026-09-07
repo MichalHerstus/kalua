@@ -143,11 +143,11 @@ end
 		t.Fatalf("/echo: %v", err)
 	}
 	var echo struct {
-		Q  map[string]interface{} `json:"q"`
-		QR string                 `json:"qr"`
-		RA string                 `json:"ra"`
-		TLS bool                  `json:"tls"`
-		B  string                 `json:"body"`
+		Q   map[string]interface{} `json:"q"`
+		QR  string                 `json:"qr"`
+		RA  string                 `json:"ra"`
+		TLS bool                   `json:"tls"`
+		B   string                 `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(resp.Body), &echo); err != nil {
 		t.Fatalf("/echo unmarshal: %v (body=%q)", err, resp.Body)

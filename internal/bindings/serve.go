@@ -34,7 +34,7 @@ type TCPHub interface {
 // This registers k.shared_*, k.ws_*, k.tcp_* bindings and disables UI bindings.
 // Expression-function globals (§5.9) and K.* helpers (§2.3) are installed too,
 // because serve and run modes share the coerce layer and expression surface.
-func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, wsHub WSHub, tcpHub TCPHub, logger Logger) {
+func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, wsHub WSHub, tcpHub TCPHub, logger Logger) *Env {
 	// Create k table first
 	L.SetGlobal("k", L.NewTable())
 
@@ -100,6 +100,7 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 
 	registerExprFuncs(e)
 	registerDebug(e)
+	registerOnError(e)
 
 	// k.shared_* uses the Env for JSON value serialization.
 	registerShared(e, shared)
@@ -123,6 +124,11 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 	// Session-dependent UI/timer bindings are removed; SetupUIError installs
 	// the error-raising stubs for form/ctrl/msgbox/status. Timers and net/param
 	// helpers stay available (net/param are pure file/net behavior).
+
+	// Seed Kalipso error globals (nil/"", until a binding fails).
+	seedErrorGlobals(L, e)
+
+	return e
 }
 
 // registerShared registers k.shared_* bindings. Values are stored as JSON so
@@ -299,6 +305,10 @@ func SetupUIError(L *lua.LState) {
 		formTbl.RawSetString(fn, L.NewFunction(errorFunc("k.form."+fn)))
 	}
 	k.RawSetString("form", formTbl)
+
+	// Disable top-level form property accessors (need a session + UI).
+	k.RawSetString("set_property", L.NewFunction(errorFunc("k.set_property")))
+	k.RawSetString("get_property", L.NewFunction(errorFunc("k.get_property")))
 
 	// Disable k.ctrl.*
 	ctrlTbl := L.NewTable()

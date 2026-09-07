@@ -61,9 +61,8 @@ function main()
   k.file_delete(base .. "/d.txt")
   if k.file_exists(base .. "/d.txt") then k.error("delete failed") end
 
-  local ok, err = pcall(function() k.file_save("/tmp/escapeme.txt", "x") end)
-  if ok then k.error("sandbox escape not denied") end
-  _ = err
+  k.file_save("/tmp/escapeme.txt", "x")
+  if ERRORCODE ~= -20 then k.error("sandbox escape not denied (code " .. tostring(ERRORCODE) .. ")") end
 
   k.quit()
 end
@@ -88,10 +87,9 @@ func TestRun_FilesSandboxDenied(t *testing.T) {
 	outside := t.TempDir()
 	src := fmt.Sprintf(`
 function main()
-  local ok = pcall(function()
-    k.file_load(%q .. "/secret.txt")
-  end)
-  if ok then k.error("load outside root should be denied") end
+  local data = k.file_load(%q .. "/secret.txt")
+  if data ~= nil then k.error("load outside root should be denied") end
+  if ERRORCODE ~= -20 then k.error("expected permission error, got " .. tostring(ERRORCODE)) end
   k.quit()
 end
 `, outside)

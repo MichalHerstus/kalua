@@ -21,12 +21,12 @@ func (discardLogger) Tracef(string, ...interface{}) {}
 // captureLogger collects error messages so tests can surface failures.
 type captureLogger struct{ errs []string }
 
-func newCaptureLogger() *captureLogger { return &captureLogger{} }
+func newCaptureLogger() *captureLogger                 { return &captureLogger{} }
 func (c *captureLogger) Printf(string, ...interface{}) {}
 func (c *captureLogger) Errorf(f string, a ...interface{}) {
 	c.errs = append(c.errs, fmt.Sprintf(f, a...))
 }
-func (c *captureLogger) Warnf(string, ...interface{}) {}
+func (c *captureLogger) Warnf(string, ...interface{})  {}
 func (c *captureLogger) Tracef(string, ...interface{}) {}
 
 // TestTimerFiresGlobal verifies k.timer_start fires a Lua global named after

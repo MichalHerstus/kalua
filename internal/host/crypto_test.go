@@ -26,13 +26,13 @@ func TestRun_CryptoFlow(t *testing.T) {
   if enc1 == enc2 then k.error("encrypt must be randomized (nonce)") end
   if k.decrypt(enc1, "password123") ~= "secret data" then k.error("decrypt") end
 
-  local ok, err = pcall(function() k.decrypt(enc1, "wrongkey") end)
-  if ok then k.error("decrypt with wrong key should fail") end
-  _ = err
+  local d = k.decrypt(enc1, "wrongkey")
+  if d ~= nil then k.error("decrypt with wrong key should fail") end
+  if ERRORMSG == "" then k.error("decrypt should set ERRORMSG") end
 
-  local ok2, err2 = pcall(function() k.decrypt("!!!not-base64!!!", "password123") end)
-  if ok2 then k.error("decrypt invalid base64 should fail") end
-  _ = err2
+  local d2 = k.decrypt("!!!not-base64!!!", "password123")
+  if d2 ~= nil then k.error("decrypt invalid base64 should fail") end
+  if ERRORCODE ~= -6 then k.error("expected invalid-param error, got " .. tostring(ERRORCODE)) end
 
   k.quit()
 end

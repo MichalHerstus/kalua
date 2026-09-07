@@ -209,8 +209,8 @@ end
 // fakeFTPServer is a minimal FTP server with passive-mode RETR/STOR/LIST and a
 // virtual file table.
 type fakeFTPServer struct {
-	ln     net.Listener
-	files  map[string][]byte
+	ln       net.Listener
+	files    map[string][]byte
 	received []byte
 }
 

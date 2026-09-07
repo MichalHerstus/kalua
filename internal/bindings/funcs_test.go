@@ -280,30 +280,30 @@ if add_days("2024-01-31", 1) ~= "2024-02-01" then error("add_days in serve") end
 
 type fakeShared struct{}
 
-func (f *fakeShared) Set(key, value string)      {}
-func (f *fakeShared) Get(key string) string      { return "" }
-func (f *fakeShared) Del(key string)             {}
-func (f *fakeShared) Keys(pattern string) []string { return nil }
+func (f *fakeShared) Set(key, value string)              {}
+func (f *fakeShared) Get(key string) string              { return "" }
+func (f *fakeShared) Del(key string)                     {}
+func (f *fakeShared) Keys(pattern string) []string       { return nil }
 func (f *fakeShared) Incr(key string, delta int64) int64 { return delta }
 
 type fakeWSHub struct{}
 
-func (f *fakeWSHub) Broadcast(msg []byte)    {}
+func (f *fakeWSHub) Broadcast(msg []byte)            {}
 func (f *fakeWSHub) Send(id string, msg []byte) bool { return true }
-func (f *fakeWSHub) Close(id string)         {}
+func (f *fakeWSHub) Close(id string)                 {}
 
 type fakeTCPHub struct{}
 
-func (f *fakeTCPHub) Send(id string, msg []byte) bool { return true }
-func (f *fakeTCPHub) Close(id string)         {}
+func (f *fakeTCPHub) Send(id string, msg []byte) bool   { return true }
+func (f *fakeTCPHub) Close(id string)                   {}
 func (f *fakeTCPHub) Accept(ctx context.Context) string { return "test-id" }
 
 type fakeLogger struct{}
 
-func (f *fakeLogger) Printf(format string, args ...interface{})    {}
-func (f *fakeLogger) Errorf(format string, args ...interface{})    {}
-func (f *fakeLogger) Warnf(format string, args ...interface{})     {}
-func (f *fakeLogger) Tracef(format string, args ...interface{})    {}
+func (f *fakeLogger) Printf(format string, args ...interface{}) {}
+func (f *fakeLogger) Errorf(format string, args ...interface{}) {}
+func (f *fakeLogger) Warnf(format string, args ...interface{})  {}
+func (f *fakeLogger) Tracef(format string, args ...interface{}) {}
 
 // TestExprFuncs_CheckCompat asserts the static checker does not flag the
 // documented expression functions as unknown globals.

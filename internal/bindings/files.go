@@ -33,20 +33,17 @@ func registerFiles(e *Env) {
 	e.register("file_open", "files", func(L *lua.LState) int {
 		path, err := e.resolvePath(L.CheckString(1))
 		if err != nil {
-			L.RaiseError("%v", err)
-			return 0
+			return e.fail(L, classifyError(err), err.Error())
 		}
 		mode := L.OptString(2, "r")
 
 		flags, ok := openFlags(mode)
 		if !ok {
-			L.RaiseError("file error: invalid mode %q", mode)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("file error: invalid mode %q", mode))
 		}
 		f, err := os.OpenFile(path, flags, 0o644)
 		if err != nil {
-			L.RaiseError("file error: cannot open %s: %v", path, err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("file error: cannot open %s: %v", path, err))
 		}
 
 		h := &fileHandle{f: f}
@@ -64,9 +61,9 @@ func registerFiles(e *Env) {
 
 	// k.file_read(handle [, count]) -> string ("" at EOF)
 	e.register("file_read", "files", func(L *lua.LState) int {
-		h, ok := lookupFileHandle(L, 1)
-		if !ok {
-			return 0
+		h, lerr := lookupFileHandle(e, L, 1)
+		if lerr != "" {
+			return e.fail(L, KErrorNotFound, lerr)
 		}
 		count := L.OptInt(2, -1)
 		var data []byte
@@ -80,8 +77,7 @@ func registerFiles(e *Env) {
 			data = buf[:n]
 		}
 		if err != nil && err != io.EOF {
-			L.RaiseError("file error: read failed: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("file error: read failed: %v", err))
 		}
 		L.Push(lua.LString(data))
 		return 1
@@ -89,15 +85,14 @@ func registerFiles(e *Env) {
 
 	// k.file_read_line(handle) -> string (nil at EOF)
 	e.register("file_read_line", "files", func(L *lua.LState) int {
-		h, ok := lookupFileHandle(L, 1)
-		if !ok {
-			return 0
+		h, lerr := lookupFileHandle(e, L, 1)
+		if lerr != "" {
+			return e.fail(L, KErrorNotFound, lerr)
 		}
 		var line string
 		line, err := h.r.ReadString('\n')
 		if err != nil && err != io.EOF {
-			L.RaiseError("file error: read failed: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("file error: read failed: %v", err))
 		}
 		if err == io.EOF && len(line) == 0 {
 			L.Push(lua.LNil)
@@ -111,14 +106,13 @@ func registerFiles(e *Env) {
 
 	// k.file_write(handle, data)
 	e.register("file_write", "files", func(L *lua.LState) int {
-		h, ok := lookupFileHandle(L, 1)
-		if !ok {
-			return 0
+		h, lerr := lookupFileHandle(e, L, 1)
+		if lerr != "" {
+			return e.fail(L, KErrorNotFound, lerr)
 		}
 		data := []byte(luaToString(L, 2))
 		if _, err := h.f.Write(data); err != nil {
-			L.RaiseError("file error: write failed: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("file error: write failed: %v", err))
 		}
 		return 0
 	})
@@ -133,8 +127,7 @@ func registerFiles(e *Env) {
 		}
 		fileHandlesMu.Unlock()
 		if !ok {
-			L.RaiseError("file error: handle not found: %s", id)
-			return 0
+			return e.fail(L, KErrorNotFound, "file error: handle not found: "+id)
 		}
 		h.f.Close()
 		return 0
@@ -194,12 +187,10 @@ func registerFiles(e *Env) {
 	e.register("file_delete", "files", func(L *lua.LState) int {
 		path, err := e.resolvePath(L.CheckString(1))
 		if err != nil {
-			L.RaiseError("%v", err)
-			return 0
+			return e.fail(L, classifyError(err), err.Error())
 		}
 		if err := os.Remove(path); err != nil {
-			L.RaiseError("file error: cannot delete %s: %v", path, err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("file error: cannot delete %s: %v", path, err))
 		}
 		return 0
 	})
@@ -207,8 +198,7 @@ func registerFiles(e *Env) {
 	e.register("file_exists", "files", func(L *lua.LState) int {
 		path, err := e.resolvePath(L.CheckString(1))
 		if err != nil {
-			L.RaiseError("%v", err)
-			return 0
+			return e.fail(L, classifyError(err), err.Error())
 		}
 		_, statErr := os.Stat(path)
 		L.Push(lua.LBool(statErr == nil))
@@ -219,8 +209,7 @@ func registerFiles(e *Env) {
 	e.register("file_mkdir", "files", func(L *lua.LState) int {
 		path, err := e.resolvePath(L.CheckString(1))
 		if err != nil {
-			L.RaiseError("%v", err)
-			return 0
+			return e.fail(L, classifyError(err), err.Error())
 		}
 		recursive := L.OptBool(2, false)
 		perm := os.FileMode(0o755)
@@ -234,8 +223,7 @@ func registerFiles(e *Env) {
 			err = os.Mkdir(path, perm)
 		}
 		if err != nil {
-			L.RaiseError("file error: cannot create directory %s: %v", path, err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("file error: cannot create directory %s: %v", path, err))
 		}
 		return 0
 	})
@@ -244,13 +232,11 @@ func registerFiles(e *Env) {
 	e.register("file_list", "files", func(L *lua.LState) int {
 		path, err := e.resolvePath(L.CheckString(1))
 		if err != nil {
-			L.RaiseError("%v", err)
-			return 0
+			return e.fail(L, classifyError(err), err.Error())
 		}
 		entries, err := os.ReadDir(path)
 		if err != nil {
-			L.RaiseError("file error: cannot list %s: %v", path, err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("file error: cannot list %s: %v", path, err))
 		}
 		names := make([]string, 0, len(entries))
 		for _, en := range entries {
@@ -269,13 +255,11 @@ func registerFiles(e *Env) {
 	e.register("file_info", "files", func(L *lua.LState) int {
 		path, err := e.resolvePath(L.CheckString(1))
 		if err != nil {
-			L.RaiseError("%v", err)
-			return 0
+			return e.fail(L, classifyError(err), err.Error())
 		}
 		fi, err := os.Stat(path)
 		if err != nil {
-			L.RaiseError("file error: cannot stat %s: %v", path, err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("file error: cannot stat %s: %v", path, err))
 		}
 		tbl := L.NewTable()
 		tbl.RawSetString("name", lua.LString(filepath.Base(path)))
@@ -415,34 +399,32 @@ func snapshotZipEntries(L *lua.LState, entries *lua.LTable) (map[string][]byte, 
 	return out, nil
 }
 
-// lookupFileHandle resolves the handle id at stack index 1, raising on failure.
-func lookupFileHandle(L *lua.LState, idx int) (*fileHandle, bool) {
+// lookupFileHandle resolves the handle id at stack index 1. On failure it
+// returns an error message (empty "" on success); callers turn it into a
+// catch+continue e.fail.
+func lookupFileHandle(e *Env, L *lua.LState, idx int) (*fileHandle, string) {
 	id := L.CheckString(idx)
 	fileHandlesMu.Lock()
 	h, ok := fileHandles[id]
 	fileHandlesMu.Unlock()
 	if !ok {
-		L.RaiseError("file error: handle not found: %s", id)
-		return nil, false
+		return nil, "file error: handle not found: " + id
 	}
-	return h, true
+	return h, ""
 }
 
 // fdOp resolves src/dst, runs the op, and reports errors.
 func fdOp(L *lua.LState, e *Env, srcArg, dstArg string, op func(src, dst string) error) int {
 	src, err := e.resolvePath(srcArg)
 	if err != nil {
-		L.RaiseError("%v", err)
-		return 0
+		return e.fail(L, classifyError(err), err.Error())
 	}
 	dst, err := e.resolvePath(dstArg)
 	if err != nil {
-		L.RaiseError("%v", err)
-		return 0
+		return e.fail(L, classifyError(err), err.Error())
 	}
 	if err := op(src, dst); err != nil {
-		L.RaiseError("file error: %v", err)
-		return 0
+		return e.fail(L, classifyError(err), "file error: "+err.Error())
 	}
 	return 0
 }
@@ -481,8 +463,7 @@ func runBlocking(e *Env, L *lua.LState, fn func() (interface{}, error), conv fun
 
 	result, err := fn()
 	if err != nil {
-		L.RaiseError("%v", err)
-		return 0
+		return e.fail(L, classifyError(err), err.Error())
 	}
 	if conv != nil {
 		L.Push(conv(L, result))

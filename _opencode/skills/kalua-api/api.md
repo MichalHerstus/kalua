@@ -81,6 +81,21 @@ local choice = k.msgbox{
 **`k.net_ok(timeout_ms)`**  
 Reports internet reachability via a TCP dial.
 
+**`k.on_error(fn)`**  
+Registers (or clears, with nil) the Kalipso error hook. When ERRORCODE is set — by a failing binding or a genuine Lua error — fn is called with (ERRORCODE, ERRORMSG) so the script can show the error and continue. Erroring bindings return nil; branch on ERRORCODE.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `fn` | function | Error handler invoked as fn(ERRORCODE, ERRORMSG); pass nil to clear. |
+
+**Example:**
+
+```lua
+k.on_error(function(code, msg)
+  k.msgbox{title="Error", message=msg, type="danger"}
+end)
+```
+
 **`k.param_get(key)`**  
 Reads a persisted app param (string; "" if unset).
 
@@ -342,6 +357,37 @@ Shows a form (modal) and suspends the script until it closes.
 
 ```lua
 k.form.show("main")
+```
+
+**`k.get_property(form, prop)`**  
+Reads a form-level property; returns nil when the property or form is not set.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Form name declared with k.form.new. |
+| `prop` | string | Property name to read. |
+
+**Example:**
+
+```lua
+local bg = k.get_property("main", "bg")
+```
+
+**`k.set_property(form, prop, value)`**  
+Sets a form-level property and re-renders the form. Supports title, align, gap and dynamic styling props: bg (background color), color (text color), font (CSS font-family or an h1–h6/p text preset), font_size (numeric px, overrides preset), style (h1–h6/p text preset). The reserved keys name, controls, handlers and order cannot be set.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Form name declared with k.form.new. |
+| `prop` | string | Property name: "title", "align", "gap", "bg", "color", "font", "font_size", "style", ... |
+| `value` | any | Property value (string or number). |
+
+**Example:**
+
+```lua
+k.set_property("main", "bg", "#1e3a5f")
+k.set_property("main", "font", "h2")
+k.set_property("main", "title", "Welcome")
 ```
 
 ### Controls
@@ -2871,5 +2917,7 @@ tostr(42)  -- "42"
 
 - **`ARGS`** — Table seeded from `--arg K=V` flags (string keys).
 - **`CTRL`** — Accessor: `CTRL(name)` returns a control handle for `k.ctrl.*` operations.
+- **`ERRORCODE`** — Last Kalipso error code (number; nil until an error). Negative `K_ERROR_*` values, default `-1`.
+- **`ERRORMSG`** — Text of the last error (string; "" until an error).
 - **`main`** — Entry point function (required in run mode).
 

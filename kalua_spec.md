@@ -651,6 +651,59 @@ Status legend: ✅ implemented · ⏳ pending.
     IndexedDB for `k.file_*`, optional localhost `KALUA relay` for the non-browserable
     protocol bindings (MySQL/PG/MSSQL, FTP/SMTP/POP3, TCP sockets). Run-mode semantics per
     wasm instance; serve mode stays native-only. See §14.
+13. ⏳ **Dynamic control/form styling properties** — extend `k.ctrl.set_property`/`get_property`
+    and add `k.form.set_property`/`get_property` for runtime styling of forms, controls, tables,
+    loopers and lists. Property spellings (snake_case): `bg`, `color`, `font` (CSS family string
+    **or** h1–h6/p size preset), `font_size` (numeric px, overrides preset), `style` (h1–h6/p →
+    `font-size` + `font-weight` preset), `align` (left|center|right). Per-type matrix:
+    - **form**: `bg`, `color`, `font`, `font_size`, `align`.
+    - **all controls**: `bg`, `color`, `font`, `font_size`, `style`, `align` (plus existing `cell`,
+      `visible`, `enabled`, …).
+    - **table (traditional)**: the above + `title_bg`, `title_color`, `title_style` (applied to `<th>`).
+    - **table (tabulator)**: the above (`bg`, `color`, `font`, `font_size`, `style` on the wrapper);
+      title colors deferred to later (see below).
+    - **list**: the above + `selection_color` (best-effort, browser `option` styling is limited).
+    - **looper**: same as form (`bg`, `color`, `font`, `font_size`, `style`, `align` on the container).
+    Rendering: styles computed server-side by a shared `styleFromProps` helper in
+    `internal/bindings/forms.go` and emitted as inline `style` attributes in `renderControl`/`
+    renderForm`; `update_control`/`render_form` already replace innerHTML so no `app.js` change is
+    required. Docs via `internal/bindings/api_doc.go` (+ `Params`/`Example`), regenerating
+    `USER_GUIDE.md` and `_opencode/skills/kalua-api/api.md`.
+    - **Deferred — tabulator table title colors** *(to be implemented later)*: Tabulator renders
+      headers client-side from its options JSON, so `title_bg`/`title_color`/`title_style` must be
+      translated into Tabulator `columns[].header*` options — a client/JSON change, not part of the
+      initial styling pass.
+14. ⏳ **Kalipso-style error handling — `k.on_error` + `ERRORCODE`/`ERRORMSG`** — mirror Kalipso's
+    On Error…End On Error flow: erroring bindings set the `ERRORCODE` / `ERRORMSG` globals, invoke a
+    script-registered `k.on_error(fn)` hook, then **return `nil`/false instead of aborting** so the
+    script continues and branches on `ERRORCODE`.
+    - **Globals/API**: `ERRORCODE` (number) and `ERRORMSG` (string) seeded as globals in
+      `bindings.Setup`/`SetupServe` (nil/`""` until an error); `k.on_error(fn|nil)` registers/clears
+      the hook, which is invoked with `(ERRORCODE, ERRORMSG)` and typically shows a `k.msgbox` then
+      `k.quit()`/branch.
+    - **Core helper**: `Env.fail(L, code, msg)` — sets both globals, calls the registered hook via
+      `pcall` (so the hook can't recursively fault), pushes `nil`, returns. Converted bindings
+      `return e.fail(...)` on error.
+    - **Codes**: Kalipso general `K_ERROR_*` negatives with default `-1` (`K_ERROR_GENERIC`) —
+      `-6` invalid parameter, `-7` invalid primary key, `-8` user canceled, `-12` already connected,
+      `-13` not connected, `-14` loading file, `-15` saving file, `-17` not found, `-18` connection
+      activate, `-20` user permission; `ERRORMSG` carries the underlying error text.
+    - **Binding conversions** (`RaiseError` → `return e.fail(...)`): DB (connect/sql/db_*/tx → -12/
+      -13/-17/-6/-1), files (`file_*`, `json_load/save`, ini/yaml/csv/xml load+save → -14/-15/-17),
+      formats/rows (parse/save → -6/-16), net/comm (`http_request`, `ping`, `socket_*`, ftp/smtp/
+      pop3 → -18/-13/-17/-19), json/xml parse (→ -6).
+    - **Hookup points (genuine Lua errors still abort)**: `L.RaiseError` remains for real Lua/VM
+      errors (`k.error`, nil-index, …) and unresolvable internal failures; the session frames
+      (`main`, form/control handlers, exec, tabulator, looper, timer — `internal/session/session.go`)
+      and serve frames (`handle_ws`/`tcp`/`http`/`init`/`shutdown` — `internal/server/worker.go`)
+      invoke the registered `k.on_error` hook with `(-1, err)` after logging, before pushing the
+      abort `{error}` outbox frame.
+    - **Open decision (pending)**: whether forms/controls UI failures stay **hard-raise** (fail +
+      abort; `ERRORCODE` set, hook fired) instead of catch+continue — leaning hard-raise for
+      UI-critical calls (`k.form.show` on a missing form, `k.ctrl.*` on a missing control).
+    - **Docs/registry**: `on_error` → "flow" in `bindings.go` + `api_doc.go`; `ERRORCODE`/`ERRORMSG`
+      documented as globals (globals renderer + checker/LSP whitelist + completion); regenerate
+      `USER_GUIDE.md` + `_opencode/skills/kalua-api/api.md`.
 
 > Note: implementation order differed from this list — the LSP/editor phase (5) and server mode (8/10)
 > shipped before the database (4) and data/comms (5) groups were fully completed. See §10 for the
@@ -681,7 +734,8 @@ Status legend: ✅ implemented · ⏳ pending.
 ## 10. Status
 
 Spec complete (this document, web-UI revision 2026-08-28). Phases 1–8 and 10
-implemented; phase 11 (REPL) planned; see §8 for the per-phase status.
+implemented; phases 11 (REPL), 13 (styling) and 14 (Kalipso error handling) planned;
+see §8 for the per-phase status.
 
 **Full T1 run + serve surface implemented as of 2026-08-30:**
 
@@ -726,11 +780,26 @@ real browser FS + IndexedDB for `k.file_*`, optional localhost `KALUA relay` for
 MySQL/PG/MSSQL + FTP/SMTP/POP3/TCP. Run-mode semantics per wasm instance; serve mode stays
 native-only. See §14.
 
+**Planned (Phase 13):** dynamic control/form styling — `k.ctrl.set_property`/`get_property`
+styling (`bg`, `color`, `font`, `font_size`, `style`, `align`, plus table `title_*` and list
+`selection_color`) and new `k.form.set_property`/`get_property`; server-side inline-style
+renderer, no client change. Tabulator table title colors deferred to later. See §8.
+
+**Planned (Phase 14):** Kalipso-style error handling — `k.on_error(fn)` hook plus `ERRORCODE` /
+`ERRORMSG` globals. Erroring bindings set the globals, fire the hook, and return `nil` so the
+script continues and branches on `ERRORCODE` (Kalipso On Error…End On Error flow); genuine Lua
+errors still abort but invoke the hook. Kalipso `K_ERROR_*` negative codes (default `-1`).
+Applies to run and serve modes. See §8.
+
 Next steps:
 1. File picker (phase 9 remainder) — browser-integrated `k.pick_file`.
 2. REPL mode (phase 11) — `KALUA repl` with Monaco Editor.
 3. WASM run mode (phase 12) — strictly ordered by the §14 milestones M0→M4; M0 (toolchain
    spike) gates the rest.
+4. Dynamic control/form styling (phase 13) — `k.ctrl`/`k.form` `set_property`/`get_property`
+   styling props (§8 item 13); tabulator title colors deferred.
+5. Kalipso error handling (phase 14) — `k.on_error` + `ERRORCODE`/`ERRORMSG` (§8 item 14);
+   resolve the forms/controls hard-raise-vs-catch open decision before implementation.
 
 ---
 

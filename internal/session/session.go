@@ -43,7 +43,7 @@ const (
 	inboxFormEvent                           // form lifecycle event (open_form, after_open_form, close_form, on_idle)
 	inboxExec                                // k.exec async function execution
 	inboxSelectionResp                       // browser answered k.ctrl.get_selection
-	inboxFilePickerSaveResp                // browser answered k.pick_file save/download
+	inboxFilePickerSaveResp                  // browser answered k.pick_file save/download
 )
 
 // asyncOp represents a suspended coroutine waiting for an async operation
@@ -201,6 +201,7 @@ func (s *Session) run(ctx context.Context, mainFn *lua.LFunction, logger Logger)
 			if s.verbose {
 				logger.Errorf("%s", postMortemDump(s.L))
 			}
+			s.notifyError(err)
 			s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error()}
 			s.outbox <- common.OutboxMsg{Type: "quit"}
 			return
@@ -398,6 +399,7 @@ func (s *Session) runFormHandler(formName, ctrlKey, event string, resumeArgs []l
 		} else {
 			logger.Errorf("%s", getStack(s.L))
 		}
+		s.notifyError(err)
 		s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)}
 		return true
 	}
@@ -464,6 +466,7 @@ func (s *Session) handleExec(msg inboxMsg, logger Logger) {
 		} else {
 			logger.Errorf("%s", getStack(s.L))
 		}
+		s.notifyError(err)
 		s.resumeAsyncResp(opID, lua.LNil, "exec", logger)
 		return
 	}
@@ -712,6 +715,7 @@ func (s *Session) handleTabulatorAjaxRequest(msg inboxMsg, logger Logger) {
 		} else {
 			logger.Errorf("%s", getStack(s.L))
 		}
+		s.notifyError(err)
 		s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)}
 		return
 	}
@@ -768,6 +772,7 @@ func (s *Session) dispatchDBTablePage(link *bindings.TableLink, msg inboxMsg, lo
 	res, err := bindings.FetchTablePage(s.L, link, req)
 	if err != nil {
 		logger.Errorf("tabulator DB page error: %v", err)
+		s.notifyError(err)
 		s.SendOutbox(common.OutboxMsg{Type: "error", Msg: "table page error: " + err.Error()})
 		return true
 	}
@@ -856,6 +861,7 @@ func (s *Session) handleLooperScrollRequest(msg inboxMsg, logger Logger) {
 			cancel()
 		}
 		logger.Errorf("looper_scroll_request handler error: %v", err)
+		s.notifyError(err)
 		s.SendOutbox(common.OutboxMsg{Type: "error", Msg: err.Error()})
 		return
 	}
@@ -885,6 +891,7 @@ func (s *Session) dispatchDBLooperPage(link *bindings.LooperDBLink, msg inboxMsg
 	res, err := bindings.FetchLooperRows(s.L, link, req)
 	if err != nil {
 		logger.Errorf("looper DB page error: %v", err)
+		s.notifyError(err)
 		s.SendOutbox(common.OutboxMsg{Type: "error", Msg: "looper page error: " + err.Error()})
 		return
 	}
@@ -1134,6 +1141,7 @@ func (s *Session) runTimerHandler(fn *lua.LFunction, val lua.LValue, logger Logg
 		if r := recover(); r != nil {
 			// defensive: never let one bad timer handler kill the session
 			logger.Errorf("timer handler panic: %v", r)
+			s.notifyError(fmt.Errorf("%v", r))
 			s.SendOutbox(common.OutboxMsg{Type: "error", Msg: fmt.Sprintf("timer panic: %v", r)})
 		}
 	}()
@@ -1152,6 +1160,7 @@ func (s *Session) runTimerHandler(fn *lua.LFunction, val lua.LValue, logger Logg
 		} else {
 			logger.Errorf("%s", getStack(s.L))
 		}
+		s.notifyError(err)
 		s.SendOutbox(common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)})
 		return
 	}
@@ -1189,7 +1198,14 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 	}
 	var resumeVal lua.LValue
 	if err != nil {
-		resumeVal = lua.LString(err.(string))
+		// Catch+continue: record the Kalipso error (ERRORCODE/ERRORMSG +
+		// optional k.on_error hook) and resume with nil so the script can
+		// branch on ERRORCODE instead of crashing.
+		msg := err.(string)
+		if s.env != nil {
+			s.env.FireError(s.L, bindings.ClassifyError(fmt.Errorf("%s", msg)), msg)
+		}
+		resumeVal = lua.LNil
 	} else if result != nil {
 		resumeVal = conv(s.L, result)
 	} else {
@@ -1204,6 +1220,7 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 		} else {
 			logger.Errorf("%s", getStack(s.L))
 		}
+		s.notifyError(errResume)
 		s.outbox <- common.OutboxMsg{Type: "error", Msg: errResume.Error(), Stack: getStack(s.L)}
 		return
 	}
@@ -1218,6 +1235,15 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 
 	// Flush outbox after handler
 	s.flushOutbox()
+}
+
+// notifyError fires the Kalipso k.on_error hook for a genuine Lua error that
+// aborted a script frame. Frames still abort (catch+continue only applies to
+// binding failures via e.fail); this lets the hook observe them first.
+func (s *Session) notifyError(err error) {
+	if s.env != nil {
+		s.env.FireError(s.L, bindings.KErrorGeneric, err.Error())
+	}
 }
 
 // RunAsync executes a function in a worker goroutine and resumes the given coroutine when done.
@@ -1625,6 +1651,7 @@ func (s *Session) resumeChartImageResp(reqID, dataURL string, logger Logger) {
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("chart image resume error: %v", err)
+			s.notifyError(err)
 		}
 		return
 	}
@@ -1725,6 +1752,7 @@ func (s *Session) resumeAsyncResp(respID string, val lua.LValue, kind string, lo
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("%s resume error: %v", kind, err)
 		}
+		s.notifyError(err)
 		return
 	}
 
@@ -1760,6 +1788,7 @@ func (s *Session) resumeFilePickerResp(pickerID string, jsonResp string, logger 
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("file_picker resume error: %v", err)
+			s.notifyError(err)
 		}
 		return
 	}
@@ -1811,6 +1840,7 @@ func (s *Session) resumeFilePickerSaveResp(pickerID string, jsonResp string, log
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("file_picker_save resume error: %v", err)
+			s.notifyError(err)
 		}
 		return
 	}
@@ -1840,6 +1870,7 @@ func (s *Session) resumeSleep(sleepID string, logger Logger) {
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("sleep resume error: %v", err)
+			s.notifyError(err)
 		}
 		return
 	}
@@ -1874,6 +1905,7 @@ func (s *Session) resumeTabulatorDataResp(reqID, jsonStr string, logger Logger) 
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("tabulator data resume error: %v", err)
+			s.notifyError(err)
 		}
 		return
 	}
@@ -1907,6 +1939,7 @@ func (s *Session) resumeTabulatorSelectionResp(reqID string, rows []int, logger 
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("tabulator selection resume error: %v", err)
+			s.notifyError(err)
 		}
 		return
 	}
@@ -2233,6 +2266,7 @@ func (s *Session) ResumeFormCoro(name string) bool {
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("form show resume error: %v", err)
+			s.notifyError(err)
 		}
 		return false
 	}

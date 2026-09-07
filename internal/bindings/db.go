@@ -39,21 +39,18 @@ func registerDB(e *Env) {
 		// Parse driver from DSN
 		driver, cleanDSN := parseDSN(dsn)
 		if driver == "" {
-			L.RaiseError("unsupported database driver in DSN: %s", dsn)
-			return 0
+			return e.fail(L, KErrorInvalidParam, "unsupported database driver in DSN: "+dsn)
 		}
 
 		db, err := sql.Open(driver, cleanDSN)
 		if err != nil {
-			L.RaiseError("failed to connect to database: %v", err)
-			return 0
+			return e.fail(L, KErrorComm, "failed to connect to database: "+err.Error())
 		}
 
 		// Test connection
 		if err := db.Ping(); err != nil {
 			db.Close()
-			L.RaiseError("failed to ping database: %v", err)
-			return 0
+			return e.fail(L, KErrorComm, "failed to ping database: "+err.Error())
 		}
 
 		handle := &DBHandle{
@@ -93,8 +90,7 @@ func registerDB(e *Env) {
 		dbHandlesMu.Unlock()
 
 		if !ok {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 		h.Close()
 		return 0
@@ -107,8 +103,7 @@ func registerDB(e *Env) {
 
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 
 		// Collect parameters
@@ -125,21 +120,18 @@ func registerDB(e *Env) {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
 		if !isValidIdentifier(table) {
-			L.RaiseError("db_select: invalid table name %q", table)
-			return 0
+			return e.fail(L, KErrorInvalidParam, "db_select: invalid table name "+table)
 		}
 		fields := L.OptTable(3, L.NewTable())
 		where := L.OptTable(4, L.NewTable())
 		order := L.OptString(5, "")
 		if order != "" && !isValidIdentifier(order) {
-			L.RaiseError("db_select: invalid order column %q", order)
-			return 0
+			return e.fail(L, KErrorInvalidParam, "db_select: invalid order column "+order)
 		}
 
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 
 		// Build field list - allow SQL expressions but reject empty strings
@@ -174,15 +166,13 @@ func registerDB(e *Env) {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
 		if !isValidIdentifier(table) {
-			L.RaiseError("db_insert: invalid table name %q", table)
-			return 0
+			return e.fail(L, KErrorInvalidParam, "db_insert: invalid table name "+table)
 		}
 		keyvals := L.CheckTable(3)
 
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 
 		var columns []string
@@ -212,16 +202,14 @@ func registerDB(e *Env) {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
 		if !isValidIdentifier(table) {
-			L.RaiseError("db_update: invalid table name %q", table)
-			return 0
+			return e.fail(L, KErrorInvalidParam, "db_update: invalid table name "+table)
 		}
 		keyvals := L.CheckTable(3)
 		where := L.OptTable(4, L.NewTable())
 
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 
 		var setClauses []string
@@ -251,15 +239,13 @@ func registerDB(e *Env) {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
 		if !isValidIdentifier(table) {
-			L.RaiseError("db_delete: invalid table name %q", table)
-			return 0
+			return e.fail(L, KErrorInvalidParam, "db_delete: invalid table name "+table)
 		}
 		where := L.OptTable(3, L.NewTable())
 
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 
 		whereClause, whereParams := buildWhereClause(L, where)
@@ -273,22 +259,19 @@ func registerDB(e *Env) {
 		handleID := L.CheckString(1)
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 
 		handle.mu.Lock()
 		defer handle.mu.Unlock()
 
 		if handle.inTx {
-			L.RaiseError("transaction already in progress")
-			return 0
+			return e.fail(L, KErrorConnected, "transaction already in progress")
 		}
 
 		tx, err := handle.db.Begin()
 		if err != nil {
-			L.RaiseError("failed to begin transaction: %v", err)
-			return 0
+			return e.fail(L, KErrorGeneric, "failed to begin transaction: "+err.Error())
 		}
 		handle.tx = tx
 		handle.inTx = true
@@ -300,21 +283,18 @@ func registerDB(e *Env) {
 		handleID := L.CheckString(1)
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 
 		handle.mu.Lock()
 		defer handle.mu.Unlock()
 
 		if !handle.inTx || handle.tx == nil {
-			L.RaiseError("no transaction in progress")
-			return 0
+			return e.fail(L, KErrorNotConnected, "no transaction in progress")
 		}
 
 		if err := handle.tx.Commit(); err != nil {
-			L.RaiseError("failed to commit transaction: %v", err)
-			return 0
+			return e.fail(L, KErrorGeneric, "failed to commit transaction: "+err.Error())
 		}
 		handle.tx = nil
 		handle.inTx = false
@@ -326,21 +306,18 @@ func registerDB(e *Env) {
 		handleID := L.CheckString(1)
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 
 		handle.mu.Lock()
 		defer handle.mu.Unlock()
 
 		if !handle.inTx || handle.tx == nil {
-			L.RaiseError("no transaction in progress")
-			return 0
+			return e.fail(L, KErrorNotConnected, "no transaction in progress")
 		}
 
 		if err := handle.tx.Rollback(); err != nil {
-			L.RaiseError("failed to rollback transaction: %v", err)
-			return 0
+			return e.fail(L, KErrorGeneric, "failed to rollback transaction: "+err.Error())
 		}
 		handle.tx = nil
 		handle.inTx = false
@@ -385,23 +362,19 @@ func registerDB(e *Env) {
 		// Sandbox: resolve path through the environment's resolvePath
 		resolved, err := e.resolvePath(path)
 		if err != nil {
-			L.RaiseError("connect_sqlite: %v", err)
-			return 0
+			return e.fail(L, KErrorGeneric, "connect_sqlite: "+err.Error())
 		}
 		driver, cleanDSN := parseSQLiteDSN(resolved)
 		if driver == "" {
-			L.RaiseError("connect_sqlite: invalid path %q", path)
-			return 0
+			return e.fail(L, KErrorInvalidParam, "connect_sqlite: invalid path "+path)
 		}
 		db, err := sql.Open(driver, cleanDSN)
 		if err != nil {
-			L.RaiseError("connect_sqlite: %v", err)
-			return 0
+			return e.fail(L, KErrorGeneric, "connect_sqlite: "+err.Error())
 		}
 		if err := db.Ping(); err != nil {
 			db.Close()
-			L.RaiseError("connect_sqlite: %v", err)
-			return 0
+			return e.fail(L, KErrorGeneric, "connect_sqlite: "+err.Error())
 		}
 		handle := &DBHandle{db: db, driver: "sqlite"}
 		id := fmt.Sprintf("db_%p", handle)
@@ -422,15 +395,13 @@ func registerDB(e *Env) {
 		handleID := L.CheckString(1)
 		table := L.CheckString(2)
 		if !isValidIdentifier(table) {
-			L.RaiseError("db_kill_table: invalid table name %q", table)
-			return 0
+			return e.fail(L, KErrorInvalidParam, "db_kill_table: invalid table name "+table)
 		}
 		where := L.OptTable(3, L.NewTable())
 
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 		whereClause, whereParams := buildWhereClause(L, where)
 		sqlStr := fmt.Sprintf("DELETE FROM %s%s", table, whereClause)
@@ -445,8 +416,7 @@ func registerDB(e *Env) {
 		name := L.CheckString(2)
 		handle := getDBHandle(L, handleID)
 		if handle == nil {
-			L.RaiseError("database handle not found: %s", handleID)
-			return 0
+			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 		var params []interface{}
 		for i := 3; i <= L.GetTop(); i++ {
@@ -496,8 +466,7 @@ func closeDB(e *Env, L *lua.LState, handleID string) int {
 	}
 	dbHandlesMu.Unlock()
 	if !ok {
-		L.RaiseError("database handle not found: %s", handleID)
-		return 0
+		return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 	}
 	h.Close()
 	return 0
@@ -520,8 +489,7 @@ func executeDBAsync(e *Env, L *lua.LState, handle *DBHandle, sqlStr string, para
 	// Test mode (--test): execute synchronously
 	result, err := executeDBQuery(handle, sqlStr, params, isExec, isQuery, isInsert)
 	if err != nil {
-		L.RaiseError("database error: %v", err)
-		return 0
+		return e.fail(L, KErrorGeneric, "database error: "+err.Error())
 	}
 	pushDBResult(L, result, isExec, isInsert)
 	return 1

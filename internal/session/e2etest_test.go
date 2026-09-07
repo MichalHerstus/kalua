@@ -14,9 +14,9 @@ type tLogger struct {
 	t *testing.T
 }
 
-func (l tLogger) Printf(string, ...interface{})  {}
-func (l tLogger) Warnf(string, ...interface{})   {}
-func (l tLogger) Tracef(string, ...interface{})  {}
+func (l tLogger) Printf(string, ...interface{}) {}
+func (l tLogger) Warnf(string, ...interface{})  {}
+func (l tLogger) Tracef(string, ...interface{}) {}
 func (l tLogger) Errorf(format string, args ...interface{}) {
 	if l.t != nil {
 		l.t.Logf("ERROR: "+format, args...)

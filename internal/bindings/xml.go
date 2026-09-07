@@ -29,8 +29,7 @@ func registerXML(e *Env) {
 		text := L.CheckString(1)
 		root, err := parseXML(text)
 		if err != nil {
-			L.RaiseError("xml_parse: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, "xml_parse: "+err.Error())
 		}
 		handle := &xmlDocHandle{root: root}
 		// Store handle as lightuserdata
@@ -45,8 +44,7 @@ func registerXML(e *Env) {
 		ud := L.CheckUserData(1)
 		handle, ok := ud.Value.(*xmlDocHandle)
 		if !ok || handle.root == nil {
-			L.RaiseError("xml_root: invalid document handle")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "xml_root: invalid document handle")
 		}
 		L.Push(lua.LString(handle.root.Name))
 		return 1
@@ -57,8 +55,7 @@ func registerXML(e *Env) {
 		ud := L.CheckUserData(1)
 		handle, ok := ud.Value.(*xmlDocHandle)
 		if !ok || handle.root == nil {
-			L.RaiseError("xml_child: invalid document handle")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "xml_child: invalid document handle")
 		}
 		path := L.CheckString(2)
 		node := findNode(handle.root, path)
@@ -75,8 +72,7 @@ func registerXML(e *Env) {
 		ud := L.CheckUserData(1)
 		handle, ok := ud.Value.(*xmlDocHandle)
 		if !ok || handle.root == nil {
-			L.RaiseError("xml_child_list: invalid document handle")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "xml_child_list: invalid document handle")
 		}
 		path := L.CheckString(2)
 		parent := findNode(handle.root, path)
@@ -97,8 +93,7 @@ func registerXML(e *Env) {
 		ud := L.CheckUserData(1)
 		handle, ok := ud.Value.(*xmlDocHandle)
 		if !ok || handle.root == nil {
-			L.RaiseError("xml_attr: invalid document handle")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "xml_attr: invalid document handle")
 		}
 		path := L.CheckString(2)
 		attrName := L.CheckString(3)
@@ -120,8 +115,7 @@ func registerXML(e *Env) {
 		ud := L.CheckUserData(1)
 		handle, ok := ud.Value.(*xmlDocHandle)
 		if !ok || handle.root == nil {
-			L.RaiseError("xml_content: invalid document handle")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "xml_content: invalid document handle")
 		}
 		path := L.CheckString(2)
 		node := findNode(handle.root, path)
@@ -138,8 +132,7 @@ func registerXML(e *Env) {
 		ud := L.CheckUserData(1)
 		handle, ok := ud.Value.(*xmlDocHandle)
 		if !ok || handle.root == nil {
-			L.RaiseError("xml_attrs: invalid document handle")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "xml_attrs: invalid document handle")
 		}
 		path := L.CheckString(2)
 		node := findNode(handle.root, path)
@@ -160,8 +153,7 @@ func registerXML(e *Env) {
 		ud := L.CheckUserData(1)
 		handle, ok := ud.Value.(*xmlDocHandle)
 		if !ok || handle.root == nil {
-			L.RaiseError("xml_name: invalid document handle")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "xml_name: invalid document handle")
 		}
 		path := L.CheckString(2)
 		node := findNode(handle.root, path)

@@ -46,8 +46,7 @@ func registerCrypto(e *Env) {
 		case "hmac-sha256":
 			key := []byte(L.OptString(3, ""))
 			if len(key) == 0 {
-				L.RaiseError("checksum error: hmac-sha256 requires a key")
-				return 0
+				return e.fail(L, KErrorInvalidParam, "checksum error: hmac-sha256 requires a key")
 			}
 			mac := hmac.New(sha256.New, key)
 			mac.Write(data)
@@ -57,17 +56,14 @@ func registerCrypto(e *Env) {
 			iterations := L.OptInt(4, 10000)
 			keylen := L.OptInt(5, 32)
 			if iterations < 1 || keylen < 1 {
-				L.RaiseError("checksum error: pbkdf2 requires positive iterations and keylen")
-				return 0
+				return e.fail(L, KErrorInvalidParam, "checksum error: pbkdf2 requires positive iterations and keylen")
 			}
 			if len(salt) == 0 {
-				L.RaiseError("checksum error: pbkdf2 requires a salt")
-				return 0
+				return e.fail(L, KErrorInvalidParam, "checksum error: pbkdf2 requires a salt")
 			}
 			out = []byte(hex.EncodeToString(pbkdf2.Key(data, salt, iterations, keylen, sha256.New)))
 		default:
-			L.RaiseError("checksum error: unknown algorithm %q (use crc32, md5, sha1, sha256, hmac-sha256, pbkdf2)", alg)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("checksum error: unknown algorithm %q (use crc32, md5, sha1, sha256, hmac-sha256, pbkdf2)", alg))
 		}
 		L.Push(lua.LString(out))
 		return 1
@@ -79,8 +75,7 @@ func registerCrypto(e *Env) {
 		key := []byte(L.CheckString(2))
 		enc, err := aesGCMSeal(plain, key)
 		if err != nil {
-			L.RaiseError("encrypt error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("encrypt error: %v", err))
 		}
 		L.Push(lua.LString(base64.StdEncoding.EncodeToString(enc)))
 		return 1
@@ -92,13 +87,11 @@ func registerCrypto(e *Env) {
 		key := []byte(L.CheckString(2))
 		raw, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
-			L.RaiseError("decrypt error: invalid base64: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("decrypt error: invalid base64: %v", err))
 		}
 		plain, err := aesGCMOpen(raw, key)
 		if err != nil {
-			L.RaiseError("decrypt error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("decrypt error: %v", err))
 		}
 		L.Push(lua.LString(plain))
 		return 1
@@ -118,23 +111,20 @@ func registerCrypto(e *Env) {
 		if decryptMode {
 			raw, err := base64.StdEncoding.DecodeString(luaToString(L, 3))
 			if err != nil {
-				L.RaiseError("crypt_symmetric error: invalid base64: %v", err)
-				return 0
+				return e.fail(L, KErrorInvalidParam, fmt.Sprintf("crypt_symmetric error: invalid base64: %v", err))
 			}
 			var iv []byte
 			if L.GetTop() >= 4 && L.Get(4) != lua.LNil {
 				iv = []byte(L.CheckString(4))
 			} else {
 				if len(raw) < aes.BlockSize {
-					L.RaiseError("crypt_symmetric error: ciphertext too short (need at least %d bytes for IV)", aes.BlockSize)
-					return 0
+					return e.fail(L, KErrorInvalidParam, fmt.Sprintf("crypt_symmetric error: ciphertext too short (need at least %d bytes for IV)", aes.BlockSize))
 				}
 				iv, raw = raw[:aes.BlockSize], raw[aes.BlockSize:]
 			}
 			out, err := aesCBCCrypt(key, iv, raw, true)
 			if err != nil {
-				L.RaiseError("crypt_symmetric error: %v", err)
-				return 0
+				return e.fail(L, classifyError(err), fmt.Sprintf("crypt_symmetric error: %v", err))
 			}
 			L.Push(lua.LString(out))
 			return 1
@@ -144,20 +134,17 @@ func registerCrypto(e *Env) {
 		if L.GetTop() >= 4 && L.Get(4) != lua.LNil {
 			iv = []byte(L.CheckString(4))
 			if len(iv) != aes.BlockSize {
-				L.RaiseError("crypt_symmetric error: iv must be %d bytes", aes.BlockSize)
-				return 0
+				return e.fail(L, KErrorInvalidParam, fmt.Sprintf("crypt_symmetric error: iv must be %d bytes", aes.BlockSize))
 			}
 		} else {
 			iv = make([]byte, aes.BlockSize)
 			if _, err := rand.Read(iv); err != nil {
-				L.RaiseError("crypt_symmetric error: %v", err)
-				return 0
+				return e.fail(L, classifyError(err), fmt.Sprintf("crypt_symmetric error: %v", err))
 			}
 		}
 		ct, err := aesCBCCrypt(key, iv, data, false)
 		if err != nil {
-			L.RaiseError("crypt_symmetric error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("crypt_symmetric error: %v", err))
 		}
 		out := make([]byte, 0, len(iv)+len(ct))
 		out = append(out, iv...)
@@ -177,18 +164,15 @@ func registerCrypto(e *Env) {
 		if strings.Contains(alg, "decrypt") {
 			raw, err := base64.StdEncoding.DecodeString(luaToString(L, 3))
 			if err != nil {
-				L.RaiseError("crypt_asymmetric error: invalid base64: %v", err)
-				return 0
+				return e.fail(L, KErrorInvalidParam, fmt.Sprintf("crypt_asymmetric error: invalid base64: %v", err))
 			}
 			priv, err := parseRSAPrivateKey(key)
 			if err != nil {
-				L.RaiseError("crypt_asymmetric error: %v", err)
-				return 0
+				return e.fail(L, classifyError(err), fmt.Sprintf("crypt_asymmetric error: %v", err))
 			}
 			out, err := rsa.DecryptPKCS1v15(nil, priv, raw)
 			if err != nil {
-				L.RaiseError("crypt_asymmetric error: %v", err)
-				return 0
+				return e.fail(L, classifyError(err), fmt.Sprintf("crypt_asymmetric error: %v", err))
 			}
 			L.Push(lua.LString(out))
 			return 1
@@ -196,13 +180,11 @@ func registerCrypto(e *Env) {
 
 		pub, err := parseRSAPublicKey(key)
 		if err != nil {
-			L.RaiseError("crypt_asymmetric error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("crypt_asymmetric error: %v", err))
 		}
 		out, err := rsa.EncryptPKCS1v15(nil, pub, data)
 		if err != nil {
-			L.RaiseError("crypt_asymmetric error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("crypt_asymmetric error: %v", err))
 		}
 		L.Push(lua.LString(base64.StdEncoding.EncodeToString(out)))
 		return 1
@@ -217,14 +199,12 @@ func registerCrypto(e *Env) {
 
 		priv, err := parseRSAPrivateKey(key)
 		if err != nil {
-			L.RaiseError("sign error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("sign error: %v", err))
 		}
 		hashType, digest := digestFor(data, hashAlg)
 		out, err := rsa.SignPKCS1v15(nil, priv, hashType, digest[:])
 		if err != nil {
-			L.RaiseError("sign error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("sign error: %v", err))
 		}
 		L.Push(lua.LString(base64.StdEncoding.EncodeToString(out)))
 		return 1
@@ -235,16 +215,14 @@ func registerCrypto(e *Env) {
 		data := []byte(luaToString(L, 1))
 		sig, err := base64.StdEncoding.DecodeString(L.CheckString(2))
 		if err != nil {
-			L.RaiseError("verify error: invalid base64 signature: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("verify error: invalid base64 signature: %v", err))
 		}
 		key := []byte(L.CheckString(3))
 		hashAlg := strings.ToLower(L.OptString(4, "sha256"))
 
 		pub, err := parseRSAPublicKey(key)
 		if err != nil {
-			L.RaiseError("verify error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("verify error: %v", err))
 		}
 		hashType, digest := digestFor(data, hashAlg)
 		err = rsa.VerifyPKCS1v15(pub, hashType, digest[:], sig)

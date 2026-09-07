@@ -159,6 +159,8 @@ func TestServe_UIStubsRaiseError(t *testing.T) {
 		`k.ctrl.get_item_count("f", "b")`,
 		`k.ctrl.execute_event("f", "b", "onclick")`,
 		`k.status_show("x")`,
+		`k.set_property("f", "bg", "#000")`,
+		`k.get_property("f", "bg")`,
 	} {
 		err := runServeLua(t, store, src)
 		if err == nil {

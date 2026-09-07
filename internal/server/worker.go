@@ -17,6 +17,7 @@ type Worker struct {
 	id       int
 	L        *lua.LState
 	app      *vm.App
+	env      *bindings.Env
 	shared   *SharedState
 	wsHub    *WSHub
 	tcpHub   *TCPHub
@@ -25,8 +26,8 @@ type Worker struct {
 	busy     bool
 	logger   Logger
 
-	refs     atomic.Int32 // active leases (HTTP handles, WS/TCP connections)
-	retired  atomic.Bool  // true once superseded by a hot reload
+	refs      atomic.Int32 // active leases (HTTP handles, WS/TCP connections)
+	retired   atomic.Bool  // true once superseded by a hot reload
 	closeOnce sync.Once
 }
 
@@ -50,6 +51,11 @@ func NewWorker(id int, scriptPath string, opts bindings.Options, shared *SharedS
 		L.Close()
 		return nil, err
 	}
+
+	// Setup serve-mode bindings (no UI bindings) BEFORE the chunk runs, so
+	// top-level k.* calls and on_error registration work like run mode.
+	env := bindings.SetupServe(L, app, opts, shared, wsHub, tcpHub, logger)
+	bindings.SetupUIError(L)
 
 	// Execute chunk to define main() and callbacks
 	if err := L.CallByParam(lua.P{Fn: chunkFn, NRet: 0, Protect: true}); err != nil {
@@ -91,10 +97,6 @@ func NewWorker(id int, scriptPath string, opts bindings.Options, shared *SharedS
 		}
 	}
 
-	// Setup serve-mode bindings (no UI bindings)
-	bindings.SetupServe(L, app, opts, shared, wsHub, tcpHub, logger)
-	bindings.SetupUIError(L)
-
 	// Get main function
 	mainFn := L.GetGlobal("main")
 	if mainFn == lua.LNil {
@@ -117,6 +119,7 @@ func NewWorker(id int, scriptPath string, opts bindings.Options, shared *SharedS
 		id:     id,
 		L:      L,
 		app:    app,
+		env:    env,
 		shared: shared,
 		wsHub:  wsHub,
 		tcpHub: tcpHub,
@@ -178,6 +181,7 @@ func (w *Worker) CallHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, e
 	}, reqTable)
 	if err != nil {
 		w.L.SetTop(0)
+		w.notifyError(err)
 		return HTTPResponse{Status: 500, Body: err.Error()}, err
 	}
 
@@ -324,6 +328,7 @@ func (w *Worker) CallWS(msg WSMessage, ws *WSConn) {
 		if w.logger != nil {
 			w.logger.Errorf("handle_ws error: %v", err)
 		}
+		w.notifyError(err)
 		return
 	}
 
@@ -358,6 +363,7 @@ func (w *Worker) CallTCP(msg TCPMessage, tcp *TCPConn) {
 		if w.logger != nil {
 			w.logger.Errorf("handle_tcp error: %v", err)
 		}
+		w.notifyError(err)
 		return
 	}
 
@@ -392,6 +398,7 @@ func (w *Worker) CallInit(cfg Config) error {
 		cancel()
 	}
 	if st == lua.ResumeError {
+		w.notifyError(err)
 		return fmt.Errorf("init error: %w", err)
 	}
 	return nil
@@ -413,8 +420,20 @@ func (w *Worker) CallShutdown() {
 	if cancel != nil && st != lua.ResumeOK {
 		cancel()
 	}
-	if st == lua.ResumeError && w.logger != nil {
-		w.logger.Errorf("shutdown error: %v", err)
+	if st == lua.ResumeError {
+		if w.logger != nil {
+			w.logger.Errorf("shutdown error: %v", err)
+		}
+		w.notifyError(err)
+	}
+}
+
+// notifyError fires the Kalipso k.on_error hook for a genuine Lua error that
+// aborted a serve-mode handler (http/ws/tcp/init/shutdown). Cleanup still
+// proceeds (these frames run under w.mu); this lets the hook observe the error.
+func (w *Worker) notifyError(err error) {
+	if w.env != nil {
+		w.env.FireError(w.L, bindings.KErrorGeneric, err.Error())
 	}
 }
 

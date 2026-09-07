@@ -143,6 +143,10 @@ func renderGlobals(buf *bytes.Buffer) {
 			desc = "Accessor: `CTRL(name)` returns a control handle for `k.ctrl.*` operations."
 		case "main":
 			desc = "Entry point function (required in run mode)."
+		case "ERRORCODE":
+			desc = "Last Kalipso error code (number; nil until an error). Negative `K_ERROR_*` values, default `-1`."
+		case "ERRORMSG":
+			desc = "Text of the last error (string; \"\" until an error)."
 		}
 		buf.WriteString(fmt.Sprintf("- **`%s`** — %s\n", g, desc))
 	}

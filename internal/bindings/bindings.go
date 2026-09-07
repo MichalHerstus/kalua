@@ -8,8 +8,10 @@
 package bindings
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/yuin/gopher-lua"
 
@@ -70,6 +72,23 @@ type Env struct {
 
 	// verbose eust whether k.* API tracing is enabled (Options.Verbose).
 	verbose bool
+
+	// onErr is the script-registered k.on_error(fn) hook (or nil). When a
+	// binding fails it is invoked with (ERRORCODE, ERRORMSG) so the script can
+	// show the error and continue. See e.fail / fireError.
+	onErr lua.LValue
+
+	// onErrBusy guards against re-entrancy: while a hook runs, further errors
+	// (from the hook itself) set ERRORCODE/ERRORMSG but skip re-invoking it.
+	onErrBusy bool
+
+	// errCache remembers the last ERRORCODE/ERRORMSG written to THIS state so
+	// identical repeated failures skip touching the globals. Per-Env (per
+	// LState) so fresh sessions always observe freshly-seeded values.
+	errCache struct {
+		code lua.LValue
+		msg  lua.LValue
+	}
 }
 
 // Logger interface for logging.
@@ -97,6 +116,7 @@ var registerKnown = map[string]string{
 	"screen_size":               "flow",
 	"http_request":              "flow",
 	"yield":                     "flow",
+	"on_error":                  "flow",
 	"assign":                    "flow",
 	"set":                       "flow",
 	"exec":                      "flow",
@@ -112,6 +132,8 @@ var registerKnown = map[string]string{
 	"form.clear":                "forms",
 	"form.refresh":              "forms",
 	"form.on":                   "forms",
+	"set_property":              "forms",
+	"get_property":              "forms",
 	"ctrl":                      "controls", // namespace
 	"ctrl.label":                "controls",
 	"ctrl.textbox":              "controls",
@@ -468,7 +490,19 @@ func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterfac
 	}
 	L.SetGlobal("ARGS", argsT)
 
+	// Seed Kalipso error globals (nil/"", until a binding fails).
+	seedErrorGlobals(L, e)
+
 	return e
+}
+
+// seedErrorGlobals writes the initial ERRORCODE/ERRORMSG (nil/"") and resets
+// the per-Env cache so the first failure in this LState always re-writes them.
+func seedErrorGlobals(L *lua.LState, e *Env) {
+	L.SetGlobal("ERRORCODE", lua.LNil)
+	L.SetGlobal("ERRORMSG", lua.LString(""))
+	e.errCache.code = lua.LNil
+	e.errCache.msg = lua.LString("")
 }
 
 func filepathAbs(p string) (string, error) {
@@ -543,4 +577,104 @@ func v(lv lua.LValue) any {
 func (e *Env) isNull(L *lua.LState) int {
 	L.Push(lua.LBool(L.Get(1) == e.kNULL))
 	return 1
+}
+
+// Kalipso K_ERROR_* negative error codes (§5.4 "error codes"). A binding that
+// fails via e.fail picks the closest code, defaulting to K_ERROR_GENERIC (-1).
+const (
+	KErrorGeneric      = -1
+	KErrorInvalidParam = -6
+	KErrorInvalidPK    = -7
+	KErrorUserCanceled = -8
+	KErrorConnected    = -12 // already connected
+	KErrorNotConnected = -13 // not connected
+	KErrorLoadFile     = -14
+	KErrorSaveFile     = -15
+	KErrorParse        = -16
+	KErrorNotFound     = -17
+	KErrorComm         = -18 // connection/communication failure
+	KErrorCommRemote   = -19
+	KErrorPermission   = -20
+)
+
+// setErrorGlobals writes ERRORCODE / ERRORMSG into the state, caching the last
+// written values on the Env so repeated identical writes are cheap.
+func (e *Env) setErrorGlobals(L *lua.LState, code int, msg string) {
+	c := lua.LNumber(code)
+	m := lua.LString(msg)
+	if e.errCache.code != c {
+		L.SetGlobal("ERRORCODE", c)
+		e.errCache.code = c
+	}
+	if e.errCache.msg != m {
+		L.SetGlobal("ERRORMSG", m)
+		e.errCache.msg = m
+	}
+}
+
+// fireError sets the ERRORCODE/ERRORMSG globals and, when a k.on_error hook is
+// registered, invokes it with (code, msg) protected by pcall so a misbehaving
+// hook can never abort the binding or recurse. Genuinely fatal Lua errors call
+// this too (via fireErrorFromHeart / session / worker frames).
+func (e *Env) fireError(L *lua.LState, code int, msg string) {
+	e.setErrorGlobals(L, code, msg)
+	if e == nil || e.onErr == nil || e.onErr == lua.LNil {
+		return
+	}
+	fn, ok := e.onErr.(*lua.LFunction)
+	if !ok || e.onErrBusy {
+		return
+	}
+	e.onErrBusy = true
+	defer func() { e.onErrBusy = false }()
+	L.SetTop(0)
+	L.Push(fn)
+	L.Push(lua.LNumber(code))
+	L.Push(lua.LString(msg))
+	_ = L.PCall(2, 0, nil)
+}
+
+// fail is the catch+continue error path for a binding: it records the Kalipso
+// error (globals + optional k.on_error hook) and pushes nil so the script
+// continues and can branch on ERRORCODE. Callers `return e.fail(...)`.
+func (e *Env) fail(L *lua.LState, code int, msg string) int {
+	e.fireError(L, code, msg)
+	L.Push(lua.LNil)
+	return 1
+}
+
+// ClassifyError maps a host-side error to the closest Kalipso error code.
+// Exported for host frames (session/worker) that fire the hook on genuine
+// errors. See classifyError for details.
+func ClassifyError(err error) int { return classifyError(err) }
+
+// FireError records a Kalipso error (ERRORCODE/ERRORMSG globals + optional
+// k.on_error hook) without returning a value to Lua. Host frames call this
+// when a genuine Lua error aborts a script frame so the hook still fires.
+func (e *Env) FireError(L *lua.LState, code int, msg string) {
+	e.fireError(L, code, msg)
+}
+
+// classifyError maps a host-side error to the closest Kalipso error code.
+// Used by bindings that aggregate many failure modes (file ops, runBlocking).
+func classifyError(err error) int {
+	if err == nil {
+		return KErrorGeneric
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return KErrorNotFound
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return KErrorPermission
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "denied"), strings.Contains(lower, "permission"):
+		return KErrorPermission
+	case strings.Contains(lower, "no such file"), strings.Contains(lower, "not found"):
+		return KErrorNotFound
+	case strings.Contains(lower, "unsupported"), strings.Contains(lower, "invalid"):
+		return KErrorInvalidParam
+	}
+	return KErrorGeneric
 }

@@ -37,8 +37,7 @@ func registerSoap(e *Env) {
 			}
 		}
 		if url == "" || action == "" {
-			L.RaiseError("webservice_run: profile requires url and action")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "webservice_run: profile requires url and action")
 		}
 
 		return runBlocking(e, L, func() (interface{}, error) {

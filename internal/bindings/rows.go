@@ -70,8 +70,7 @@ func registerRows(e *Env) {
 		v := L.Get(1)
 		arr, ok := v.(*lua.LTable)
 		if !ok {
-			L.RaiseError("json_to_rows: expected an array table")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "json_to_rows: expected an array table")
 		}
 		rows := make([]*lua.LTable, 0, arr.Len())
 		for i := 1; i <= arr.Len(); i++ {
@@ -148,8 +147,7 @@ func registerRows(e *Env) {
 		}
 		text, err := csvString(e, rowsToCSVTable(L, cols, rows), opts)
 		if err != nil {
-			L.RaiseError("rows_to_csv error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("rows_to_csv error: %v", err))
 		}
 		L.Push(lua.LString(text))
 		return 1

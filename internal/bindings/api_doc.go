@@ -73,6 +73,10 @@ var apiDocs = map[string]Info{
 		Docs:    "Raises a deliberate Lua error.",
 		Params:  []Param{P("msg", "string", "Error message raised to the caller.")},
 		Example: `k.error("download failed")`},
+	"on_error": {Name: "on_error", Group: "flow", Signature: "k.on_error(fn)",
+		Docs:    "Registers (or clears, with nil) the Kalipso error hook. When ERRORCODE is set — by a failing binding or a genuine Lua error — fn is called with (ERRORCODE, ERRORMSG) so the script can show the error and continue. Erroring bindings return nil; branch on ERRORCODE.",
+		Params:  []Param{P("fn", "function", "Error handler invoked as fn(ERRORCODE, ERRORMSG); pass nil to clear.")},
+		Example: "k.on_error(function(code, msg)\n  k.msgbox{title=\"Error\", message=msg, type=\"danger\"}\nend)"},
 	"msgbox": {Name: "msgbox", Group: "flow", Signature: "k.msgbox(opts)",
 		Docs: "Shows a message box and returns the clicked button's value. Legacy form: `k.msgbox(text[, kind])` where kind is `info`/`warn`/`error`/`ok-cancel`/`yes-no` (returns `\"ok\"`, `\"cancel\"`, `\"yes\"`, `\"no\"`). Rich form takes a single options table: `type` sets the left color strip (`info` blue, `warning` amber, `danger` red); `buttons` is a list of `{label, value}` pairs (values keep their type: number, boolean or string), `{label=…, value=…}` tables, or bare strings (label = value). When omitted, a single `OK` button returning `\"ok\"` is added.",
 		Params: []Param{
@@ -197,6 +201,21 @@ k.print(res.status, res.body)`},
   k.form.show("details")
 end)
 k.form.on("main", "on_idle", 500, function() ... end)`},
+
+	"set_property": {Name: "set_property", Group: "forms", Signature: "k.set_property(form, prop, value)",
+		Docs: "Sets a form-level property and re-renders the form. Supports title, align, gap and dynamic styling props: bg (background color), color (text color), font (CSS font-family or an h1–h6/p text preset), font_size (numeric px, overrides preset), style (h1–h6/p text preset). The reserved keys name, controls, handlers and order cannot be set.",
+		Params: []Param{
+			P("form", "string", "Form name declared with k.form.new."),
+			P("prop", "string", "Property name: \"title\", \"align\", \"gap\", \"bg\", \"color\", \"font\", \"font_size\", \"style\", ..."),
+			P("value", "any", "Property value (string or number)."),
+		},
+		Example: `k.set_property("main", "bg", "#1e3a5f")
+k.set_property("main", "font", "h2")
+k.set_property("main", "title", "Welcome")`},
+	"get_property": {Name: "get_property", Group: "forms", Signature: "k.get_property(form, prop)",
+		Docs:    "Reads a form-level property; returns nil when the property or form is not set.",
+		Params:  []Param{P("form", "string", "Form name declared with k.form.new."), P("prop", "string", "Property name to read.")},
+		Example: `local bg = k.get_property("main", "bg")`},
 
 	// controls
 	"ctrl": {Name: "ctrl", Group: "controls", Signature: "k.ctrl", Docs: "Control constructors: k.ctrl.label/textbox/button/..."},
@@ -914,7 +933,7 @@ func ExprInfo() []Info {
 }
 
 // Globals lists the script-visible globals beyond the k/K namespaces.
-var Globals = []string{"ARGS", "CTRL", "main"}
+var Globals = []string{"ARGS", "CTRL", "ERRORCODE", "ERRORMSG", "main"}
 
 // namespaceNames are registry entries that are pure namespaces with no
 // implementation of their own; the sync test exempts them from Info.

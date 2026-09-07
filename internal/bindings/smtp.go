@@ -96,8 +96,7 @@ func registerSMTP(e *Env) {
 			}
 		}
 		if len(toList) == 0 {
-			L.RaiseError("smtp_send: 'to' is required")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "smtp_send: 'to' is required")
 		}
 
 		// Optional cc table or string.
@@ -182,24 +181,24 @@ func registerSMTP(e *Env) {
 				msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 				msg.WriteString("\r\n")
 				msg.WriteString(body + "\r\n")
-for _, path := range attachments {
-				// Resolve path through sandbox
-				resolved, err := e.resolvePath(path)
-				if err != nil {
-					return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
-				}
-				fi, err := os.Stat(resolved)
-				if err != nil {
-					return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
-				}
-				if fi.Size() > e.maxFileSize {
-					return nil, fmt.Errorf("smtp error: attachment %s exceeds max file size (%d bytes)", path, e.maxFileSize)
-				}
-				name := filepath.Base(path)
-				data, err := os.ReadFile(resolved)
-				if err != nil {
-					return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
-				}
+				for _, path := range attachments {
+					// Resolve path through sandbox
+					resolved, err := e.resolvePath(path)
+					if err != nil {
+						return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
+					}
+					fi, err := os.Stat(resolved)
+					if err != nil {
+						return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
+					}
+					if fi.Size() > e.maxFileSize {
+						return nil, fmt.Errorf("smtp error: attachment %s exceeds max file size (%d bytes)", path, e.maxFileSize)
+					}
+					name := filepath.Base(path)
+					data, err := os.ReadFile(resolved)
+					if err != nil {
+						return nil, fmt.Errorf("smtp error: attachment %s: %v", path, err)
+					}
 					msg.WriteString("--" + boundary + "\r\n")
 					msg.WriteString("Content-Type: application/octet-stream; name=\"" + name + "\"\r\n")
 					msg.WriteString("Content-Disposition: attachment; filename=\"" + name + "\"\r\n")

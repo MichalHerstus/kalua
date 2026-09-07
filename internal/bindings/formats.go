@@ -102,8 +102,7 @@ func registerCSV(e *Env) {
 		opts := L.OptTable(2, L.NewTable())
 		tbl, err := parseCSV(L, e, []byte(text), opts)
 		if err != nil {
-			L.RaiseError("csv error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("csv error: %v", err))
 		}
 		L.Push(tbl)
 		return 1
@@ -115,8 +114,7 @@ func registerCSV(e *Env) {
 		opts := L.OptTable(2, L.NewTable())
 		text, err := csvString(e, data, opts)
 		if err != nil {
-			L.RaiseError("csv error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("csv error: %v", err))
 		}
 		L.Push(lua.LString(text))
 		return 1
@@ -138,8 +136,7 @@ func registerCSV(e *Env) {
 		opts := L.OptTable(3, L.NewTable())
 		text, err := csvString(e, data, opts)
 		if err != nil {
-			L.RaiseError("csv error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("csv error: %v", err))
 		}
 		return saveVia(e, L, path, text)
 	})
@@ -382,8 +379,7 @@ func registerINI(e *Env) {
 		text := L.CheckString(1)
 		tbl, err := parseINI(L, []byte(text))
 		if err != nil {
-			L.RaiseError("ini error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("ini error: %v", err))
 		}
 		L.Push(tbl)
 		return 1
@@ -393,8 +389,7 @@ func registerINI(e *Env) {
 		data := L.CheckTable(1)
 		text, err := iniString(e, data)
 		if err != nil {
-			L.RaiseError("ini error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("ini error: %v", err))
 		}
 		L.Push(lua.LString(text))
 		return 1
@@ -412,8 +407,7 @@ func registerINI(e *Env) {
 		data := L.CheckTable(2)
 		text, err := iniString(e, data)
 		if err != nil {
-			L.RaiseError("ini error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("ini error: %v", err))
 		}
 		return saveVia(e, L, path, text)
 	})
@@ -633,8 +627,7 @@ func registerYAML(e *Env) {
 		text := L.CheckString(1)
 		v, err := parseYAML(L, e, []byte(text))
 		if err != nil {
-			L.RaiseError("yaml error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("yaml error: %v", err))
 		}
 		if arr, ok := v.([]interface{}); ok && isYAMLDocs(arr) {
 			out := L.NewTable()
@@ -651,8 +644,7 @@ func registerYAML(e *Env) {
 	e.register("yaml_string", "formats", func(L *lua.LState) int {
 		text, err := yamlString(e, L.Get(1))
 		if err != nil {
-			L.RaiseError("yaml error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("yaml error: %v", err))
 		}
 		L.Push(lua.LString(text))
 		return 1
@@ -678,8 +670,7 @@ func registerYAML(e *Env) {
 		path := L.CheckString(1)
 		text, err := yamlString(e, L.Get(2))
 		if err != nil {
-			L.RaiseError("yaml error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("yaml error: %v", err))
 		}
 		return saveVia(e, L, path, text)
 	})
@@ -849,8 +840,7 @@ func registerXMLFormats(e *Env) {
 		data := L.CheckTable(2)
 		var sb strings.Builder
 		if err := writeXMLNode(&sb, data, 0); err != nil {
-			L.RaiseError("xml_save error: %v", err)
-			return 0
+			return e.fail(L, classifyError(err), fmt.Sprintf("xml_save error: %v", err))
 		}
 		return saveVia(e, L, path, sb.String())
 	})

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/yuin/gopher-lua"
+
+	"kalua/internal/vm"
 )
 
 func ctrlTable(L *lua.LState, ctrlType string, opts map[string]lua.LValue) *lua.LTable {
@@ -281,8 +283,8 @@ func TestNoNilBaked(t *testing.T) {
 	L := setupTestState(t)
 
 	html := layoutTestForm(t, L, map[string]lua.LValue{}, [][]lua.LValue{
-		{str("menu"), str("list")},                              // no label, no items
-		{str("txt"), str("textbox")},                            // no label, no value
+		{str("menu"), str("list")},   // no label, no items
+		{str("txt"), str("textbox")}, // no label, no value
 		{str("area"), str("textbox"), str("multiline"), ltrue(), str("rows"), num(3)}, // textarea w/o value
 	})
 
@@ -507,5 +509,100 @@ func TestRenderControlAlign(t *testing.T) {
 	}))
 	if strings.Contains(left, "align-self") {
 		t.Errorf("left align should be a no-op: %s", left)
+	}
+}
+
+// setupFullState builds a sandboxed VM with all bindings installed (no
+// session), for end-to-end k.set_property / k.get_property script tests.
+func setupFullState(t *testing.T) *lua.LState {
+	t.Helper()
+	L := vm.New()
+	t.Cleanup(L.Close)
+	app := vm.NewApp(L)
+	Setup(L, app, Options{}, nil, nil)
+	return L
+}
+
+// TestSetGetPropertyFormLevel verifies §k.set_property/get_property: form-level
+// property write/read round-trip, unset→nil, missing form→nil, reserved keys
+// rejected, and the rendered form div carrying the styling CSS.
+func TestSetGetPropertyFormLevel(t *testing.T) {
+	L := setupFullState(t)
+
+	src := `
+k.form.new("main", { title = "Hello", layout = "vertical" })
+k.set_property("main", "bg", "#123456")
+k.set_property("main", "font_table", "0")  -- harmless junk key round-trips
+k.set_property("main", "title", "Welcome")
+
+local function assert(c, m) if not c then error(m) end end
+assert(k.get_property("main", "bg") == "#123456", "bg read-back")
+assert(k.get_property("main", "title") == "Welcome", "title read-back")
+assert(k.get_property("main", "color") == nil, "unset prop -> nil")
+assert(k.get_property("nope", "bg") == nil, "missing form -> nil")
+
+-- Reserved structural keys are rejected (fail → nil + ERRORCODE).
+local r = k.set_property("main", "controls", {})
+assert(r == nil, "reserved key returns nil")
+assert(ERRORCODE == -6, "reserved key sets ERRORCODE -6")
+`
+	if err := L.DoString(src); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// The rendered form div carries the styling CSS.
+	html := renderForm(L, "main")
+	for _, want := range []string{`background:#123456`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("renderForm missing %q: %s", want, html)
+		}
+	}
+	// Title updated and controls survived the reserved-key guard.
+	if !strings.Contains(html, "Welcome") || strings.Contains(html, "Hello") {
+		t.Errorf("title not updated in render: %s", html)
+	}
+	main := L.GetGlobal("main").(*lua.LTable)
+	if ctrl := main.RawGetString("controls"); ctrl.Type() != lua.LTTable {
+		t.Errorf("controls was clobbered (type %v)", ctrl.Type())
+	}
+}
+
+// TestStyleFromProps unit-tests the shared styling-string builder used by
+// renderForm: bg/color/font-family, h1–h6/p presets, font_size px override and
+// the style preset.
+func TestStyleFromProps(t *testing.T) {
+	L := setupTestState(t)
+
+	if got := styleFromProps(L.NewTable()); got != "" {
+		t.Errorf("empty props = %q, want empty string", got)
+	}
+
+	tbl := L.NewTable()
+	tbl.RawSetString("bg", str("#000"))
+	tbl.RawSetString("color", str("white"))
+	tbl.RawSetString("font", str("Open Sans"))
+	tbl.RawSetString("font_size", num(14))
+	got := styleFromProps(tbl)
+	for _, want := range []string{"background:#000", "color:white", "font-family:Open Sans", "font-size:14px"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+
+	// font preset is superseded by font_size px.
+	tbl2 := L.NewTable()
+	tbl2.RawSetString("font", str("h1"))
+	tbl2.RawSetString("font_size", num(22))
+	got2 := styleFromProps(tbl2)
+	if !strings.Contains(got2, "font-size:22px") || strings.Contains(got2, "2em") {
+		t.Errorf("font_size should override preset: %q", got2)
+	}
+
+	// style preset adds font-size + font-weight.
+	tbl3 := L.NewTable()
+	tbl3.RawSetString("style", str("h3"))
+	got3 := styleFromProps(tbl3)
+	if !strings.Contains(got3, "font-size:1.17em") || !strings.Contains(got3, "font-weight:700") {
+		t.Errorf("style preset h3: %q", got3)
 	}
 }

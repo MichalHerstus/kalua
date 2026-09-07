@@ -22,8 +22,7 @@ func registerJSON(e *Env) {
 		text := L.CheckString(1)
 		v, err := parseJSON(L, e, []byte(text))
 		if err != nil {
-			L.RaiseError("json error: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %v", err))
 		}
 		L.Push(v)
 		return 1
@@ -33,8 +32,7 @@ func registerJSON(e *Env) {
 	e.register("json_string", "json", func(L *lua.LState) int {
 		out, err := stringifyJSON(e, L.Get(1))
 		if err != nil {
-			L.RaiseError("json error: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %v", err))
 		}
 		L.Push(lua.LString(out))
 		return 1
@@ -67,8 +65,7 @@ func registerJSON(e *Env) {
 		path := L.CheckString(1)
 		text, err := stringifyJSON(e, L.Get(2))
 		if err != nil {
-			L.RaiseError("json error: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %v", err))
 		}
 		data := []byte(text)
 		return runBlocking(e, L, func() (interface{}, error) {
@@ -88,8 +85,7 @@ func registerJSON(e *Env) {
 		path := L.OptString(2, "")
 		v, err := navigateJSON(L, e, L.Get(1), path)
 		if err != nil {
-			L.RaiseError("json error: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %v", err))
 		}
 		L.Push(v)
 		return 1
@@ -101,18 +97,15 @@ func registerJSON(e *Env) {
 		idx := L.CheckInt(3)
 		v, err := navigateJSON(L, e, L.Get(1), path)
 		if err != nil {
-			L.RaiseError("json error: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %v", err))
 		}
 		tbl, ok := v.(*lua.LTable)
 		if !ok {
-			L.RaiseError("json error: %s does not resolve to an array", path)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %s does not resolve to an array", path))
 		}
 		item := tbl.RawGetInt(idx + 1)
 		if item == lua.LNil {
-			L.RaiseError("json error: array index %d out of range", idx)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: array index %d out of range", idx))
 		}
 		L.Push(item)
 		return 1
@@ -123,13 +116,11 @@ func registerJSON(e *Env) {
 		path := L.OptString(2, "")
 		v, err := navigateJSON(L, e, L.Get(1), path)
 		if err != nil {
-			L.RaiseError("json error: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %v", err))
 		}
 		tbl, ok := v.(*lua.LTable)
 		if !ok {
-			L.RaiseError("json error: %s does not resolve to a table", path)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %s does not resolve to a table", path))
 		}
 		L.Push(lua.LNumber(tbl.Len()))
 		return 1
@@ -140,13 +131,11 @@ func registerJSON(e *Env) {
 		path := L.OptString(2, "")
 		v, err := navigateJSON(L, e, L.Get(1), path)
 		if err != nil {
-			L.RaiseError("json error: %v", err)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %v", err))
 		}
 		tbl, ok := v.(*lua.LTable)
 		if !ok {
-			L.RaiseError("json error: %s does not resolve to a table", path)
-			return 0
+			return e.fail(L, KErrorInvalidParam, fmt.Sprintf("json error: %s does not resolve to a table", path))
 		}
 		names := tableNames(tbl)
 		sort.Strings(names)

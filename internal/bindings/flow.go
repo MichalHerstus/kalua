@@ -229,15 +229,15 @@ func registerFlow(e *Env) {
 		return L.Yield(lua.LNil)
 	})
 
-// k.pick_file([opts]) — open a browser file picker dialog.
-// opts (optional table): {accept="image/*,.pdf", multiple=true, mode="open|save|download", filename="default.txt", data="base64 content"}
-// mode: "open" (default) - pick existing files
-//       "save" - pick location to save a file, returns {path, name}
-//       "download" - download provided data to a file, returns {path, name}
-// Returns a table of files for open mode: {{name, size, type, data}, ...}
-// Returns {path, name} for save/download modes.
-// Returns nil on cancel.
-// Suspends the current coroutine until files are selected or cancelled.
+	// k.pick_file([opts]) — open a browser file picker dialog.
+	// opts (optional table): {accept="image/*,.pdf", multiple=true, mode="open|save|download", filename="default.txt", data="base64 content"}
+	// mode: "open" (default) - pick existing files
+	//       "save" - pick location to save a file, returns {path, name}
+	//       "download" - download provided data to a file, returns {path, name}
+	// Returns a table of files for open mode: {{name, size, type, data}, ...}
+	// Returns {path, name} for save/download modes.
+	// Returns nil on cancel.
+	// Suspends the current coroutine until files are selected or cancelled.
 	e.register("pick_file", "flow", func(L *lua.LState) int {
 		if e.Sess == nil {
 			L.RaiseError("pick_file: no session available")
@@ -329,8 +329,7 @@ func registerFlow(e *Env) {
 		}
 		url := opts.RawGetString("url")
 		if url == lua.LNil {
-			L.RaiseError("http_request: url is required")
-			return 0
+			return e.fail(L, KErrorInvalidParam, "http_request: url is required")
 		}
 		body := opts.RawGetString("body")
 		if body == lua.LNil {
@@ -507,8 +506,29 @@ func registerFlow(e *Env) {
 		return 1
 	})
 
+	// k.on_error(fn|nil) — register/clear the Kalipso error hook. When a
+	// failing binding (or a genuine Lua error) sets ERRORCODE, fn is called
+	// with (ERRORCODE, ERRORMSG) so the script can react and continue.
+	registerOnError(e)
+
 	// k.assign / k.set / k.exec (action set trio, §5.2)
 	registerAssignSetExec(e)
+}
+
+// registerOnError installs k.on_error(fn|nil), the Kalipso error hook. Shared
+// between run (registerFlow) and serve (SetupServe) modes.
+func registerOnError(e *Env) {
+	e.register("on_error", "flow", func(L *lua.LState) int {
+		fn := L.Get(1)
+		if fn != lua.LNil {
+			if _, ok := fn.(*lua.LFunction); !ok {
+				L.RaiseError("on_error: expected a function or nil")
+				return 0
+			}
+		}
+		e.onErr = fn
+		return 0
+	})
 }
 
 // registerAssignSetExec registers k.assign, k.set, k.exec (action set trio, §5.2).
