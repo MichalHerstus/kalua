@@ -25,6 +25,26 @@ func Render() string {
 	return buf.String()
 }
 
+// renderParams writes the parameter table for a binding when it has one.
+func renderBindingDetail(buf *bytes.Buffer, params []bindings.Param, example string) {
+	if len(params) > 0 {
+		buf.WriteString("\n| Parameter | Type | Description |\n")
+		buf.WriteString("|-----------|------|-------------|\n")
+		for _, p := range params {
+			buf.WriteString(fmt.Sprintf("| `%s` | %s | %s |\n", p.Name, p.Type, p.Desc))
+		}
+	}
+	if example != "" {
+		buf.WriteString("\n**Example:**\n\n```lua\n")
+		buf.WriteString(example)
+		if !strings.HasSuffix(example, "\n") {
+			buf.WriteString("\n")
+		}
+		buf.WriteString("```\n")
+	}
+	buf.WriteString("\n")
+}
+
 func renderKBindings(buf *bytes.Buffer) {
 	docs := bindings.Docs()
 	namespaces := map[string]bool{
@@ -59,7 +79,8 @@ func renderKBindings(buf *bytes.Buffer) {
 		for _, name := range names {
 			info := docs[name]
 			buf.WriteString(fmt.Sprintf("**`%s`**  \n", info.Signature))
-			buf.WriteString(fmt.Sprintf("%s\n\n", info.Docs))
+			buf.WriteString(fmt.Sprintf("%s\n", info.Docs))
+			renderBindingDetail(buf, info.Params, info.Example)
 		}
 	}
 }
@@ -102,7 +123,8 @@ func renderExprFuncs(buf *bytes.Buffer) {
 
 		for _, f := range list {
 			buf.WriteString(fmt.Sprintf("**`%s`**  \n", f.Signature))
-			buf.WriteString(fmt.Sprintf("%s\n\n", f.Docs))
+			buf.WriteString(fmt.Sprintf("%s\n", f.Docs))
+			renderBindingDetail(buf, f.Params, f.Example)
 		}
 	}
 }

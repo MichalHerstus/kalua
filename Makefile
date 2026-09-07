@@ -94,12 +94,12 @@ help:
 	@echo "  ci           - Full CI pipeline (build + test-race + vet)"
 	@echo "  ext-build    - Build VSCode extension"
 	@echo "  ext-install  - Install VSCode extension"
-	@echo "  gen-api      - Generate API reference (.opencode/skills/kalua-api/api.md)"
+	@echo "  gen-api      - Generate API reference (_opencode/skills/kalua-api/api.md)"
 	@echo "  check-api    - Verify committed api.md matches generated output"
 
 # Generate API reference markdown from api_doc.go
 gen-api:
-	go run ./cmd/kalua-apidoc -o .opencode/skills/kalua-api/api.md
+	go run ./cmd/kalua-apidoc -o _opencode/skills/kalua-api/api.md
 
 # Check if committed api.md matches generated output (fails on drift)
 check-api:

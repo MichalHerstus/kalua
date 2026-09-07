@@ -20,7 +20,7 @@ func main() {
 
 	if *check {
 		repoRoot := findRepoRoot()
-		apiPath := filepath.Join(repoRoot, ".opencode", "skills", "kalua-api", "api.md")
+		apiPath := filepath.Join(repoRoot, "_opencode", "skills", "kalua-api", "api.md")
 
 		committed, err := os.ReadFile(apiPath)
 		if err != nil {
