@@ -1197,13 +1197,12 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 		conv = op.conv
 	}
 	var resumeVal lua.LValue
-	if err != nil {
+	if errStr, ok := err.(string); ok && errStr != "" {
 		// Catch+continue: record the Kalipso error (ERRORCODE/ERRORMSG +
 		// optional k.on_error hook) and resume with nil so the script can
 		// branch on ERRORCODE instead of crashing.
-		msg := err.(string)
 		if s.env != nil {
-			s.env.FireError(s.L, bindings.ClassifyError(fmt.Errorf("%s", msg)), msg)
+			s.env.FireError(s.L, bindings.ClassifyError(fmt.Errorf("%s", errStr)), errStr)
 		}
 		resumeVal = lua.LNil
 	} else if result != nil {
@@ -1264,19 +1263,20 @@ func (s *Session) RunAsync(co *lua.LState, cancel func(), fn func() (interface{}
 
 		result, err := fn()
 
-		var errStr string
+		// Post completion to inbox. "error" is only set on failure so the
+		// receiver can distinguish success (nil error) from a message.
+		var errVal interface{}
 		if err != nil {
-			errStr = err.Error()
+			errVal = err.Error()
 		}
 
-		// Post completion to inbox
 		select {
 		case s.inbox <- inboxMsg{
 			typ: inboxAsyncDone,
 			data: map[string]interface{}{
 				"op_id":  opID,
 				"result": result,
-				"error":  errStr,
+				"error":  errVal,
 			},
 		}:
 		case <-s.done:
