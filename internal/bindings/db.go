@@ -147,7 +147,7 @@ func registerDB(e *Env) {
 		}
 
 		// Build WHERE clause
-		whereClause, whereParams := buildWhereClause(L, where)
+		whereClause, whereParams := buildWhereClause(handle, where, 1)
 
 		// Build ORDER BY
 		orderClause := ""
@@ -226,7 +226,7 @@ func registerDB(e *Env) {
 			idx++
 		})
 
-		whereClause, whereParams := buildWhereClause(L, where)
+		whereClause, whereParams := buildWhereClause(handle, where, idx)
 		params = append(params, whereParams...)
 
 		sqlStr := fmt.Sprintf("UPDATE %s SET %s%s", table, join(setClauses, ", "), whereClause)
@@ -248,7 +248,7 @@ func registerDB(e *Env) {
 			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
 
-		whereClause, whereParams := buildWhereClause(L, where)
+		whereClause, whereParams := buildWhereClause(handle, where, 1)
 		sqlStr := fmt.Sprintf("DELETE FROM %s%s", table, whereClause)
 
 		return executeDBAsync(e, L, handle, sqlStr, whereParams, true, false, false)
@@ -403,7 +403,7 @@ func registerDB(e *Env) {
 		if handle == nil {
 			return e.fail(L, KErrorNotConnected, "database handle not found: "+handleID)
 		}
-		whereClause, whereParams := buildWhereClause(L, where)
+		whereClause, whereParams := buildWhereClause(handle, where, 1)
 		sqlStr := fmt.Sprintf("DELETE FROM %s%s", table, whereClause)
 		return executeDBAsync(e, L, handle, sqlStr, whereParams, true, false, false)
 	})
@@ -428,8 +428,8 @@ func registerDB(e *Env) {
 		}
 		var sqlStr string
 		switch handle.driver {
-		case "postgres":
-			sqlStr = "CALL " + name + "(" + join(placeholders, ", ") + ")"
+		case "pgx":
+			sqlStr = "SELECT * FROM " + name + "(" + join(placeholders, ", ") + ")"
 		case "sqlserver":
 			sqlStr = "EXEC " + name + " " + join(placeholders, ", ")
 		default: // mysql, sqlite
@@ -595,45 +595,48 @@ func pushDBResult(L *lua.LState, result interface{}, isExec, isInsert bool) {
 	L.Push(tbl)
 }
 
-// parseDSN extracts driver name and cleans DSN
+// parseDSN extracts driver name and returns the DSN in the form the
+// underlying driver expects.
 func parseDSN(dsn string) (driver, cleanDSN string) {
-	// mysql://user:pass@host/db
-	// postgres://user:pass@host/db
-	// sqlserver://user:pass@host/db
-	// sqlite:///path/to/db
-	if len(dsn) > 8 && dsn[:8] == "mysql://" {
-		return "mysql", dsn[8:]
+	if strings.HasPrefix(dsn, "postgres://") {
+		return "pgx", dsn // pgx accepts postgres:// URLs
 	}
-	if len(dsn) > 11 && dsn[:11] == "postgres://" {
-		return "postgres", dsn[11:]
+	if strings.HasPrefix(dsn, "postgresql://") {
+		return "pgx", dsn // pgx also accepts postgresql://
 	}
-	if len(dsn) > 13 && dsn[:13] == "sqlserver://" {
-		return "sqlserver", dsn[13:]
+	if strings.HasPrefix(dsn, "postgres:") {
+		return "pgx", "postgres://" + dsn[len("postgres:"):]
 	}
-	if len(dsn) > 8 && dsn[:8] == "sqlite://" {
-		return "sqlite", dsn[8:]
+	if strings.HasPrefix(dsn, "sqlserver://") {
+		return "sqlserver", dsn // mssql accepts full sqlserver:// URLs
 	}
-	// Try to detect from prefix (driver:path format)
-	if len(dsn) > 6 && dsn[:6] == "mysql:" {
-		return "mysql", dsn[6:]
+	if strings.HasPrefix(dsn, "sqlserver:") {
+		return "sqlserver", "sqlserver://" + dsn[len("sqlserver:"):]
 	}
-	if len(dsn) > 9 && dsn[:9] == "postgres:" {
-		return "postgres", dsn[9:]
+	// mysql and sqlite drivers want the scheme stripped
+	if strings.HasPrefix(dsn, "mysql://") {
+		return "mysql", dsn[len("mysql://"):]
 	}
-	if len(dsn) > 11 && dsn[:11] == "sqlserver:" {
-		return "sqlserver", dsn[11:]
+	if strings.HasPrefix(dsn, "mysql:") {
+		return "mysql", dsn[len("mysql:"):]
 	}
-	if len(dsn) > 7 && dsn[:7] == "sqlite:" {
-		return "sqlite", dsn[7:]
+	if strings.HasPrefix(dsn, "sqlite://") {
+		return "sqlite", dsn[len("sqlite://"):]
+	}
+	if strings.HasPrefix(dsn, "sqlite:") {
+		return "sqlite", dsn[len("sqlite:"):]
 	}
 	return "", ""
 }
 
-// buildWhereClause builds WHERE clause from table
-func buildWhereClause(L *lua.LState, where *lua.LTable) (string, []interface{}) {
+// buildWhereClause builds a WHERE clause from a where table, numbering
+// placeholders sequentially starting at startIdx (1-based) using the handle's
+// driver placeholder.
+func buildWhereClause(handle *DBHandle, where *lua.LTable, startIdx int) (string, []interface{}) {
 	var clauses []string
 	var params []interface{}
 
+	n := startIdx
 	where.ForEach(func(k, v lua.LValue) {
 		col := k.String()
 		// Sanitize column name: only allow alphanumeric and underscore
@@ -641,8 +644,9 @@ func buildWhereClause(L *lua.LState, where *lua.LTable) (string, []interface{}) 
 			// Invalid identifier; skip to prevent SQL injection
 			return
 		}
-		clauses = append(clauses, fmt.Sprintf("%s = ?", col)) // Use ? as generic placeholder
+		clauses = append(clauses, fmt.Sprintf("%s = %s", col, handle.Placeholder(n)))
 		params = append(params, luaValueToGo(v))
+		n++
 	})
 
 	if len(clauses) == 0 {
@@ -675,7 +679,7 @@ func getDBHandle(L *lua.LState, id string) *DBHandle {
 // Placeholder returns the parameter placeholder for the driver
 func (h *DBHandle) Placeholder(n int) string {
 	switch h.driver {
-	case "postgres":
+	case "pgx":
 		return fmt.Sprintf("$%d", n)
 	case "sqlserver":
 		return fmt.Sprintf("@p%d", n)

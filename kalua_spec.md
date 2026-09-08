@@ -439,7 +439,10 @@ Legend: **T1** = MVP · **T2** = second milestone · **—** = out of scope (rea
 | Data Link ×9, Set Sync Status, DB Profile params, Close All ODBC | — (control-linked records / sync infra) | — |
 
 All DB calls run through the async worker pattern (§2.2) and accept bound parameters
-(`?` placeholders) — string interpolation into SQL is discouraged but not forbidden.
+(driver-appropriate placeholders: `?` for MySQL/SQLite, `$1..$N` for Postgres, `@p1..@pN` for
+MSSQL) — string interpolation into SQL is discouraged but not forbidden.
+Postgres/PostgreSQL (`postgres://`) and MSSQL (`sqlserver://`) DSNs keep their `scheme://`
+prefix and are passed to the driver as-is; MySQL and SQLite DSNs have the scheme stripped.
 
 ### 5.4 Group Communications
 
