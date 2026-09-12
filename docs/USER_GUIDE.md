@@ -139,6 +139,7 @@ Commands:
   serve   <app.lua> [flags]   Run app as headless API server
   check   <app.lua>           Validate script (syntax, unknown k.*, main)
   builder <app.lua|form.json> Visual form builder (opens browser)
+  ai      generate/fix/...    Natural language → Lua (see §7.6)
   new     <name>              Scaffold a minimal app.lua
   lsp                         Language server over stdio
   version                     Print version
@@ -3500,7 +3501,13 @@ Delete the selected control with **Delete/Backspace** (when no input field is fo
 - Structure is extracted from the AST: the **first** `k.form.new` wins.
 - Controls are imported in creation order (vertical rendering and grid bucketing depend on it).
 - Non-form code is noted as "will be lost on export".
-- Event handlers are **preserved as read-only metadata** (the builder shows how many handlers are wired); export emits `k.form.on` / `onclick` **TODO stubs** for you to fill in.
+- Event handlers are **preserved**: inline `onclick = function() ... end` and
+  `k.form.on(..., function() ... end)` bodies are captured as source text
+  (stored in the document as `inline` / `handlerBodies`) and **re-injected on
+  Save/Export**, so the builder no longer drops your button and form behaviors.
+  The bodies are still not editable in the property editor (structural tool);
+  edit them in the `.lua` source and re-import. When no body was captured, a
+  `-- TODO: handle ...` stub is emitted instead.
 - Additional forms are skipped with a note.
 
 ## 7.4 Document format (`.kalua-form.json`)
@@ -3558,7 +3565,64 @@ The builder is a small local HTTP server (embedded UI under `/`):
 | `POST /api/import` | Document extracted from Lua source |
 | `POST /api/validate` | Static validation of Lua (`KALUA check` logic) |
 | `POST /api/preview` | HTML preview rendered by the real Go renderer |
+| `GET /api/ai/status` | LLM provider/model + reachability (live ping) |
+| `POST /api/ai/generate` | Natural language → Lua (validated, written to file) |
+| `POST /api/ai/fix` | Send script + errors → LLM returns a corrected script |
+| `POST /api/ai/stream` | SSE stream of the generation (tokens, status, done) |
 | `GET /healthz` | Liveness |
+
+## 7.6 AI builder (natural language → Lua)
+
+`KALUA ai` turns natural language into a run-mode KALUA app and validates the
+result before it is used. Two surfaces are available:
+
+### CLI
+
+```bash
+./KALUA ai generate "a form with name and email" -o myapp.lua
+./KALUA ai fix myapp.lua                       # auto-fix validation errors
+./KALUA ai validate myapp.lua                  # static check (syntax + k.*)
+```
+
+Flags: `--provider lmstudio|openrouter`, `--model`, `--base-url`,
+`--api-key-env`, `--full-doc` (include the full API reference in the prompt).
+
+Configuration (env):
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `KALUA_AI_BASE_URL` | LLM base URL | `http://localhost:1234/v1` (LM Studio) |
+| `KALUA_AI_MODEL` | Model name | `local-model` |
+| `KALUA_AI_API_KEY` | API key (needed for OpenRouter) | — |
+
+Generation pipeline: the model is given a compact run-mode knowledge pack
+(built from `api_doc.go`) plus a component library describing every buildable
+control; the output is checked, and validation errors are fed back to the
+model for up to three automatic fix attempts.
+
+### Builder chat panel
+
+Open the builder and click **AI** in the top bar. The builder reads the same
+`KALUA_AI_*` env vars, **export them in the same shell before launching it**
+(a running process keeps its startup environment). Alternatively pass them
+explicitly as flags:
+
+```bash
+./KALUA builder myapp.lua \
+  --base-url https://openrouter.ai/api/v1 \
+  --model nvidia/nemotron-3.5-lightning:free
+# key still comes from the env var named by --api-key-env (default KALUA_AI_API_KEY)
+```
+
+The status dot turns green when the provider responds; if it stays red, the
+panel shows the exact backend error (e.g. `401 User not found`, `429 rate
+limited`, or a timeout) so you can tell a bad key from a cold model.
+Type a request (e.g. "a login form with username, password and a Sign in
+button"); the response streams live into the Code tab. Use **Fix** to resend
+the script with errors, **Apply to Builder** to import the generated script
+into the visual editor, and the **Edit current form** checkbox to include the
+currently open source as context for follow-up requests (multi-turn chat keeps
+earlier turns in the prompt).
 
 ---
 

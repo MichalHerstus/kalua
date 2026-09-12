@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"kalua/internal/ai"
 	"kalua/internal/checker"
 )
 
@@ -31,6 +32,7 @@ type Server struct {
 	listener net.Listener
 	httpSrv  *http.Server
 	format   string // "lua" or "json"
+	aiCfg    ai.ProviderConfig
 }
 
 // New binds the builder server to host:port immediately (port 0 → ephemeral),
@@ -40,20 +42,36 @@ func New(file, host string, port int) (*Server, error) {
 	if strings.HasSuffix(file, ".lua") {
 		format = "lua"
 	}
+	aiCfg := ai.EnvConfig()
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{path: file, format: format, listener: ln}
+	s := &Server{path: file, format: format, listener: ln, aiCfg: aiCfg}
 	s.httpSrv = &http.Server{
 		Handler:           s.mux(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// Generous response deadlines: AI generation waits for a local model's
+		// first token (cold starts can take minutes) and SSE streams for the
+		// whole generation. The 30s WriteTimeout previously killed mid-flight
+		// AI responses with an empty reply ("Failed to fetch" in the browser).
+		WriteTimeout: 10 * time.Minute,
+		IdleTimeout:  10 * time.Minute,
 	}
 	return s, nil
+}
+
+// SetAI overrides the AI provider config that New() read from the
+// KALUA_AI_* env vars. Used by the CLI's --model/--base-url/--api-key-env.
+func (s *Server) SetAI(cfg ai.ProviderConfig) {
+	s.aiCfg = cfg
+}
+
+// GetAI returns the active AI provider config (for status/debug output).
+func (s *Server) GetAI() ai.ProviderConfig {
+	return s.aiCfg
 }
 
 // Addr returns the bound listener address (resolves ephemeral ports).
@@ -94,6 +112,10 @@ func (s *Server) mux() http.Handler {
 	mux.HandleFunc("/api/import", s.handleImport)
 	mux.HandleFunc("/api/validate", s.handleValidate)
 	mux.HandleFunc("/api/preview", s.handlePreview)
+	mux.HandleFunc("/api/ai/status", s.handleAIStatus)
+	mux.HandleFunc("/api/ai/generate", s.handleAIGenerate)
+	mux.HandleFunc("/api/ai/fix", s.handleAIFix)
+	mux.HandleFunc("/api/ai/stream", s.handleAIStream)
 	return security(noCache(mux))
 }
 
@@ -227,18 +249,28 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Lua string `json:"lua"`
+		Lua  string     `json:"lua"`
+		Mode string     `json:"mode"` // "replace" (default) | "merge"
+		Base *Document  `json:"base"` // current open doc, required for merge
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, err)
 		return
 	}
-	doc, err := Import(req.Lua, s.path)
+	gen, err := Import(req.Lua, s.path)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "doc": doc})
+	if req.Mode == "merge" {
+		if req.Base == nil {
+			http.Error(w, "mode 'merge' requires the 'base' document", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "merged": true, "doc": MergeDocument(req.Base, gen)})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "doc": gen})
 }
 
 func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
@@ -353,3 +385,220 @@ func (s *Server) FileName() string { return s.path }
 
 // AbsPath is a small helper for callers that need the resolved path.
 func AbsPath(p string) (string, error) { return filepath.Abs(p) }
+
+// AIStatusResponse is the JSON response for /api/ai/status.
+type AIStatusResponse struct {
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	BaseURL   string `json:"baseUrl"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (s *Server) handleAIStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	status := AIStatusResponse{
+		Provider:  providerOf(s.aiCfg.BaseURL),
+		Model:     s.aiCfg.Model,
+		BaseURL:   s.aiCfg.BaseURL,
+		Reachable: false,
+	}
+	// Allow enough time for a remote provider's first-token latency (OpenRouter
+	// free routes can be slow when cold; LM Studio may be loading the model).
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client := ai.NewClient(s.aiCfg)
+	_, err := client.Completion(ctx, []ai.ChatMessage{{Role: "user", Content: "Reply with OK."}})
+	if err == nil {
+		status.Reachable = true
+	} else {
+		status.Error = err.Error()
+	}
+	writeJSON(w, status)
+}
+
+// AIGenerateRequest is the JSON body for /api/ai/generate.
+type AIGenerateRequest struct {
+	Request string           `json:"request"`
+	Script  string           `json:"script,omitempty"`
+	History []ai.ChatMessage `json:"history,omitempty"`
+}
+
+// AIGenerateResponse is the JSON response for /api/ai/generate.
+type AIGenerateResponse struct {
+	Script string   `json:"script"`
+	Ok     bool     `json:"ok"`
+	Errors []string `json:"errors,omitempty"`
+	Logs   []string `json:"logs,omitempty"`
+}
+
+func (s *Server) handleAIGenerate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req AIGenerateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if req.Request == "" {
+		writeErr(w, fmt.Errorf("request is required"))
+		return
+	}
+
+	genReq := ai.GenerateRequest{Request: req.Request, Script: req.Script, History: req.History}
+	result, err := ai.Generate(context.Background(), s.aiCfg, genReq)
+	if err != nil {
+		writeErr(w, fmt.Errorf("generation failed: %v", err))
+		return
+	}
+
+	if err := os.WriteFile(s.path, []byte(result.Script), 0o644); err != nil {
+		writeErr(w, fmt.Errorf("cannot write %s: %v", s.path, err))
+		return
+	}
+
+	res := checker.Check(result.Script, s.path)
+	writeJSON(w, AIGenerateResponse{
+		Script: result.Script,
+		Ok:     len(res.Errors) == 0,
+		Errors: res.Errors,
+		Logs:   result.Logs,
+	})
+}
+
+// AIFixRequest is the JSON body for /api/ai/fix.
+type AIFixRequest struct {
+	Request string           `json:"request,omitempty"`
+	Script  string           `json:"script"`
+	History []ai.ChatMessage `json:"history,omitempty"`
+}
+
+// AIFixResponse is the JSON response for /api/ai/fix.
+type AIFixResponse struct {
+	Script string   `json:"script"`
+	Ok     bool     `json:"ok"`
+	Errors []string `json:"errors,omitempty"`
+	Logs   []string `json:"logs,omitempty"`
+}
+
+func (s *Server) handleAIFix(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req AIFixRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if req.Script == "" {
+		writeErr(w, fmt.Errorf("script is required"))
+		return
+	}
+
+	request := req.Request
+	if request == "" {
+		request = "Fix the validation errors in this KALUA script"
+	}
+
+	genReq := ai.GenerateRequest{Request: request, Script: req.Script, History: req.History}
+	result, err := ai.Generate(context.Background(), s.aiCfg, genReq)
+	if err != nil {
+		writeErr(w, fmt.Errorf("fix failed: %v", err))
+		return
+	}
+
+	if err := os.WriteFile(s.path, []byte(result.Script), 0o644); err != nil {
+		writeErr(w, fmt.Errorf("cannot write %s: %v", s.path, err))
+		return
+	}
+
+	res := checker.Check(result.Script, s.path)
+	writeJSON(w, AIFixResponse{
+		Script: result.Script,
+		Ok:     len(res.Errors) == 0,
+		Errors: res.Errors,
+		Logs:   result.Logs,
+	})
+}
+
+// handleAIStream runs ai.GenerateStream and relays progress as SSE events so
+// the builder chat panel can show tokens as they arrive. A bounded channel
+// decouples the LLM goroutine from the HTTP writer; the stream closes with a
+// final "done" event (or "error").
+func (s *Server) handleAIStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req AIGenerateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Request == "" {
+		http.Error(w, "request is required", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	// Emit a status frame immediately so the browser receives headers and the
+	// first data byte at t=0 (before the first LLM token, which can lag).
+	if _, werr := w.Write([]byte("data: " + sseJSON(map[string]any{"type": "status", "text": "Requesting generation from the model…"}) + "\n\n")); werr != nil {
+		return
+	}
+
+	genReq := ai.GenerateRequest{Request: req.Request, Script: req.Script, History: req.History}
+	out := make(chan string, 8)
+	go func() {
+		defer close(out)
+		_, err := ai.GenerateStream(context.Background(), s.aiCfg, genReq, func(ev ai.StreamEvent) {
+			var payload map[string]any
+			switch ev.Type {
+			case "token":
+				payload = map[string]any{"type": "token", "text": ev.Text}
+			case "status":
+				payload = map[string]any{"type": "status", "text": ev.Text}
+			case "done":
+				payload = map[string]any{"type": "done", "script": ev.Script, "ok": ev.Ok, "errors": ev.Errors, "logs": ev.Logs}
+			}
+			out <- "data: " + sseJSON(payload) + "\n\n"
+		})
+		if err != nil {
+			out <- "data: " + sseJSON(map[string]any{"type": "error", "text": err.Error()}) + "\n\n"
+		}
+	}()
+
+	for frame := range out {
+		if _, werr := w.Write([]byte(frame)); werr != nil {
+			break
+		}
+	}
+}
+
+// sseJSON renders v as a single-line JSON payload for an SSE data frame.
+// json.Marshal escapes embedded newlines, so each event stays on one line.
+func sseJSON(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// providerOf guesses the provider label from a base URL for status display.
+func providerOf(baseUrl string) string {
+	if strings.Contains(baseUrl, "openrouter.ai") {
+		return "openrouter"
+	}
+	if strings.HasPrefix(baseUrl, "http://localhost") || strings.HasPrefix(baseUrl, "http://127.0.0.1") {
+		return "lmstudio"
+	}
+	return "custom"
+}

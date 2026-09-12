@@ -16,7 +16,7 @@ import (
 // used, non-serializable values (function bodies, DB handles, references)
 // are recorded as notes, and surrounding non-form code is left untouched.
 func Import(src, fileName string) (*Document, error) {
-	imp := &importer{handlers: map[string][]string{}}
+	imp := &importer{handlers: map[string][]string{}, bodies: map[string]string{}}
 	stmts, err := parse.Parse(strings.NewReader(src), fileName)
 	if err != nil {
 		return nil, err
@@ -30,15 +30,16 @@ func Import(src, fileName string) (*Document, error) {
 	return &Document{
 		Version: DocVersion,
 		Form: &Form{
-			Name:     imp.form.name,
-			Title:    imp.form.title,
-			Layout:   imp.form.layout,
-			Align:    imp.form.align,
-			Gap:      imp.form.gap,
-			Cells:    imp.form.cells,
-			Controls: imp.form.controls,
-			Handlers: imp.handlers,
-			Notes:    imp.notes,
+			Name:          imp.form.name,
+			Title:         imp.form.title,
+			Layout:        imp.form.layout,
+			Align:         imp.form.align,
+			Gap:           imp.form.gap,
+			Cells:         imp.form.cells,
+			Controls:      imp.form.controls,
+			Handlers:      imp.handlers,
+			HandlerBodies: imp.bodies,
+			Notes:         imp.notes,
 		},
 	}, nil
 }
@@ -57,6 +58,7 @@ type importer struct {
 	form      *formDef
 	formCount int
 	handlers  map[string][]string
+	bodies    map[string]string // ctrl.event → Lua handler source
 	notes     []string
 }
 
@@ -269,10 +271,21 @@ func (im *importer) importControl(n *ast.FuncCallExpr, ctrlType string) {
 		im.note("k.ctrl.%s with non-literal control name skipped", ctrlType)
 		return
 	}
-	ctrl := &Control{Name: name, Type: ctrlType, Opts: map[string]any{}}
+	ctrl := &Control{Name: name, Type: ctrlType, Opts: map[string]any{}, Inline: map[string]string{}}
 	if len(n.Args) >= 3 {
 		if opts, ok := n.Args[2].(*ast.TableExpr); ok {
-			ctrl.Opts, _ = optsToJSON(opts, &im.notes)
+			ctrl.Opts, _ = optsToJSON(opts, &im.notes, &ctrl.Inline)
+		}
+	}
+	// The runtime (and the builder GUI) render a label control's text from the
+	// "text" option; some authors write "label" instead. Canonicalize so the
+	// builder document, export, and preview all agree on "text".
+	if ctrlType == "label" {
+		if _, hasText := ctrl.Opts["text"]; !hasText {
+			if lv, hasLabel := ctrl.Opts["label"]; hasLabel {
+				ctrl.Opts["text"] = lv
+				delete(ctrl.Opts, "label")
+			}
 		}
 	}
 	im.form.controls = append(im.form.controls, ctrl)
@@ -292,6 +305,11 @@ func (im *importer) importFormOn(n *ast.FuncCallExpr) {
 		return
 	}
 	im.handlers[ctrlName] = append(im.handlers[ctrlName], event)
+	if fn, ok := n.Args[3].(*ast.FunctionExpr); ok {
+		im.bodies[ctrlName+"."+event] = PrintFunction(fn)
+	} else {
+		im.note("k.form.on handler '%s' for %q is not a literal function; body not preserved", event, ctrlName)
+	}
 }
 
 // exprName returns a literal string from an expr (StringExpr, or an IdentExpr
@@ -342,7 +360,7 @@ func exprToJSON(e ast.Expr, notes *[]string) any {
 		*notes = append(*notes, fmt.Sprintf("expression %q is not a literal; skipped", n.Value))
 		return nil
 	case *ast.FunctionExpr:
-		*notes = append(*notes, "function body cannot be serialized; skipped")
+		*notes = append(*notes, "function value kept in source (not editable in the builder)")
 		return nil
 	default:
 		*notes = append(*notes, fmt.Sprintf("non-literal value skipped (%T)", e))
@@ -387,7 +405,7 @@ func tableToJSON(t *ast.TableExpr, notes *[]string) any {
 
 // optsToJSON converts a control opts table literal. The `items` key is
 // normalized to the ordered [{key,display}] representation.
-func optsToJSON(t *ast.TableExpr, notes *[]string) (map[string]any, []string) {
+func optsToJSON(t *ast.TableExpr, notes *[]string, inline *map[string]string) (map[string]any, []string) {
 	out := map[string]any{}
 	if t == nil {
 		return out, nil
@@ -402,6 +420,15 @@ func optsToJSON(t *ast.TableExpr, notes *[]string) (map[string]any, []string) {
 				out[k] = itemsToOrdered(tbl)
 				continue
 			}
+		}
+		if fn, ok := f.Value.(*ast.FunctionExpr); ok {
+			// Capture the handler body so export can re-inject it instead of
+			// dropping the control's behavior.
+			if inline != nil {
+				(*inline)[k] = PrintFunction(fn)
+			}
+			*notes = append(*notes, fmt.Sprintf("event handler %q preserved in source (not editable in the builder; re-export keeps it)", k))
+			continue
 		}
 		out[k] = exprToJSON(f.Value, notes)
 	}

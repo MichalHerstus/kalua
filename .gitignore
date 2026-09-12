@@ -11,3 +11,6 @@ KALUA
 .DS_Store
 # KALUA app params (test artifact)
 .kalua.params.json
+
+# Local secrets — never commit
+AI_credentials.md

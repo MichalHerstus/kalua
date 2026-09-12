@@ -87,6 +87,40 @@ end
 
 **Iterate on the CLI output.** The LSP (via `./KALUA lsp`) gives live diagnostics, completion, and hover while editing.
 
+## AI-Assisted Authoring (`KALUA ai`)
+
+For drafting or repairing run-mode form apps, prefer the AI builder over
+hand-writing from scratch. It already carries the `k.*` knowledge pack, so the
+agent does not need to hand the model the whole API reference.
+
+```bash
+# Generate a new run-mode app from natural language (writes + validates)
+KALUA_AI_BASE_URL=http://localhost:1234/v1 KALUA_AI_MODEL=qwen2.5-coder \
+  ./KALUA ai generate "a login form with username, password and a Sign in
+  button that validates and shows a welcome message" -o app.lua
+
+# Auto-fix validation errors (sends script + errors to the LLM)
+./KALUA ai fix app.lua
+
+# Static validation only (no LLM needed) — same logic as `check`
+./KALUA ai validate app.lua
+
+# OpenRouter (external): set KALUA_AI_API_KEY, e.g.
+# KALUA_AI_BASE_URL=https://openrouter.ai/api/v1 KALUA_AI_API_KEY=sk-... \
+#   KALUA_AI_MODEL=openai/gpt-4o-mini ./KALUA ai generate "..."
+```
+
+- `ai generate` runs a validation→fix loop: if the emitted Lua fails
+  `checker.Check`, the errors are fed back to the model (≤3 attempts) before
+  the file is written.
+- The visual builder (`KALUA builder app.lua`) has an **AI** chat panel:
+  NL prompt → `/api/ai/stream` (SSE live streaming) → **Apply to Builder**
+  imports the generated script into the document model. "Edit current form"
+  sends the open source as context; multi-turn chat keeps earlier turns.
+- The system prompt is derived from `api_doc.go` (drift-guarded by
+  `make check-api`) plus a component library — validate AI output with
+  `check`/`run --test` before handing it to a user.
+
 ---
 
 ## Conventions & Pitfalls

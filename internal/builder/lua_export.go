@@ -24,16 +24,22 @@ func ExportLua(d *Document) string {
 		exportControl(&sb, f.Name, c)
 	}
 
-	// Emit handler scaffolds for controls that hold form.on registrations.
+	// Emit handler registrations for controls that hold form.on bodies. When
+	// import captured the original function source, re-inject it so Save keeps
+	// the handler; otherwise emit a TODO scaffold.
 	for _, c := range f.Controls {
 		events := f.Handlers[c.Name]
 		if len(events) == 0 {
 			continue
 		}
 		for _, ev := range events {
-			fmt.Fprintf(&sb, "  k.form.on(%q, %q, %q, function()\n", f.Name, c.Name, ev)
-			fmt.Fprintf(&sb, "    -- TODO: handle '%s' on '%s'\n", ev, c.Name)
-			fmt.Fprintf(&sb, "  end)\n\n")
+			if body := f.HandlerBodies[c.Name+"."+ev]; body != "" {
+				fmt.Fprintf(&sb, "  k.form.on(%q, %q, %q, %s)\n\n", f.Name, c.Name, ev, body)
+			} else {
+				fmt.Fprintf(&sb, "  k.form.on(%q, %q, %q, function()\n", f.Name, c.Name, ev)
+				fmt.Fprintf(&sb, "    -- TODO: handle '%s' on '%s'\n", ev, c.Name)
+				fmt.Fprintf(&sb, "  end)\n\n")
+			}
 		}
 	}
 
@@ -100,6 +106,8 @@ func exportCells(cells []*CellDef) string {
 }
 
 func exportControl(sb *strings.Builder, formName string, c *Control) {
+	// Deterministic key order: JSON opts first, then import-preserved inline
+	// function options (e.g. onclick) so handlers are re-injected on Save.
 	keys := sortedKeys(c.Opts)
 	var opts []string
 	hasDB := false
@@ -118,6 +126,9 @@ func exportControl(sb *strings.Builder, formName string, c *Control) {
 		}
 		opts = append(opts, fmt.Sprintf("%s = %s", k, jsonToLuaLiteral(v)))
 	}
+	for _, k := range sortedKeysStr(c.Inline) {
+		opts = append(opts, fmt.Sprintf("%s = %s", k, c.Inline[k]))
+	}
 	if c.Type == "table" || c.Type == "looper" {
 		hasDB = true
 	}
@@ -125,7 +136,7 @@ func exportControl(sb *strings.Builder, formName string, c *Control) {
 		fmt.Fprintf(sb, "  -- k.ctrl.%s(%q, %q, {...}) configured with a DB handle (assigned at runtime)\n",
 			c.Type, formName, c.Name)
 	}
-	if len(opts) > 3 {
+	if len(opts) > 3 || len(c.Inline) > 0 {
 		fmt.Fprintf(sb, "  k.ctrl.%s(%q, %q, {\n", c.Type, formName, c.Name)
 		for _, o := range opts {
 			fmt.Fprintf(sb, "    %s,\n", o)
@@ -208,6 +219,15 @@ func luaQuote(s string) string {
 }
 
 func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedKeysStr(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

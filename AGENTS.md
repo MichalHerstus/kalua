@@ -19,6 +19,10 @@ go test ./internal/host
 ./KALUA run <app.lua> [--port 0] [--no-browser] [--db NAME=DSN] [--arg K=V] [-v|--verbose] [--repl-on-error] [--debug] [--test]
 ./KALUA serve <app.lua> [--port 8080] [--host 127.0.0.1] [--workers 4] [--mode http|ws|tcp] [--db NAME=DSN] [--arg K=V] [-v|--verbose] [--debug] [--debug-worker]
 ./KALUA check <app.lua>     # static validation (syntax, unknown k.*, main)
+./KALUA ai generate "request" [-o app.lua]  # NL → Lua (run-mode forms)
+./KALUA ai fix <app.lua>                   # auto-fix via LLM
+# KALUA builder has an "AI" chat panel: NL prompt → /api/ai/stream (SSE) → code → Apply to Builder
+./KALUA ai validate <app.lua>              # static check
 ./KALUA new <name>          # scaffold minimal app.lua
 ./KALUA lsp                 # language server over stdio (LSP, Content-Length frames)
 ./KALUA version
@@ -223,6 +227,7 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - API docs: `api_doc.go` updated for `form.new` options and control `cell`/`align` properties; `make gen-api && make check-api` in sync.
 - Tests: `internal/bindings/forms_test.go` (vertical align/gap, grid cells order/auto-main/fallback/map-form, control align merge), `internal/session/layout_e2e_test.go` (real session grid render + `set_property("cell")` move). All pass.
 - Demo: `testdata/apps/layout_demo.lua` (vertical centered + grid dashboard with header/sidebar/main/footer, move-to-sidebar button via set_property). `KALUA check` passes; `go test ./...` + `node --check` green.
+- Vertical-layout buttons: each button renders on its own full-width row (no horizontal grouping — `newRow`/`hGap` opts are parsed and round-tripped for backward compatibility but do not affect layout). The Builder preview embeds and serves the *same* runtime stylesheet at `/static/kalua.css` (copy of `internal/web/assets/kalua.css` — keep in sync via `make sync-assets`, guarded by `make check-assets` in `ci`) so controls render identically in the preview and `kalua run`. The builder loads kalua.css *before* builder.css and resets its run-shell globals (`#app` max-width, `body` padding) so the editor stays full-window-width while form controls keep the run styling. Tests `TestRenderButtonsOnePerRow` (bindings) + `TestButtonsOnePerRow` (builder).
 
 ## Implemented Features (Phase 15 - Tier 1 Completion & Tier 2 DB/Files)
 

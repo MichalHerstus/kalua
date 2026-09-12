@@ -275,7 +275,36 @@ func TestRenderVerticalAlignGap(t *testing.T) {
 	}
 }
 
-// TestNoNilBaked verifies that absent options render empty instead of the
+// TestRenderButtonsOnePerRow verifies vertical layout: every button renders on
+// its own full-width row (no .kalua-button-row grouping), matching the layout
+// shown by `kalua run` (same rendered HTML + same kalua.css in the preview).
+func TestRenderButtonsOnePerRow(t *testing.T) {
+	L := setupTestState(t)
+
+	html := layoutTestForm(t, L, map[string]lua.LValue{}, [][]lua.LValue{
+		{str("b1"), str("button"), str("label"), str("Save"), str("hGap"), num(12)},
+		{str("b2"), str("button"), str("label"), str("Cancel")},
+		{str("lbl"), str("label"), str("text"), str("Done")},
+	})
+
+	// No grouping wrapper is ever emitted.
+	if strings.Contains(html, "kalua-button-row") {
+		t.Errorf("unexpected .kalua-button-row wrapper: %s", html)
+	}
+	if strings.Contains(html, "kalua-button-newrow") {
+		t.Errorf("unexpected kalua-button-newrow class: %s", html)
+	}
+	// Both buttons render bare (no wrapper), each a direct child of the form.
+	for _, id := range []string{`id="c:f:b1"`, `id="c:f:b2"`} {
+		if !strings.Contains(html, id) {
+			t.Errorf("missing button %s: %s", id, html)
+		}
+	}
+	// no inline margin injected when a button is alone on its row
+	if strings.Contains(html, "margin-right") {
+		t.Errorf("unexpected margin-right on a lonesome button: %s", html)
+	}
+}
 // literal string "nil": a label-less control keeps an empty <label> element,
 // a value-less textbox renders value="", a value-less multiline textarea is
 // empty, and an omitted form title renders no title row.

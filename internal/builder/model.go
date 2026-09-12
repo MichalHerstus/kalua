@@ -42,15 +42,16 @@ type Document struct {
 
 // Form is the source-level form definition.
 type Form struct {
-	Name     string      `json:"name"`
-	Title    string      `json:"title,omitempty"`
-	Layout   string      `json:"layout,omitempty"`
-	Align    string      `json:"align,omitempty"`
-	Gap      *int        `json:"gap,omitempty"`
-	Cells    []*CellDef  `json:"cells,omitempty"` // ordered (v2; array form)
-	Controls []*Control  `json:"controls"`
-	Handlers map[string][]string `json:"handlers,omitempty"`
-	Notes    []string    `json:"notes,omitempty"` // import/export notices
+	Name          string              `json:"name"`
+	Title         string              `json:"title,omitempty"`
+	Layout        string              `json:"layout,omitempty"`
+	Align         string              `json:"align,omitempty"`
+	Gap           *int                `json:"gap,omitempty"`
+	Cells         []*CellDef          `json:"cells,omitempty"` // ordered (v2; array form)
+	Controls      []*Control          `json:"controls"`
+	Handlers      map[string][]string `json:"handlers,omitempty"`
+	HandlerBodies map[string]string   `json:"handlerBodies,omitempty"` // ctrl.event → Lua fn source (import-preserved)
+	Notes         []string            `json:"notes,omitempty"`         // import/export notices
 }
 
 // CellDef is one grid cell in a grid layout. Stored in an ordered array so the
@@ -71,9 +72,10 @@ type Border struct {
 
 // Control is a source-level control declaration.
 type Control struct {
-	Name string         `json:"name"`
-	Type string         `json:"type"`
-	Opts map[string]any `json:"opts,omitempty"`
+	Name   string            `json:"name"`
+	Type   string            `json:"type"`
+	Opts   map[string]any    `json:"opts,omitempty"`
+	Inline map[string]string `json:"inline,omitempty"` // opts key → Lua fn source (import-preserved)
 }
 
 // Validate checks the document for structural errors and returns human

@@ -962,11 +962,15 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 	ctrlTbl.RawSetString("type", lua.LString(ctrlType))
 	ctrlTbl.RawSetString("form", lua.LString(formName))
 
-	// Label control uses "text" option, others use "label". Only set when the
-	// source option exists so an absent label stays nil (renders empty, and
-	// k.ctrl.get_property returns nil rather than the string "nil").
+	// Label control uses "text" option, others use "label". "label" is also
+	// accepted as a fallback so builder-authored forms that set label="{...}"
+	// render their text. Only set when the source option exists so an absent
+	// label stays nil (renders empty, and k.ctrl.get_property returns nil
+	// rather than the string "nil").
 	if ctrlType == "label" {
 		if v := opts.RawGetString("text"); v != lua.LNil {
+			ctrlTbl.RawSetString("label", lua.LString(v.String()))
+		} else if v := opts.RawGetString("label"); v != lua.LNil {
 			ctrlTbl.RawSetString("label", lua.LString(v.String()))
 		}
 	} else {
@@ -1166,17 +1170,16 @@ func renderForm(L *lua.LState, formName string) string {
 }
 
 // renderVerticalControls renders a vertical-layout form's controls in creation
-// order (the form's "order" table), falling back to unordered iteration.
+// order (the form's "order" table), falling back to unordered iteration. Each
+// control (including buttons) renders on its own full-width row — matching
+// `kalua run` exactly (the preview loads the same kalua.css).
 func renderVerticalControls(controlsTbl, tbl *lua.LTable) string {
 	order := tbl.RawGetString("order")
 	var html string
 	if orderTbl, ok := order.(*lua.LTable); ok {
 		orderTbl.ForEach(func(k, v lua.LValue) {
-			name := v.String()
-			if ctrl := controlsTbl.RawGetString(name); ctrl != lua.LNil {
-				if ctrlTbl, ok := ctrl.(*lua.LTable); ok {
-					html += renderControl(ctrlTbl)
-				}
+			if ctrl, ok := controlsTbl.RawGetString(v.String()).(*lua.LTable); ok {
+				html += renderControl(ctrl)
 			}
 		})
 	} else {
@@ -1493,6 +1496,53 @@ func renderEnabledVisible(ctrl *lua.LTable) (enabled, visible string) {
 	return
 }
 
+// renderVisibility builds the enabled/visible attributes plus the per-control
+// alignment (kforms_enhancements §6) via align-self on the control element;
+// the align-self merges into the visibility style when both apply.
+func renderVisibility(ctrl *lua.LTable) (enabled, visible string) {
+	enabled, visible = renderEnabledVisible(ctrl)
+	if a := ctrl.RawGetString("align"); a != lua.LNil && a.String() != "" && a.String() != "left" {
+		alignSelf := "center"
+		if a.String() == "right" {
+			alignSelf = "flex-end"
+		}
+		if visible == "" {
+			visible = ` style="align-self:` + alignSelf + `"`
+		} else {
+			inner := strings.TrimSuffix(strings.TrimPrefix(visible, ` style="`), `"`)
+			visible = ` style="` + inner + `;align-self:` + alignSelf + `"`
+		}
+	}
+	return
+}
+
+// renderButton renders a single button control. marginRight, when non-empty,
+// is merged into the button's style attribute.
+func renderButton(ctrl *lua.LTable, marginRight string) string {
+	btnClass := "kalua-button kalua-button-primary"
+	if v := ctrl.RawGetString("class"); v != lua.LNil {
+		btnClass = escAttr(v.String())
+	}
+	formName := escAttr(ctrl.RawGetString("form").String())
+	name := escAttr(ctrl.RawGetString("name").String())
+	id := "c:" + formName + ":" + name
+	label := ""
+	if lv := ctrl.RawGetString("label"); lv != lua.LNil {
+		label = escText(lv.String())
+	}
+	enabled, visible := renderVisibility(ctrl)
+	if marginRight != "" {
+		if visible == "" {
+			visible = ` style="margin-right:` + marginRight + `"`
+		} else {
+			inner := strings.TrimSuffix(strings.TrimPrefix(visible, ` style="`), `"`)
+			visible = ` style="` + inner + `;margin-right:` + marginRight + `"`
+		}
+	}
+	attrs := renderAttrs(formName, name)
+	return `<button type="button" class="` + btnClass + `" id="` + escAttr(id) + `" name="` + name + `"` + attrs + ` ` + enabled + visible + `>` + label + `</button>`
+}
+
 func renderControl(ctrl *lua.LTable) string {
 	ctrlType := ctrl.RawGetString("type").String()
 	name := escAttr(ctrl.RawGetString("name").String())
@@ -1513,21 +1563,7 @@ func renderControl(ctrl *lua.LTable) string {
 
 	id := "c:" + formName + ":" + name
 
-	enabled, visible := renderEnabledVisible(ctrl)
-	// Per-control alignment (kforms_enhancements §6) via align-self on the
-	// control element; merges into the visibility style when both apply.
-	if a := ctrl.RawGetString("align"); a != lua.LNil && a.String() != "" && a.String() != "left" {
-		alignSelf := "center"
-		if a.String() == "right" {
-			alignSelf = "flex-end"
-		}
-		if visible == "" {
-			visible = ` style="align-self:` + alignSelf + `"`
-		} else {
-			inner := strings.TrimSuffix(strings.TrimPrefix(visible, ` style="`), `"`)
-			visible = ` style="` + inner + `;align-self:` + alignSelf + `"`
-		}
-	}
+	enabled, visible := renderVisibility(ctrl)
 	attrs := renderAttrs(formName, name)
 
 	switch ctrlType {
@@ -1567,11 +1603,7 @@ func renderControl(ctrl *lua.LTable) string {
 			<input type="text" class="kalua-input" id="` + escAttr(id) + `" name="` + name + `" value="` + value + `"` + attrs + enabled + `>
 		</div>`
 	case "button":
-		btnClass := "kalua-button kalua-button-primary"
-		if v := ctrl.RawGetString("class"); v != lua.LNil {
-			btnClass = escAttr(v.String())
-		}
-		return `<button type="button" class="` + btnClass + `" id="` + escAttr(id) + `" name="` + name + `"` + attrs + ` ` + enabled + visible + `>` + label + `</button>`
+		return renderButton(ctrl, "")
 	case "combo", "list":
 		items := ctrl.RawGetString("items")
 		var options string

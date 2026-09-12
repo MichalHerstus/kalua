@@ -42,6 +42,8 @@ func Run(args []string) int {
 		return serveCmd(args[1:])
 	case "builder":
 		return builderCmd(args[1:])
+	case "ai":
+		return aiCmd(args[1:])
 	case "version":
 		fmt.Println("KALUA dev (phase 2)")
 		return int(host.ExitOK)
@@ -61,10 +63,9 @@ Commands:
   run     <app.lua> [flags]   Run app as web app (opens browser)
   serve   <app.lua> [flags]   Run app as headless API server
   check   <app.lua>           Validate script (syntax, unknown k.*, main)
-  builder <app.lua|form.json> Visual form builder (opens browser)
-  new     <name>              Scaffold a minimal app.lua
-  lsp     Language server over stdio (completion, hover, definitions)
-  version                     Print version
+   builder <app.lua|form.json> Visual form builder (opens browser)
+   ai      AI builder (generate, fix, validate scripts)
+   version                     Print version
 
 Run 'KALUA <command> -h' for command-specific flags.
 `)
@@ -349,7 +350,7 @@ func builderCmd(args []string) int {
 		return int(host.ExitUsage)
 	}
 	if args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "Usage: KALUA builder <app.lua|form.json> [--host 127.0.0.1] [--port 9001] [-n]")
+		fmt.Fprintln(os.Stderr, "Usage: KALUA builder <app.lua|form.json> [--host 127.0.0.1] [--port 9001] [-n] [--model M] [--base-url U] [--api-key-env V]")
 		return int(host.ExitOK)
 	}
 
@@ -359,6 +360,9 @@ func builderCmd(args []string) int {
 		hostFlag  = fs.String("host", "127.0.0.1", "Host to bind to")
 		port      = fs.Int("port", 9001, "HTTP port")
 		noBrowser = fs.Bool("no-browser", false, "Do not open browser")
+		aiModel   = fs.String("model", "", "AI model (overrides KALUA_AI_MODEL)")
+		aiBaseURL = fs.String("base-url", "", "AI base URL (overrides KALUA_AI_BASE_URL)")
+		aiKeyEnv  = fs.String("api-key-env", "KALUA_AI_API_KEY", "Env var holding the AI API key")
 	)
 	fs.IntVar(port, "p", 9001, "Shorthand for --port")
 	fs.BoolVar(noBrowser, "n", false, "Shorthand for --no-browser")
@@ -378,6 +382,19 @@ func builderCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "builder error: %v\n", err)
 		return int(host.ExitError)
 	}
+	// Explicit AI flags override the KALUA_AI_* env vars read inside New.
+	cfg := srv.GetAI()
+	if *aiModel != "" {
+		cfg.Model = *aiModel
+	}
+	if *aiBaseURL != "" {
+		cfg.BaseURL = *aiBaseURL
+	}
+	if *aiKeyEnv != "" {
+		cfg.APIKey = os.Getenv(*aiKeyEnv)
+	}
+	srv.SetAI(cfg)
+	fmt.Fprintf(os.Stderr, "KALUA AI: %s (model %s)\n", cfg.BaseURL, cfg.Model)
 	defer srv.Close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

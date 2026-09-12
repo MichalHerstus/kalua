@@ -50,6 +50,7 @@ Ground truth for the action/function inventory: official Kalipso 5.0 docs
 | D17 | UI transport | WebSocket (`github.com/coder/websocket`) between browser and server | 2026-08-28 |
 | D18 | Run vs serve | `run` = interactive web app (UI bindings live); `serve` = headless API (D14), UI bindings are errors | 2026-08-28 |
 | D19 | AI-agent authoring | **Skills-first**: opencode-native `.opencode/skills/` markdown committed to the repo, driven by the existing `check`/`LSP`/`run --test` toolchain; **no MCP server** (marginal benefit — `bash` + LSP wiring cover check/run/diagnose). Revisit MCP only if cross-client authoring (Cursor, Claude Desktop) becomes a goal | 2026-08-30 |
+| D20 | AI builder surface | **In-process OpenAI-compatible client + vanilla chat panel** (`KALUA ai` CLI, `/api/ai/*` builder endpoints, SSE streaming). Rejected vendoring the React `@openuidev/browser-bundle`: the builder's CSP is `script-src 'self'` and assets are vanilla `go:embed` JS — instead port OpenUI's *component library → prompt* idea to Go (`openui_prompt.go`). LLM = LM Studio (local) + OpenRouter (external), both OpenAI-compatible | 2026-09-11 |
 
 ---
 
@@ -570,11 +571,40 @@ NFC, Sensors, RFID Tag Found…) have no KALUA counterpart.
 KALUA run    <app.lua> [--port 9000] [--no-browser] [--session-limit N] [--test] [--verbose] [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]...
 KALUA serve  <app.lua> [--port 8080] [--workers N] [--mode http|ws|tcp] [--verbose] [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]...
 KALUA check  <app.lua>                  # reports syntax/global misuse
+KALUA ai  <generate|fix|validate> ...   # natural-language app builder (§6.1)
 KALUA new    <name>                     # scaffolds a minimal app.lua
 KALUA lsp                               # language server over stdio (LSP, Content-Length frames)
 KALUA repl   [repl.lua] [--port 0] [--no-browser] [--verbose]    # interactive browser REPL
 KALUA version
 ```
+
+### 6.1 `ai` — natural-language app builder
+
+`KALUA ai` generates or repairs run-mode KALUA apps from natural language,
+backed by an OpenAI-compatible chat endpoint (LM Studio local or OpenRouter):
+
+```
+KALUA ai generate "<request>" [-o app.lua] [--provider lmstudio|openrouter] [--model M] [--base-url U] [--api-key-env V] [--full-doc]
+KALUA ai fix <app.lua>   [same flags]     # auto-fix validation errors via LLM
+KALUA ai validate <app.lua>               # static check only (syntax + unknown k.*)
+```
+
+- Config: `KALUA_AI_BASE_URL` (default `http://localhost:1234/v1`),
+  `KALUA_AI_MODEL` (default `local-model`), `KALUA_AI_API_KEY` (required for
+  OpenRouter). Keys never leave the Go process; the browser talks to the
+  builder's `/api/ai/*` endpoints which proxy to the LLM.
+- Pipeline: every generation runs a **validation→fix loop** — the emitted Lua
+  passes `checker.Check`; on failure the errors are fed back to the model for
+  up to three auto-fix attempts. Generated code is always statically validated
+  before it is written (CLI) or offered for import (builder).
+- Knowledge pack: the system prompt is assembled from the run-mode subset of
+  `api_doc.go` (`internal/ai/knowledge.go`) plus a component library describing
+  every buildable control (`internal/ai/openui_prompt.go`), keeping local
+  models on a small, controlled surface. Multi-turn chat history is supported
+  via a `history` param.
+- The visual builder embeds an AI chat panel (`/api/ai/stream`, SSE) with live
+  token streaming, one-click Fix, and "Apply to Builder" (import back into the
+  document model).
 
 - `run` serves the app as a web app and opens the default browser. `--port 9000`
   (default) binds the Fixed port; `--port 0` picks a free ephemeral port;

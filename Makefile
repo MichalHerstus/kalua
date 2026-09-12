@@ -1,6 +1,6 @@
 # KALUA Makefile
 
-.PHONY: build test test-race fmt vet clean lint run serve lsp check new version gen-api check-api
+.PHONY: build test test-race fmt vet clean lint run serve lsp check new ai version gen-api check-api
 
 # Build the KALUA binary
 build:
@@ -59,12 +59,25 @@ check:
 new:
 	./KALUA new $(ARGS)
 
+# AI generate app
+ai:
+	./KALUA ai $(ARGS)
+
 # Print version
 version:
 	./KALUA version
 
 # Build and run tests (CI pipeline)
-ci: build test-race vet
+ci: build test-race vet check-assets
+
+# kalua.css is duplicated into the builder assets (the builder preview must load
+# the runtime form stylesheet; embed patterns cannot reach outside the package
+# dir, so a copy is embedded and served at /static/kalua.css).
+sync-assets:
+	cp internal/web/assets/kalua.css internal/builder/assets/kalua.css
+
+check-assets:
+	@cmp -s internal/web/assets/kalua.css internal/builder/assets/kalua.css && echo "kalua.css in sync" || (echo "ERROR: internal/builder/assets/kalua.css out of sync - run 'make sync-assets'" && exit 1)
 
 # Build VSCode extension
 ext-build:
@@ -90,6 +103,7 @@ help:
 	@echo "  lsp          - Start LSP server over stdio"
 	@echo "  check ARGS=..- Check script syntax"
 	@echo "  new ARGS=... - Scaffold new app"
+	@echo "  ai ARGS=...  - AI builder (generate, fix, validate)"
 	@echo "  version      - Print version"
 	@echo "  ci           - Full CI pipeline (build + test-race + vet)"
 	@echo "  ext-build    - Build VSCode extension"
