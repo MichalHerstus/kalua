@@ -89,29 +89,58 @@ function setOpt(ctrl, key, value) {
   state.dirty = true;
 }
 
-function form() { return state.doc.form; }
-function ctrl() { return state.doc.form.controls[state.selected]; }
+function form() { return activeFormOf(state.doc); }
+function ctrl() { return form().controls[state.selected]; }
+
+/* activeFormOf returns the UI-selected form (doc.activeForm), falling back to
+ * the first. Mirrors the server's activeForm() helper. */
+function activeFormOf(doc) {
+  const fs = doc && doc.forms;
+  if (!fs || !fs.length) return { name: 'main', layout: 'vertical', align: 'left', controls: [] };
+  const i = fs.findIndex(f => f.name === doc.activeForm);
+  return fs[i >= 0 ? i : 0];
+}
+
+/* replaceDoc swaps the whole document (after Code-Apply / AI-import), keeping
+ * the previously active form selected when it still exists. */
+function replaceDoc(doc) {
+  const prev = form().name;
+  state.doc = normalizeDoc(doc);
+  if (!state.doc.forms.some(f => f.name === prev)) state.doc.activeForm = state.doc.forms[0].name;
+  return state.doc;
+}
 
 function normalizeDoc(doc) {
-  if (!doc.form) doc.form = { name: 'main', layout: 'vertical', align: 'left', controls: [] };
-  const f = doc.form;
-  if (!f.name) f.name = 'main';
-  if (!f.layout) f.layout = 'vertical';
-  if (!f.align) f.align = 'left';
-  if (!f.controls) f.controls = [];
-  f.cells = normalizeCells(f.cells);
-  if (!f.handlers) f.handlers = {};
-  if (!f.notes) f.notes = [];
-  for (const c of f.controls) {
-    if (!c.opts) c.opts = {};
-    /* The runtime renders label-control text from "text"; the code editor and
-     * some imports emit "label". Canonicalize so the doc always carries "text"
-     * for label controls (matching the GUI field and the export path). */
-    if (c.type === 'label' && c.opts.label !== undefined && c.opts.text === undefined) {
-      c.opts.text = c.opts.label;
-    }
-    if (c.type === 'label') delete c.opts.label;
+  /* v2 single-form documents ({form}) migrate to v3 ({forms:[...]}). */
+  if (!doc.forms) {
+    doc.forms = doc.form ? [doc.form] : [];
+    delete doc.form;
   }
+  if (!Array.isArray(doc.forms)) doc.forms = [];
+  if (!doc.forms.length) doc.forms = [{ name: 'main', layout: 'vertical', align: 'left', controls: [] }];
+  for (const f of doc.forms) {
+    if (!f.name) f.name = 'main';
+    if (!f.layout) f.layout = 'vertical';
+    if (!f.align) f.align = 'left';
+    if (!f.controls) f.controls = [];
+    f.cells = normalizeCells(f.cells);
+    if (!f.handlers) f.handlers = {};
+    if (!f.notes) f.notes = [];
+    for (const c of f.controls) {
+      if (!c.opts) c.opts = {};
+      /* The runtime renders label-control text from "text"; the code editor and
+       * some imports emit "label". Canonicalize so the doc always carries "text"
+       * for label controls (matching the GUI field and the export path). */
+      if (c.type === 'label' && c.opts.label !== undefined && c.opts.text === undefined) {
+        c.opts.text = c.opts.label;
+      }
+      if (c.type === 'label') delete c.opts.label;
+    }
+  }
+  if (!doc.activeForm || !doc.forms.some(f => f.name === doc.activeForm)) {
+    doc.activeForm = doc.forms[0].name;
+  }
+  if (!doc.notes) doc.notes = [];
   return doc;
 }
 
@@ -144,9 +173,9 @@ async function loadInitial() {
 
 async function save() {
   try {
-    await api('PUT', '/api/form', { doc: state.doc });
+    const r = await api('PUT', '/api/form', { doc: state.doc });
     state.dirty = false;
-    setStatus('Form successfully saved', 'success');
+    setStatus(r && r.message ? r.message : 'Form successfully saved', 'success');
     $('#btn-save').textContent = state.format === 'lua' ? 'Save' : 'Save';
   } catch (e) {
     setStatus('Save failed: ' + e.message, 'error');
@@ -161,14 +190,20 @@ async function exportLua() {
   } catch (e) { setStatus('Export failed: ' + e.message, 'error'); return null; }
 }
 
+/* Assembled Lua: for .lua workspaces the server splices the edited document
+ * into the original source (non-form code preserved); for JSON docs it
+ * regenerates the whole file from all forms. This is what Save writes, so
+ * Validate/Fix/AI-context operate on the real output. */
+async function assembledLua() {
+  try {
+    const r = await api('POST', '/api/export', { doc: state.doc });
+    return r.lua;
+  } catch (e) { return null; }
+}
+
 async function validate() {
-  let lua = null;
-  if (state.format === 'lua') {
-    /* ask the server for the source as first imported from the file */
-    try { lua = (await api('GET', '/api/source')).source; } catch (e) { /* fall through */ }
-  }
-  if (lua === null) lua = await exportLua();
-  if (lua === null) return;
+  const lua = await assembledLua();
+  if (lua === null) { setStatus('Validate failed: export failed', 'error'); return; }
   try {
     const r = await api('POST', '/api/validate', { lua });
     const lines = [];
@@ -212,12 +247,7 @@ async function fixForm() {
   const issues = state.validateIssues;
   if (!issues || !issues.hasIssues) { setStatus('Nothing to fix'); return; }
   if (!AI.reachable) { setStatus('Fix failed: AI unreachable', 'error'); return; }
-  let lua = null;
-  if (state.format === 'lua') {
-    /* ask the server for the source as first imported from the file */
-    try { lua = (await api('GET', '/api/source')).source; } catch (e) { /* fall through */ }
-  }
-  if (lua === null) lua = await exportLua();
+  const lua = await assembledLua();
   if (lua === null) return;
   const btn = $('#btn-fix');
   const prev = btn.textContent;
@@ -229,7 +259,7 @@ async function fixForm() {
     if (!imported || !imported.doc) throw new Error('fixed script contains no form (no k.form.new call)');
     await api('PUT', '/api/form', { doc: imported.doc });
     snapshot('ai-fix');
-    state.doc = normalizeDoc(imported.doc);
+    replaceDoc(imported.doc);
     state.selected = -1;
     currentCell = '';
     state.dirty = false;
@@ -272,6 +302,7 @@ function flashCell() {
 
 /* ---------- rendering ---------- */
 function render() {
+  renderForms();
   renderFormProps();
   renderPalette();
   renderControlList();
@@ -284,11 +315,77 @@ function render() {
 function renderPath() {
   $('#path').textContent = state.path || 'untitled';
   $('#format').textContent = state.format === 'lua' ? 'LUA' : 'JSON';
-  $('#form-title').textContent = state.doc.form.title || state.doc.form.name;
+  $('#form-title').textContent = form().title || form().name;
+}
+
+/* Form switcher: one line — "Select form:" + dropdown, then New/Delete. The
+ * Delete button stays enabled so clicking it reports "cannot delete the last
+ * form" in the status bar when only one form remains. */
+function renderForms() {
+  const fs = state.doc.forms;
+  $('#form-select').innerHTML = fs.map(f =>
+    `<option value="${escapeAttr(f.name)}" ${f.name === state.doc.activeForm ? 'selected' : ''}>${escapeHtml(f.name)}</option>`).join('');
+}
+
+function switchForm(name) {
+  if (name === state.doc.activeForm) return;
+  snapshot('switch-form');
+  state.doc.activeForm = name;
+  state.selected = -1;
+  state.jsonErrors = {};
+  currentCell = '';
+  state.dirty = true;
+  resetValidate();
+  render();
+  if (state.view === 'code') refreshCode();
+  setStatus('Editing form "' + name + '".');
+}
+
+function addForm() {
+  snapshot('add-form');
+  const used = new Set(state.doc.forms.map(f => f.name));
+  let n = 1;
+  while (used.has('form_' + n)) n++;
+  const name = 'form_' + n;
+  state.doc.forms.push({
+    name, layout: 'vertical', align: 'left', controls: [], cells: [],
+    handlers: {}, handlerBodies: {},
+  });
+  state.doc.activeForm = name;
+  state.selected = -1;
+  currentCell = '';
+  state.dirty = true;
+  render();
+  setStatus('Added form "' + name + '". Save to append it to the file.');
+}
+
+function deleteForm() {
+  const cur = state.doc.activeForm;
+  const fs = state.doc.forms;
+  if (fs.length <= 1) { setStatus('Cannot delete the last form.', 'warning'); return; }
+  confirmDialog(`Delete form “${cur}”?`, 'The form and ALL its controls and k.form.on handlers will be removed from the file on Save. This can be undone with Undo.', 'Delete', doDeleteForm);
+}
+
+function doDeleteForm() {
+  if (state.doc.forms.length <= 1) return;
+  snapshot('delete-form');
+  const cur = state.doc.activeForm;
+  state.doc.forms = state.doc.forms.filter(f => f.name !== cur);
+  state.doc.activeForm = state.doc.forms[0].name;
+  state.selected = -1;
+  currentCell = '';
+  state.dirty = true;
+  render();
+  setStatus('Form "' + cur + '" removed — its block will be deleted on Save.', 'warning');
+}
+
+function resetValidate() {
+  state.validateIssues = null;
+  refreshFixButton();
 }
 
 function renderFormProps() {
-  const f = state.doc.form;
+  const f = form();
   $('#f_name').value = f.name || '';
   $('#f_title').value = f.title || '';
   $('#f_layout').value = f.layout || 'vertical';
@@ -319,7 +416,7 @@ function renderEditor() {
   const head = $('#ctrl-head');
   const editor = $('#ctrl-editor');
   if (state.selected < 0 || !form().controls[state.selected]) {
-    head.textContent = 'Control';
+    head.textContent = 'Selected Control';
     $('#ctrl-type').textContent = '';
     const del = $('#ctrl-del');
     del.hidden = true;
@@ -824,7 +921,7 @@ async function applyCode() {
     if (!imported || !imported.doc) throw new Error('no k.form.new call found in the edited code');
     await api('PUT', '/api/form', { doc: imported.doc });
     snapshot('code-apply');
-    state.doc = normalizeDoc(imported.doc);
+    replaceDoc(imported.doc);
     state.selected = -1;
     currentCell = '';
     state.dirty = false;
@@ -929,6 +1026,13 @@ function highlight(src) {
         i = end;
         continue;
       }
+      /* bare '[' that is not a long-bracket opener (e.g. the ["key"] = value
+       * map-key form): emit it verbatim so the loop always advances. Falling
+       * through would make the plain-text scan break on '[' without consuming
+       * it, leaving the tokenizer stuck on the same character forever. */
+      out.push('[');
+      i++;
+      continue;
     }
     /* number */
     if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(src[i + 1] || ''))) {
@@ -991,16 +1095,18 @@ function selectCell(id) {
 }
 
 function wireTopbar() {
+  $('#form-select').addEventListener('change', e => switchForm(e.target.value));
+  $('#btn-new-form').addEventListener('click', addForm);
+  $('#btn-del-form').addEventListener('click', deleteForm);
   $('#btn-new').addEventListener('click', async () => {
     resetUndo();
-    state.doc = { version: 2, form: { name: 'main', layout: 'vertical', align: 'left', controls: [], cells: [] } };
+    state.doc = { version: 3, forms: [{ name: 'main', layout: 'vertical', align: 'left', controls: [], cells: [] }], activeForm: 'main', notes: [] };
     state.selected = -1;
     currentCell = '';
     state.dirty = true;
-    state.validateIssues = null;
-    refreshFixButton();
+    resetValidate();
     render();
-    setStatus('New empty form');
+    setStatus('New empty form — Save appends a fresh main() to the file.');
   });
   $('#btn-save').addEventListener('click', save);
   $('#btn-export').addEventListener('click', exportLua);
@@ -1021,9 +1127,9 @@ function wireTopbar() {
       deleteControlSelected();
     }
   });
-  $('#modal-close').addEventListener('click', () => $('#overlay').classList.add('hidden'));
+  $('#modal-close').addEventListener('click', hideModal);
   $('#overlay').addEventListener('click', e => {
-    if (e.target.id === 'overlay') $('#overlay').classList.add('hidden');
+    if (e.target.id === 'overlay') hideModal();
   });
 }
 
@@ -1032,14 +1138,48 @@ function setStatus(msg, kind) {
   const el = $('#status');
   el.textContent = msg;
   el.className = 'status-' + (kind || 'info');
-  const notes = state.doc && state.doc.form && state.doc.form.notes;
+  const notes = state.doc && state.doc.notes && state.doc.notes.length
+    ? state.doc.notes
+    : (state.doc.forms ? (form().notes || []) : []);
   $('#notes').textContent = notes && notes.length ? '⚠ ' + notes.join(' · ') : '';
+}
+
+function hideModal() {
+  $('#overlay').classList.add('hidden');
+  $('#modal-confirm').classList.add('hidden');
 }
 
 function showModal(title, text) {
   $('#modal-title').textContent = title;
   $('#modal-body').textContent = text;
+  $('#modal-confirm').classList.add('hidden');
   $('#overlay').classList.remove('hidden');
+}
+
+/* confirmDialog shows the shared modal with explicit yes/no buttons and runs
+ * `onYes` only when the user confirms. Uses the app's own overlay instead of
+ * window.confirm, which some browsers/embeddings block silently (making
+ * buttons appear to "do nothing"). The yes/no buttons are wired once; each
+ * call only replaces the pending action. */
+let pendingConfirm = null;
+let confirmWired = false;
+function confirmDialog(title, message, yesLabel, onYes) {
+  pendingConfirm = onYes;
+  $('#modal-title').textContent = title;
+  $('#modal-body').textContent = message;
+  $('#modal-yes').textContent = yesLabel;
+  $('#modal-confirm').classList.remove('hidden');
+  $('#overlay').classList.remove('hidden');
+  if (!confirmWired) {
+    confirmWired = true;
+    $('#modal-yes').addEventListener('click', () => {
+      hideModal();
+      const fn = pendingConfirm;
+      pendingConfirm = null;
+      if (fn) fn();
+    });
+    $('#modal-no').addEventListener('click', hideModal);
+  }
 }
 
 function escapeHtml(s) {
@@ -1204,10 +1344,8 @@ function aiPushPrompt() {
  * context, or empty when the checkbox is off or no source is available. */
 async function aiContext() {
   if (!$('#ai-context').checked) return '';
-  if (state.format === 'lua') {
-    try { return (await api('GET', '/api/source')).source; } catch (e) { return ''; }
-  }
-  try { return await exportLua(); } catch (e) { return ''; }
+  const lua = await assembledLua();
+  return lua === null ? '' : lua;
 }
 
 async function aiGenerate() {
@@ -1358,9 +1496,12 @@ async function aiGenerate() {
 }
 
 async function aiFix() {
-  const script = AI.generated || (state.format === 'lua'
-    ? (await api('GET', '/api/source')).source : null);
-  if (!script) return;
+  let script = AI.generated;
+  if (!script) {
+    script = await assembledLua();
+    if (script === null) script = '';
+  }
+  if (!script) { setStatus('Script was empty; generate first.', 'warning'); return; }
   const prompt = 'Fix these errors: ' + (AI.errors.join('; ') || 'validation issues');
   aiAddMsg('user', prompt);
   const statusEl = aiAddMsg('assistant', 'Fixing…');
@@ -1407,13 +1548,12 @@ async function aiApply() {
       throw new Error('Import failed: ' + why);
     }
     snapshot('ai-import');
-    state.doc = normalizeDoc(r.doc);
+    replaceDoc(r.doc);
     state.selected = -1;
     currentCell = '';
     state.dirty = true;
     state.format = 'lua';
-    state.validateIssues = null;
-    refreshFixButton();
+    resetValidate();
     render();
     if (state.view === 'code') refreshCode();
     setStatus((merge

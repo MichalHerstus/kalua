@@ -175,7 +175,12 @@ func (s *Server) getForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if doc == nil {
-		doc = &Document{Version: DocVersion, Form: &Form{Name: "main", Layout: "vertical", Align: "left"}}
+		doc = NewEmptyDoc()
+	}
+	if doc.ActiveForm == "" {
+		if f := firstForm(doc); f != nil {
+			doc.ActiveForm = f.Name
+		}
 	}
 	writeJSON(w, map[string]any{
 		"path":    s.path,
@@ -197,6 +202,13 @@ func (s *Server) putForm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"missing doc"}`, http.StatusBadRequest)
 		return
 	}
+	// activeForm is transient UI state; a stale reference (e.g. right after a
+	// form rename) must not reject the save.
+	if req.Doc.ActiveForm != "" && findForm(req.Doc, req.Doc.ActiveForm) == nil {
+		if f := firstForm(req.Doc); f != nil {
+			req.Doc.ActiveForm = f.Name
+		}
+	}
 	if msgs := req.Doc.Validate(); len(msgs) > 0 {
 		writeErr(w, fmt.Errorf("invalid document: %s", strings.Join(msgs, "; ")))
 		return
@@ -204,8 +216,17 @@ func (s *Server) putForm(w http.ResponseWriter, r *http.Request) {
 	var data []byte
 	var message string
 	if s.format == "lua" {
-		data = []byte(ExportLua(req.Doc))
-		message = "Saved Lua source to " + s.path
+		source := ""
+		if raw, rerr := os.ReadFile(s.path); rerr == nil {
+			source = string(raw)
+		}
+		lua, serr := RebuildLua(source, req.Doc)
+		if serr != nil {
+			writeErr(w, serr)
+			return
+		}
+		data = []byte(lua)
+		message = "Saved Lua source to " + s.path + " (non-form code preserved)"
 	} else {
 		var err error
 		data, err = RawJSON(req.Doc)
@@ -243,6 +264,19 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, err)
 		return
+	}
+	if s.format == "lua" {
+		// Assembled view: the original source with the edited forms spliced in,
+		// so the Code view / Export / Validate see exactly what a Save writes.
+		if raw, rerr := os.ReadFile(s.path); rerr == nil && len(raw) > 0 {
+			lua, serr := RebuildLua(string(raw), req.Doc)
+			if serr != nil {
+				writeErr(w, serr)
+				return
+			}
+			writeJSON(w, map[string]any{"lua": lua})
+			return
+		}
 	}
 	writeJSON(w, map[string]any{"lua": ExportLua(req.Doc)})
 }
@@ -319,15 +353,22 @@ func (s *Server) load() (doc *Document, message string, err error) {
 	if s.format == "lua" {
 		doc, err = Import(string(data), s.path)
 		if err != nil {
+			if strings.Contains(err.Error(), "no k.form.new call found") {
+				// A script with no forms (pure non-form code): start with an
+				// empty scaffold and keep the source untouched on save.
+				return NewEmptyDoc(),
+					"No k.form.new found in the Lua source — starting with an empty form. Non-form code is preserved on save.", nil
+			}
 			return nil, "", err
 		}
-		return doc, "Imported from Lua source (structure extraction). Non-form code is kept only in the source file.", nil
+		n := len(doc.Forms)
+		return doc, fmt.Sprintf("Imported %d form(s) from Lua source. Non-form code is preserved on save.", n), nil
 	}
 	raw := map[string]any{}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, "", err
 	}
-	raw = migrateLegacyCells(raw)
+	raw = migrateDoc(raw)
 	b, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return nil, "", err
@@ -339,14 +380,30 @@ func (s *Server) load() (doc *Document, message string, err error) {
 	return doc, "Loaded JSON document.", nil
 }
 
-// migrateLegacyCells upgrades a v1 document (form.cells as an object map) to
-// the v2 ordered-array form. Array-form cells (v2, or already migrated) pass
-// through untouched. Map keys are sorted so the migration is deterministic.
-func migrateLegacyCells(raw map[string]any) map[string]any {
-	form, ok := raw["form"].(map[string]any)
-	if !ok {
-		return raw
+// migrateDoc upgrades a legacy single-form document ({version<=2, form}) to
+// the multi-form v3 shape ({version:3, forms:[...]}) and migrates v1
+// object-form cells inside each form to the ordered v2 array form.
+func migrateDoc(raw map[string]any) map[string]any {
+	if form, ok := raw["form"].(map[string]any); ok {
+		raw["forms"] = []any{form}
+		delete(raw, "form")
 	}
+	if forms, isArr := raw["forms"].([]any); isArr {
+		for _, item := range forms {
+			if m, ok := item.(map[string]any); ok {
+				migrateLegacyCellsInner(m)
+			}
+		}
+	}
+	if ver, isNum := raw["version"].(float64); isNum && ver < 3 {
+		raw["version"] = float64(DocVersion)
+	}
+	return raw
+}
+
+// migrateLegacyCellsInner upgrades one form's v1 object-form cells map to the
+// ordered v2 array form. Map keys are sorted so the migration is deterministic.
+func migrateLegacyCellsInner(form map[string]any) map[string]any {
 	if cells, isMap := form["cells"].(map[string]any); isMap {
 		var list []any
 		keys := make([]string, 0, len(cells))
@@ -365,10 +422,7 @@ func migrateLegacyCells(raw map[string]any) map[string]any {
 		}
 		form["cells"] = list
 	}
-	if ver, isNum := raw["version"].(float64); isNum && ver < 2 {
-		raw["version"] = float64(DocVersion)
-	}
-	return raw
+	return form
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

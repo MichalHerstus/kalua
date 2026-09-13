@@ -10,13 +10,22 @@ import (
 	"github.com/yuin/gopher-lua/parse"
 )
 
-// Import parses a Kalipso-style Lua app and extracts its form definition
-// (k.form.new + k.ctrl.<type> + k.form.on calls) into a builder Document.
-// Import is structure extraction only: the first k.form.new in the file is
-// used, non-serializable values (function bodies, DB handles, references)
-// are recorded as notes, and surrounding non-form code is left untouched.
+// Import parses a Kalipso-style Lua app and extracts EVERY form definition
+// (k.form.new + k.ctrl.<type> + k.form.on + k.form.show calls) into a
+// multi-form builder Document, in declaration order. Import is structure
+// extraction only: non-serializable values (function bodies, DB handles,
+// references) are recorded as notes, surrounding non-form code — and any
+// k.form.* / k.ctrl.* call that is not a direct top-level statement — is left
+// untouched. For each owned statement the importer records its [start,end]
+// line span (Form.Lines) so the save path can surgically replace a form's
+// block without touching anything else (rebuild.go). k.form.on handler
+// statements are captured verbatim (exact source text) so re-emission never
+// loses or reformats a hand-written handler.
 func Import(src, fileName string) (*Document, error) {
-	imp := &importer{handlers: map[string][]string{}, bodies: map[string]string{}}
+	imp := &importer{
+		byName:   map[string]*formDef{},
+		srcLines: strings.Split(src, "\n"),
+	}
 	stmts, err := parse.Parse(strings.NewReader(src), fileName)
 	if err != nil {
 		return nil, err
@@ -24,77 +33,124 @@ func Import(src, fileName string) (*Document, error) {
 	for _, s := range stmts {
 		imp.walkStmt(s)
 	}
-	if imp.form == nil {
+	if len(imp.forms) == 0 {
 		return nil, fmt.Errorf("no k.form.new call found")
 	}
+	imp.finish()
+	var forms []*Form
+	for _, fd := range imp.forms {
+		forms = append(forms, &Form{
+			Name:          fd.name,
+			Title:         fd.title,
+			Layout:        fd.layout,
+			Align:         fd.align,
+			Gap:           fd.gap,
+			Cells:         fd.cells,
+			Controls:      fd.controls,
+			Handlers:      fd.handlers,
+			HandlerBodies: fd.bodies,
+			Notes:         fd.notes,
+			Lines:         fd.lines,
+			Indent:        fd.indent,
+			HasShow:       fd.hasShow,
+		})
+	}
 	return &Document{
-		Version: DocVersion,
-		Form: &Form{
-			Name:          imp.form.name,
-			Title:         imp.form.title,
-			Layout:        imp.form.layout,
-			Align:         imp.form.align,
-			Gap:           imp.form.gap,
-			Cells:         imp.form.cells,
-			Controls:      imp.form.controls,
-			Handlers:      imp.handlers,
-			HandlerBodies: imp.bodies,
-			Notes:         imp.notes,
-		},
+		Version:    DocVersion,
+		ActiveForm: forms[0].Name,
+		Forms:      forms,
+		Notes:      imp.dnotes,
 	}, nil
 }
 
 type formDef struct {
-	name     string
-	title    string
-	layout   string
-	align    string
-	gap      *int
-	cells    []*CellDef
-	controls []*Control
+	name         string
+	title        string
+	layout       string
+	align        string
+	gap          *int
+	cells        []*CellDef
+	controls     []*Control
+	handlers     map[string][]string
+	bodies       map[string]string
+	notes        []string
+	starts       []int // owned statement start lines (1-based)
+	endsMax      []int // owned statement max descendant line (before bracket-close expansion)
+	keys         []string // parallel body key ("@form.event" / "ctrl.event"/"")
+	lines        [][]int
+	indent       string
+	hasShow      bool
 }
 
 type importer struct {
-	form      *formDef
-	formCount int
-	handlers  map[string][]string
-	bodies    map[string]string // ctrl.event → Lua handler source
-	notes     []string
+	forms       []*formDef
+	byName      map[string]*formDef
+	dnotes      []string
+	bounds      []int // statement starts + block end lines (splice boundaries)
+	srcLines    []string
+	curStmtLine int
+	directCall  bool // true while walking a bare FuncCallStmt statement
 }
 
-func (im *importer) note(f string, args ...any) {
-	im.notes = append(im.notes, fmt.Sprintf(f, args...))
+func (im *importer) dnote(f string, args ...any) {
+	im.dnotes = append(im.dnotes, fmt.Sprintf(f, args...))
+}
+
+func (fd *formDef) note(f string, args ...any) {
+	fd.notes = append(fd.notes, fmt.Sprintf(f, args...))
+}
+
+// bound records a splice safety boundary: a statement start or a block
+// closing "end" line that the span expansion must never cross.
+func (im *importer) bound(ln int) {
+	if ln > 0 {
+		im.bounds = append(im.bounds, ln)
+	}
 }
 
 func (im *importer) walkStmt(s ast.Stmt) {
+	if s == nil {
+		return
+	}
+	im.curStmtLine = s.Line()
+	im.bound(s.Line())
+	im.bound(s.LastLine())
 	switch n := s.(type) {
 	case *ast.FuncDefStmt:
+		im.directCall = false
 		im.walkExpr(n.Func)
 	case *ast.LocalAssignStmt:
+		im.directCall = false
 		for _, e := range n.Exprs {
 			im.walkExpr(e)
 		}
 	case *ast.AssignStmt:
+		im.directCall = false
 		for _, e := range n.Rhs {
 			im.walkExpr(e)
 		}
 	case *ast.FuncCallStmt:
+		im.directCall = true
 		im.walkExpr(n.Expr)
 	case *ast.DoBlockStmt:
+		im.directCall = false
 		for _, st := range n.Stmts {
 			im.walkStmt(st)
 		}
 	case *ast.WhileStmt:
+		im.directCall = false
 		im.walkExpr(n.Condition)
 		for _, st := range n.Stmts {
 			im.walkStmt(st)
 		}
 	case *ast.RepeatStmt:
+		im.directCall = false
 		for _, st := range n.Stmts {
 			im.walkStmt(st)
 		}
 		im.walkExpr(n.Condition)
 	case *ast.IfStmt:
+		im.directCall = false
 		im.walkExpr(n.Condition)
 		for _, st := range n.Then {
 			im.walkStmt(st)
@@ -103,6 +159,7 @@ func (im *importer) walkStmt(s ast.Stmt) {
 			im.walkStmt(st)
 		}
 	case *ast.NumberForStmt:
+		im.directCall = false
 		im.walkExpr(n.Init)
 		im.walkExpr(n.Limit)
 		if n.Step != nil {
@@ -112,6 +169,7 @@ func (im *importer) walkStmt(s ast.Stmt) {
 			im.walkStmt(st)
 		}
 	case *ast.GenericForStmt:
+		im.directCall = false
 		for _, e := range n.Exprs {
 			im.walkExpr(e)
 		}
@@ -119,6 +177,7 @@ func (im *importer) walkStmt(s ast.Stmt) {
 			im.walkStmt(st)
 		}
 	case *ast.ReturnStmt:
+		im.directCall = false
 		for _, e := range n.Exprs {
 			im.walkExpr(e)
 		}
@@ -145,6 +204,9 @@ func (im *importer) walkExpr(e ast.Expr) {
 		}
 	case *ast.TableExpr:
 		for _, f := range n.Fields {
+			if f == nil {
+				continue
+			}
 			if f.Key != nil {
 				im.walkExpr(f.Key)
 			}
@@ -175,7 +237,10 @@ func (im *importer) walkExpr(e ast.Expr) {
 	}
 }
 
-// checkCall handles a function call: k.form.new / k.ctrl.<type> / k.form.on.
+// checkCall handles a direct function call: k.form.new / k.ctrl.<type> /
+// k.form.on / k.form.show. Only bare call statements are owned (their spans
+// are recorded so they can be regenerated); calls wrapped in another
+// expression are skipped with a note so the source stays untouched.
 func (im *importer) checkCall(n *ast.FuncCallExpr) {
 	path := callPath(n)
 	if len(path) == 0 || path[0] != "k" {
@@ -186,9 +251,152 @@ func (im *importer) checkCall(n *ast.FuncCallExpr) {
 		im.importFormNew(n)
 	case len(path) == 3 && path[1] == "form" && path[2] == "on":
 		im.importFormOn(n)
+	case len(path) == 3 && path[1] == "form" && path[2] == "show":
+		im.importFormShow(n)
 	case len(path) == 3 && path[1] == "ctrl" && contains(Types, path[2]):
 		im.importControl(n, path[2])
 	}
+}
+
+// spanEnd returns the deepest source line reached by the call expression
+// (before bracket-close expansion), derived from the AST's line positions.
+func (im *importer) spanEnd(n *ast.FuncCallExpr) int {
+	var mx int = im.curStmtLine
+	im.collectMaxExpr(n, &mx)
+	return mx
+}
+
+func (im *importer) collectMaxExpr(e ast.Expr, mx *int) {
+	if e == nil {
+		return
+	}
+	if e.Line() > *mx {
+		*mx = e.Line()
+	}
+	if e.LastLine() > *mx {
+		*mx = e.LastLine()
+	}
+	switch n := e.(type) {
+	case *ast.FuncCallExpr:
+		im.collectMaxExpr(n.Func, mx)
+		im.collectMaxExpr(n.Receiver, mx)
+		for _, a := range n.Args {
+			im.collectMaxExpr(a, mx)
+		}
+	case *ast.AttrGetExpr:
+		im.collectMaxExpr(n.Object, mx)
+		im.collectMaxExpr(n.Key, mx)
+	case *ast.TableExpr:
+		for _, f := range n.Fields {
+			if f == nil {
+				continue
+			}
+			im.collectMaxExpr(f.Key, mx)
+			im.collectMaxExpr(f.Value, mx)
+		}
+	case *ast.FunctionExpr:
+		for _, st := range n.Stmts {
+			im.collectMaxStmt(st, mx)
+		}
+	case *ast.LogicalOpExpr:
+		im.collectMaxExpr(n.Lhs, mx)
+		im.collectMaxExpr(n.Rhs, mx)
+	case *ast.RelationalOpExpr:
+		im.collectMaxExpr(n.Lhs, mx)
+		im.collectMaxExpr(n.Rhs, mx)
+	case *ast.StringConcatOpExpr:
+		im.collectMaxExpr(n.Lhs, mx)
+		im.collectMaxExpr(n.Rhs, mx)
+	case *ast.ArithmeticOpExpr:
+		im.collectMaxExpr(n.Lhs, mx)
+		im.collectMaxExpr(n.Rhs, mx)
+	case *ast.UnaryMinusOpExpr:
+		im.collectMaxExpr(n.Expr, mx)
+	case *ast.UnaryNotOpExpr:
+		im.collectMaxExpr(n.Expr, mx)
+	case *ast.UnaryLenOpExpr:
+		im.collectMaxExpr(n.Expr, mx)
+	}
+}
+
+func (im *importer) collectMaxStmt(s ast.Stmt, mx *int) {
+	if s == nil {
+		return
+	}
+	if s.Line() > *mx {
+		*mx = s.Line()
+	}
+	if s.LastLine() > *mx {
+		*mx = s.LastLine()
+	}
+	switch n := s.(type) {
+	case *ast.FuncDefStmt:
+		im.collectMaxExpr(n.Func, mx)
+	case *ast.LocalAssignStmt:
+		for _, e := range n.Exprs {
+			im.collectMaxExpr(e, mx)
+		}
+	case *ast.AssignStmt:
+		for _, e := range n.Rhs {
+			im.collectMaxExpr(e, mx)
+		}
+	case *ast.FuncCallStmt:
+		im.collectMaxExpr(n.Expr, mx)
+	case *ast.DoBlockStmt:
+		for _, st := range n.Stmts {
+			im.collectMaxStmt(st, mx)
+		}
+	case *ast.WhileStmt:
+		im.collectMaxExpr(n.Condition, mx)
+		for _, st := range n.Stmts {
+			im.collectMaxStmt(st, mx)
+		}
+	case *ast.RepeatStmt:
+		for _, st := range n.Stmts {
+			im.collectMaxStmt(st, mx)
+		}
+		im.collectMaxExpr(n.Condition, mx)
+	case *ast.IfStmt:
+		im.collectMaxExpr(n.Condition, mx)
+		for _, st := range n.Then {
+			im.collectMaxStmt(st, mx)
+		}
+		for _, st := range n.Else {
+			im.collectMaxStmt(st, mx)
+		}
+	case *ast.NumberForStmt:
+		im.collectMaxExpr(n.Init, mx)
+		im.collectMaxExpr(n.Limit, mx)
+		if n.Step != nil {
+			im.collectMaxExpr(n.Step, mx)
+		}
+		for _, st := range n.Stmts {
+			im.collectMaxStmt(st, mx)
+		}
+	case *ast.GenericForStmt:
+		for _, e := range n.Exprs {
+			im.collectMaxExpr(e, mx)
+		}
+		for _, st := range n.Stmts {
+			im.collectMaxStmt(st, mx)
+		}
+	case *ast.ReturnStmt:
+		for _, e := range n.Exprs {
+			im.collectMaxExpr(e, mx)
+		}
+	}
+}
+
+// recordSpan tags the current statement as owned by fd. Returns false when the
+// call is not a bare statement (then it is left untouched, not regenerated).
+func (im *importer) recordSpan(fd *formDef, key string, maxLine int) bool {
+	if !im.directCall {
+		return false
+	}
+	fd.starts = append(fd.starts, im.curStmtLine)
+	fd.endsMax = append(fd.endsMax, maxLine)
+	fd.keys = append(fd.keys, key)
+	return true
 }
 
 // callPath resolves a function-call callee to its dotted path (e.g.
@@ -236,21 +444,31 @@ func (im *importer) importFormNew(n *ast.FuncCallExpr) {
 	}
 	name := exprName(n.Args[0])
 	if name == "" {
-		im.note("k.form.new with non-literal name skipped")
+		im.dnote("k.form.new with non-literal name skipped")
 		return
 	}
-	if im.form != nil {
-		im.formCount++
-		im.note("additional form %q found; only the first form is imported", name)
-		return
+	if im.byName[name] != nil {
+		return // second k.form.new for an imported form is left untouched
 	}
-	f := &formDef{name: name, layout: "vertical", align: "left"}
+	f := &formDef{
+		name:     name,
+		layout:   "vertical",
+		align:    "left",
+		handlers: map[string][]string{},
+		bodies:   map[string]string{},
+	}
 	if len(n.Args) >= 2 {
 		if opts, ok := n.Args[1].(*ast.TableExpr); ok {
-			f.title, f.layout, f.align, f.gap, f.cells = formOptsToJSON(opts, &im.notes)
+			f.title, f.layout, f.align, f.gap, f.cells = formOptsToJSON(opts, &f.notes)
 		}
 	}
-	im.form = f
+	if !im.recordSpan(f, "", im.spanEnd(n)) {
+		im.dnote("k.form.new(%q) is not a direct call; skipped", name)
+		return
+	}
+	f.indent = im.lineIndent(im.curStmtLine)
+	im.byName[name] = f
+	im.forms = append(im.forms, f)
 }
 
 func (im *importer) importControl(n *ast.FuncCallExpr, ctrlType string) {
@@ -259,22 +477,23 @@ func (im *importer) importControl(n *ast.FuncCallExpr, ctrlType string) {
 	}
 	formName := exprName(n.Args[0])
 	if formName == "" {
-		im.note("k.ctrl.%s with non-literal form name skipped", ctrlType)
+		im.dnote("k.ctrl.%s with non-literal form name skipped", ctrlType)
 		return
 	}
-	if im.form == nil || formName != im.form.name {
-		im.note("k.ctrl.%s targets form %q (not imported); skipping", ctrlType, formName)
+	fd := im.byName[formName]
+	if fd == nil {
+		im.dnote("k.ctrl.%s targets form %q (not imported); skipping", ctrlType, formName)
 		return
 	}
 	name := exprName(n.Args[1])
 	if name == "" {
-		im.note("k.ctrl.%s with non-literal control name skipped", ctrlType)
+		im.dnote("k.ctrl.%s with non-literal control name skipped", ctrlType)
 		return
 	}
 	ctrl := &Control{Name: name, Type: ctrlType, Opts: map[string]any{}, Inline: map[string]string{}}
 	if len(n.Args) >= 3 {
 		if opts, ok := n.Args[2].(*ast.TableExpr); ok {
-			ctrl.Opts, _ = optsToJSON(opts, &im.notes, &ctrl.Inline)
+			ctrl.Opts, _ = optsToJSON(opts, &fd.notes, &ctrl.Inline)
 		}
 	}
 	// The runtime (and the builder GUI) render a label control's text from the
@@ -288,15 +507,54 @@ func (im *importer) importControl(n *ast.FuncCallExpr, ctrlType string) {
 			}
 		}
 	}
-	im.form.controls = append(im.form.controls, ctrl)
+	if !im.recordSpan(fd, "", im.spanEnd(n)) {
+		im.dnote("k.ctrl.%s(%q, %q) is not a direct call; skipped", ctrlType, formName, name)
+		return
+	}
+	fd.controls = append(fd.controls, ctrl)
+}
+
+func (im *importer) importFormShow(n *ast.FuncCallExpr) {
+	if len(n.Args) < 1 {
+		return
+	}
+	name := exprName(n.Args[0])
+	fd := im.byName[name]
+	if fd == nil {
+		return // dynamic or unknown show is left untouched
+	}
+	if fd.hasShow {
+		return // only the first literal k.form.show is owned
+	}
+	fd.hasShow = true
+	im.recordSpan(fd, "", im.spanEnd(n))
 }
 
 func (im *importer) importFormOn(n *ast.FuncCallExpr) {
-	if len(n.Args) < 4 {
+	if len(n.Args) < 3 {
 		return
 	}
 	formName := exprName(n.Args[0])
-	if formName == "" || (im.form != nil && formName != im.form.name) {
+	if formName == "" {
+		return
+	}
+	fd := im.byName[formName]
+	if fd == nil {
+		return // handler for an unimported/dynamic form is left untouched
+	}
+	// 3-arg form: k.form.on(name, event, fn) — form-level handler, stored
+	// under the "@form" key so export re-emits the 3-arg form and so
+	// auto-generated stubs never overwrite a real lifecycle handler.
+	if len(n.Args) == 3 {
+		event := exprName(n.Args[1])
+		if event == "" {
+			return
+		}
+		fd.handlers["@form"] = append(fd.handlers["@form"], event)
+		im.recordSpan(fd, "@form."+event, im.spanEnd(n))
+		return
+	}
+	if len(n.Args) < 4 {
 		return
 	}
 	ctrlName := exprName(n.Args[1])
@@ -304,12 +562,80 @@ func (im *importer) importFormOn(n *ast.FuncCallExpr) {
 	if ctrlName == "" || event == "" {
 		return
 	}
-	im.handlers[ctrlName] = append(im.handlers[ctrlName], event)
-	if fn, ok := n.Args[3].(*ast.FunctionExpr); ok {
-		im.bodies[ctrlName+"."+event] = PrintFunction(fn)
-	} else {
-		im.note("k.form.on handler '%s' for %q is not a literal function; body not preserved", event, ctrlName)
+	fd.handlers[ctrlName] = append(fd.handlers[ctrlName], event)
+	im.recordSpan(fd, ctrlName+"."+event, im.spanEnd(n))
+}
+
+// finish computes each owned statement's [start,end] line span (expanding a
+// multi-line statement to its closing bracket line, bounded by the next
+// statement or block "end" line) and captures k.form.on handler statements
+// verbatim from the original source.
+func (im *importer) finish() {
+	sort.Ints(im.bounds)
+	boundAfter := func(ln int) int {
+		for _, b := range im.bounds {
+			if b > ln {
+				return b
+			}
+		}
+		return len(im.srcLines)+1
 	}
+	for _, fd := range im.forms {
+		var lines [][]int
+		n := len(fd.starts)
+		for i := 0; i < n; i++ {
+			start := fd.starts[i]
+			end := start
+			if fd.endsMax[i] > start {
+				// multi-line statement: extend past the closing bracket line,
+				// but never into the next statement or a block "end".
+				end = boundAfter(fd.endsMax[i])-1
+				if end < fd.endsMax[i] {
+					end = fd.endsMax[i]
+				}
+				if end > len(im.srcLines) {
+					end = len(im.srcLines)
+				}
+			}
+			lines = append(lines, []int{start, end})
+			if k := fd.keys[i]; k != "" {
+				fd.bodies[k] = im.verbatim(start, end)
+			}
+		}
+		fd.lines = lines
+	}
+}
+
+// verbatim returns the exact source text of lines [start..end] (1-based).
+func (im *importer) verbatim(start, end int) string {
+	if start < 1 {
+		start = 1
+	}
+	if end > len(im.srcLines) {
+		end = len(im.srcLines)
+	}
+	if end < start {
+		return ""
+	}
+	var parts []string
+	for i := start; i <= end; i++ {
+		parts = append(parts, im.srcLines[i-1])
+	}
+	return strings.Join(parts, "\n")
+}
+
+// lineIndent returns the leading whitespace of the given 1-based source line.
+func (im *importer) lineIndent(ln int) string {
+	if ln < 1 || ln > len(im.srcLines) {
+		return ""
+	}
+	s := im.srcLines[ln-1]
+	for i := 0; i < len(s); i++ {
+		if s[i] != ' ' && s[i] != '\t' {
+			return s[:i]
+		}
+	}
+	return ""
 }
 
 // exprName returns a literal string from an expr (StringExpr, or an IdentExpr

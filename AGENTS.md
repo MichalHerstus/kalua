@@ -64,6 +64,10 @@ internal/session/    # Per-tab actor: inbox/outbox, form stack, timers
 internal/web/        # HTTP server, WebSocket bridge, embedded assets
 internal/server/     # Serve mode: worker pool, HTTP/WS/TCP servers, shared state
 internal/common/     # Shared types (OutboxMsg, SessionInterface) to avoid import cycles
+internal/builder/    # Visual Form Builder server (multi-form .lua/.json): AST import extracts ALL
+                     # forms + per-statement line spans; export splices changed/new forms into the
+                     # source via rebuild.go (non-form code preserved byte-for-byte); k.form.on
+                     # handler statements are re-emitted verbatim; JSON doc schema v3 (forms[]).
 extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-config)
 ```
 
@@ -255,3 +259,13 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - **Non-sqlite DB drivers** — MySQL (go-sql-driver/mysql), PostgreSQL (jackc/pgx/v5/stdlib), SQL Server (microsoft/go-mssqldb) via DSN scheme
 - **DB connection fixes (D10)** — `parseDSN` now maps `postgres://`/`postgresql://` → driver `"pgx"` keeping the full URL (pgx registers as `pgx`, not `postgres`, and requires a `postgres://` URL), and keeps the full `sqlserver://` URL for go-mssqldb (its ADO branch only splits on `;` and would otherwise yield an empty config). MySQL/SQLite DSNs still have the scheme stripped; fixed the `sqlite://` prefix off-by-one (was silently breaking `sqlite://` DSNs). `Placeholder`/`db_proc` keys on `pgx`; `buildWhereClause` is now handle-aware with sequential per-driver numbering (`$1`, `@p1`, `?`) and a `startIdx` so `db_update` SET+WHERE mix numbers correctly (`internal/bindings/db.go`). Postgres `db_proc` uses `SELECT * FROM name(...)` (not `CALL`). Tests: `internal/bindings/db_test.go` (parseDSN/Placeholder/buildWhereClause), `internal/host/db_ext_test.go` env-gated live integration (`KALUA_TEST_PG_DSN`, `KALUA_TEST_MSSQL_DSN`).
 - Docs: api_doc.go, USER_GUIDE.md, kalua_spec.md updated; all tests pass
+
+## Implemented Features (Phase 16 - Multi-Form Builder)
+
+- **Multi-form documents (schema v3)**: `Document.Forms []*Form` + `activeForm`; single-form v2 JSON (`{form}`) migrates to v3 on load (`server.go: migrateDoc`). `Model.go` gains `firstForm`/`findForm`/`activeForm`/`NewEmptyDoc`.
+- **Import extracts ALL forms** (`lua_import.go`): every `k.form.new` (declaration order), with `k.ctrl.*` / `k.form.on` (3- and 4-arg) / first literal `k.form.show` attributed by literal form name. Each owned statement's source **line span** is recorded (`Form.Lines`, via AST `Line()/LastLine()` + a bracket-close expansion bounded by the next statement/`end`); `k.form.on` statements are captured **verbatim** (`Form.HandlerBodies` now stores exact source text, no `PrintFunction` round-trip). Non-direct calls are skipped with a note; non-form code is never touched.
+- **Source-preserving save** (`rebuild.go: RebuildLua`): re-imports the file, and only *changed/new/deleted* forms are spliced — changed blocks replaced at their anchor, new forms appended after the last form block (or `function main()` appended when the script has no form), deleted forms removed including their `k.form.on`. Idempotent: unchanged docs save byte-for-byte; a re-splice that would only echo the saved block (auto-stub feedback) is skipped via a line-signature check; blank-line gaps between a regenerated form's statements are cleaned. Output is re-parsed before writing (fail-safe). Only changed/new forms get auto-generated stubs.
+- **Handlers never rewritten**: control/form renames do NOT touch `k.form.on` lines — stale statements are kept verbatim (orphan keys re-emitted, `patchOrphans`); deleting a control/form removes its handler statements.
+- **Serve methods**: `/api/form` (multi-form doc), `/api/export` (assembled file = source spliced with the doc; for `.lua`), `/api/import` replace/merge returns multi-form docs, merge by form name, `/api/preview` renders the active form, `PUT` sanitizes a stale `activeForm` (rename).
+- **UI** (`builder.js`, `index.html`, `builder.css`): Form dropdown + New/Delete, `activeForm` tracking, Code view = whole assembled file, Apply/AI-import preserve the active selection by name, Validate/Fix/AI-context use the assembled export.
+- Tests: `TestImportMultiForm`, `TestRebuildLuaIdempotent/PreservesNonForm/NewAndDeleteForms/RenameKeepsHandlers/RenameForm/NoFormScript`, `TestServerMultiFormEndToEnd`, `TestJSONv2MigrationToForms`, `TestMergeDocumentSameNameOverlaysHandlers`; all prior builder tests migrated to the multi-form API. Docs: `kform_builder_plan.md` §Multi-Form Files & Source Preservation.

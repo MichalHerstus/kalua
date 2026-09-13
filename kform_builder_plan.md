@@ -276,13 +276,55 @@ function buildControlOptions(ctrl: Control): string {
 ```
 
 ### Event Handlers (onclick, etc.)
-- **Not exported** — builder only handles form structure
-- User adds logic manually in Lua after export
-- Builder can insert placeholder comments:
+- **Exported as generated trace stubs** — builder emits `k.form.on` registrations
+  for the form lifecycle and each control's documented events, so an exported
+  app starts with visible event wiring. Stub bodies print the event path:
   ```lua
   k.ctrl.button("main", "btn1", {label="Click Me"})
-  -- TODO: Add onclick handler: k.form.on("main", "btn1", "click", function() ... end)
+  k.form.on("main", "btn1", "click", function()
+    k.print("main.btn1.click")
+  end)
   ```
+  Form-level stubs use the 3-arg form: `k.form.on("main", "open_form", function() k.print("main.open_form") end)`.
+- **Existing handlers are left as-is** — an imported inline `onclick` option or
+  a captured `k.form.on` body suppresses the stub for that (control, event)
+  pair, so real logic is never overwritten. Stubs use the runtime **wire event
+  names** (`click`, `selection_change`, `chart_click`, `chart_legend_click`,
+  looper `onclick`/`onselect`), not the inline-opt alias names.
+- The user replaces a stub body with real logic directly in the Lua; re-export
+  preserves it verbatim (`lua_import.go`/`lua_print.go` round-trip).
+
+### Multi-Form Files & Source Preservation
+- A builder document (v3) holds **many forms** (`Document.Forms`) plus an
+  `activeForm` name. A `.lua` file may mix any number of `k.form.new` blocks
+  with arbitrary non-form code (globals, helpers, DB setup) and a JSON
+  document stores the forms natively.
+- **Import** extracts every form (in declaration order), attributing
+  `k.ctrl.*` / `k.form.on` / `k.form.show` calls by their literal form-name
+  argument. Each owned statement's source **line span** is recorded
+  (`Form.Lines`) and `k.form.on` handler statements are captured **verbatim**
+  (exact source text in `Form.HandlerBodies`).
+- **Save is a surgical splice** (`rebuild.go`): the server re-imports the
+  current file, and only the statement lines belonging to *changed*,
+  *deleted*, or *new* forms are touched. Everything else — non-form code,
+  comments, blank lines, untouched forms — survives byte-for-byte. A form is
+  "changed" when its document form differs from a fresh import (ignoring
+  transient spans); an unchanged document is saved back byte-for-byte
+  (idempotent, stub echo skipped by a line-signature check).
+- **New forms are appended** after the last form block; a script with no form
+  at all gets `function main()` appended with the document's forms.
+- **Handlers are never rewritten**: when a form's block is regenerated its
+  `k.form.on` statements are re-emitted verbatim. On a **control rename** the
+  stale handler statement (old name) is preserved and a stub added under the
+  new name; on a **form rename** the block is replaced in place with the stale
+  handler text kept. Deleting a control or a form removes its `k.form.on`
+  statements.
+- **Auto-generated stubs** are added only to changed/new forms; opening a
+  10-form file and editing one form never rewrites the other nine.
+- The builder UI shows a **Form dropdown** (+ New / − Del) next to the title;
+  the Code view shows the whole assembled file (what Save writes), and Apply /
+  AI-import operates on the whole file, preserving the active selection by
+  name.
 
 ---
 
@@ -379,7 +421,7 @@ panel.webview.onDidReceiveMessage(msg => {
 | **Layout system** | Vertical only vs Grid vs Absolute | Start vertical only; grid later |
 | **Event handlers** | Include in JSON? | No — design-time only, export as TODO comments |
 | **Table/Looper support** | Include complex controls? | Phase 2 — start with basic controls |
-| **Multi-form support** | Single form vs multiple | Single form per file (per spec) |
+| **Multi-form support** | Single form vs multiple | **Multi-form** — edit one form at a time |
 | **Live sync** | Auto-save to Lua on change? | Manual save/export; auto-save JSON |
 | **CSS framework** | Plain CSS vs Tailwind vs other | Plain CSS (match KALUA style) |
 

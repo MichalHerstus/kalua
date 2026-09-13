@@ -51,6 +51,12 @@
   <main id="canvas">
     <div id="canvas-head">
       <h1 id="form-title">Form</h1>
+      <div id="form-switch" class="form-switch">
+        <label for="form-select">Select form:</label>
+        <select id="form-select" title="Which form to edit"></select>
+        <button id="btn-new-form" title="Add a new form to this file">New form</button>
+        <button id="btn-del-form" class="del" title="Delete the active form — its k.form.on lines are removed on Save">Delete form</button>
+      </div>
       <div id="canvas-tools">
         <span id="canvas-switch" class="canvas-switch">
           <button class="sel" data-view="preview" title="Show the rendered form">Preview</button>
@@ -76,7 +82,7 @@
 
   <aside id="inspector" aria-label="Properties">
     <h2>Properties</h2>
-    <details id="form-props" open>
+    <details id="form-props">
       <summary>Form</summary>
       <div class="prop-grid">
         <label>Name <input id="f_name" type="text" data-kpath="name"></label>
@@ -131,8 +137,8 @@
       </div>
     </details>
 
-    <details id="ctrl-props" open>
-      <summary><span id="ctrl-head">Control</span> <span id="ctrl-type" class="badge"></span>
+    <details id="ctrl-props">
+      <summary><span id="ctrl-head">Selected Control</span> <span id="ctrl-type" class="badge"></span>
         <button id="ctrl-del" class="del ctrl-del-btn" title="Delete this control (Del)" hidden>×</button></summary>
       <div id="ctrl-editor" class="prop-grid">Select a control in the preview or the list below.</div>
     </details>
@@ -153,6 +159,10 @@
     <button id="modal-close" class="modal-close" title="Close">×</button>
     <h3 id="modal-title"></h3>
     <pre id="modal-body"></pre>
+    <div id="modal-confirm" class="modal-confirm hidden">
+      <button id="modal-yes" class="primary danger">OK</button>
+      <button id="modal-no">Cancel</button>
+    </div>
   </div>
 </div>
 

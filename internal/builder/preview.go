@@ -9,14 +9,17 @@ import (
 	"kalua/internal/vm"
 )
 
-// previewState builds a fresh, sandboxed LState populated from the document's
+// previewState builds a fresh, sandboxed LState populated from the ACTIVE
 // form definition, then renders the form with the runtime renderer.
 func previewState(d *Document) (*lua.LState, error) {
 	if msgs := d.Validate(); len(msgs) > 0 {
 		return nil, fmt.Errorf("invalid document: %s", strings.Join(msgs, "; "))
 	}
+	f := activeForm(d)
+	if f == nil {
+		return nil, fmt.Errorf("document has no form")
+	}
 	L := vm.New()
-	f := d.Form
 
 	formTbl := L.NewTable()
 	formTbl.RawSetString("name", lua.LString(f.Name))
@@ -68,7 +71,7 @@ func previewState(d *Document) (*lua.LState, error) {
 
 	L.SetGlobal(f.Name, formTbl)
 
-	for _, c := range d.Form.Controls {
+	for _, c := range f.Controls {
 		opts := L.NewTable()
 		for k, v := range c.Opts {
 			if k == "items" {
@@ -131,10 +134,11 @@ func itemsToLuaMap(L *lua.LState, v any) *lua.LTable {
 	return tbl
 }
 
-// Preview renders the form HTML for the document. When no Lua source file is
+// Preview renders the active form's HTML for the document. When no form is
 // loaded yet (empty document), returns a placeholder.
 func Preview(d *Document) (string, error) {
-	if d == nil || d.Form == nil {
+	f := activeForm(d)
+	if d == nil || f == nil {
 		return `<div class="kalua-form"><p class="kalua-hint">No form loaded — open a .lua file or start from an empty form.</p></div>`, nil
 	}
 	L, err := previewState(d)
@@ -142,5 +146,5 @@ func Preview(d *Document) (string, error) {
 		return "", err
 	}
 	defer L.Close()
-	return bindings.RenderForm(L, d.Form.Name), nil
+	return bindings.RenderForm(L, f.Name), nil
 }

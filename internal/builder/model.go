@@ -19,8 +19,11 @@ import (
 
 // DocVersion is the schema version emitted by the builder. Version 2: cells
 // became an ordered array (CellDef) so cell order survives import/export;
-// version 1 object-form cells are migrated on load (server.go).
-const DocVersion = 2
+// version 1 object-form cells are migrated on load (server.go). Version 3:
+// a document holds many forms (Document.Forms) so a Lua file with several
+// forms and non-form code can be edited form-by-form. v2 single-form
+// documents ({form:...}) are migrated to v3 on load (server.go).
+const DocVersion = 3
 
 // Not a file extension but the canonical document file suffix used to detect
 // builder documents vs raw Lua sources.
@@ -34,10 +37,16 @@ var Types = []string{
 
 var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// Document is a single-form builder document.
+// Document is a multi-form builder document. For .lua workspaces the server
+// additionally keeps the original source text and (at save time) re-derives
+// each form's statement line-spans from that source — those spans are
+// transient and never authoritative (see rebuild.go). Lines/Indent/OrphanKeys
+// below are carried on the Form so Import → JSON → Export stays self-contained.
 type Document struct {
-	Version int   `json:"version"`
-	Form    *Form `json:"form"`
+	Version    int     `json:"version"`
+	Forms      []*Form `json:"forms"`
+	ActiveForm string  `json:"activeForm,omitempty"` // name of the UI-selected form
+	Notes      []string `json:"notes,omitempty"`     // document-level notices
 }
 
 // Form is the source-level form definition.
@@ -50,8 +59,14 @@ type Form struct {
 	Cells         []*CellDef          `json:"cells,omitempty"` // ordered (v2; array form)
 	Controls      []*Control          `json:"controls"`
 	Handlers      map[string][]string `json:"handlers,omitempty"`
-	HandlerBodies map[string]string   `json:"handlerBodies,omitempty"` // ctrl.event → Lua fn source (import-preserved)
+	HandlerBodies map[string]string   `json:"handlerBodies,omitempty"` // ctrl.event | @form.event → verbatim k.form.on statement (import-preserved)
 	Notes         []string            `json:"notes,omitempty"`         // import/export notices
+
+	// Transient source bookkeeping (import-populated, re-derived on save):
+	Lines      [][]int  `json:"lines,omitempty"` // owned statement [start,end] line ranges (1-based, inclusive)
+	Indent     string   `json:"indent,omitempty"` // leading whitespace of the form's k.form.new line
+	HasShow    bool     `json:"hasShow,omitempty"` // source had a literal k.form.show (owned)
+	OrphanKeys []string `json:"orphanKeys,omitempty"` // handler keys kept verbatim for renamed (stale) controls
 }
 
 // CellDef is one grid cell in a grid layout. Stored in an ordered array so the
@@ -83,17 +98,42 @@ type Control struct {
 // is checked by the caller; here we enforce builder invariants.
 func (d *Document) Validate() []string {
 	var msgs []string
-	if d == nil || d.Form == nil {
-		return []string{"missing 'form'"}
+	if d == nil || len(d.Forms) == 0 {
+		return []string{"missing 'forms'"}
 	}
 	if d.Version != DocVersion {
 		msgs = append(msgs, fmt.Sprintf("unsupported version %d (expected %d)", d.Version, DocVersion))
 	}
-	f := d.Form
+	if d.ActiveForm != "" && findForm(d, d.ActiveForm) == nil {
+		msgs = append(msgs, fmt.Sprintf("form %q is not in forms", d.ActiveForm))
+	}
+	seen := map[string]bool{}
+	for _, f := range d.Forms {
+		if f == nil {
+			msgs = append(msgs, "null form in forms")
+			continue
+		}
+		if pending := f.Validate(); len(pending) > 0 {
+			msgs = append(msgs, pending...)
+		}
+		if seen[f.Name] {
+			msgs = append(msgs, fmt.Sprintf("duplicate form name %q", f.Name))
+		}
+		seen[f.Name] = true
+	}
+	return msgs
+}
+
+// Validate checks a single form definition.
+func (f *Form) Validate() []string {
+	var msgs []string
+	if f == nil {
+		return []string{"null form"}
+	}
 	if f.Name == "" {
 		msgs = append(msgs, "form.name is required")
 	}
-	if !identRe.MatchString(f.Name) {
+	if f.Name != "" && !identRe.MatchString(f.Name) {
 		msgs = append(msgs, fmt.Sprintf("form.name %q is not a valid Lua identifier", f.Name))
 	}
 	if f.Layout != "" && f.Layout != "vertical" && f.Layout != "grid" {
@@ -159,6 +199,49 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// firstForm returns the first form in document order (or nil).
+func firstForm(d *Document) *Form {
+	if d == nil || len(d.Forms) == 0 {
+		return nil
+	}
+	return d.Forms[0]
+}
+
+// findForm returns the form with the given name (or nil).
+func findForm(d *Document, name string) *Form {
+	if d == nil {
+		return nil
+	}
+	for _, f := range d.Forms {
+		if f != nil && f.Name == name {
+			return f
+		}
+	}
+	return nil
+}
+
+// activeForm returns the UI-selected form, falling back to the first.
+func activeForm(d *Document) *Form {
+	if d == nil {
+		return nil
+	}
+	if d.ActiveForm != "" {
+		if f := findForm(d, d.ActiveForm); f != nil {
+			return f
+		}
+	}
+	return firstForm(d)
+}
+
+// NewEmptyDoc builds the "start from nothing" document used for missing files.
+func NewEmptyDoc() *Document {
+	return &Document{
+		Version:    DocVersion,
+		ActiveForm: "main",
+		Forms: []*Form{&Form{Name: "main", Layout: "vertical", Align: "left"}},
+	}
 }
 
 // RawJSON is a helper that serializes v to indented JSON.
