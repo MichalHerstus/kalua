@@ -1,0 +1,51 @@
+; KALUA configuration file.
+;
+; Copy this file to ./KALUA.INI (the default location, next to where you run
+; KALUA) and edit to taste. An alternate path can be given with --ini <path>
+; on any command, or the KALUA_INI environment variable.
+;
+; Precedence: CLI flags > KALUA.INI > environment variables > built-in defaults.
+; Section and key names are case-insensitive and '-'/'_' are interchangeable
+; (no-browser == no_browser == NO_BROWSER). Boolean values accept
+; 1/true/yes/on and 0/false/no/off; a bare key without '=' means "true".
+; Unknown keys are ignored, and repeated keys append (used by db/arg/allow-fs).
+
+[RUN]
+no-browser    = 1            ; don't auto-open the browser
+port          = 9000
+watch         = 1            ; hot-reload open tabs when the app script changes
+session-limit = 8
+verbose       = 1            ; maps to the -v flag
+; test        = 0            ; headless test mode (no HTTP server)
+; repl-on-error = 0
+; db          = main=sqlite://app.db   ; repeat the key for more connections
+; arg         = env=dev
+; allow-fs    = ./data
+
+[SERVE]
+host    = 127.0.0.1
+port    = 8080
+workers = 8
+mode    = http,ws           ; http, ws, tcp, or a comma-separated combination
+verbose = 1
+; db    = main=sqlite://app.db
+; arg   = env=prod
+
+[BUILDER]
+port       = 9001
+no-browser = 0
+; model     = local-model   ; optional AI model override
+; base-url  = http://localhost:1234/v1
+
+[CHECK]
+verbose = 1
+
+[AI]
+; LLM connection settings for KALUA ai and the builder's AI panel.
+; These keys mirror the KALUA_AI_* env vars and override them; explicit
+; command-line flags (--model, --base-url, --api-key-env) win over everything.
+; When the base URL points at OpenRouter and no API key is set, the
+; OPENAI_API_KEY environment variable is used as a fallback.
+KALUA_AI_BASE_URL = https://openrouter.ai/api/v1
+KALUA_AI_API_KEY  = sk-or-v1-0000000000000000000000000000000000
+KALUA_AI_MODEL    = nvidia/nemotron-3.5-lightning:free

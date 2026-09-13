@@ -50,11 +50,11 @@ Scripts run in a locked-down VM: only a whitelist of standard Lua libraries is o
 
 ## 1.4 What ships in the box
 
-- **Run mode**: form system, 11 control types, charts (Chart.js), msgbox, clipboard, XML/JSON, async HTTP.
+- **Run mode**: form system, 11 control types, charts (Chart.js), msgbox, clipboard, XML/JSON, async HTTP, hot reload (`--watch` / `SIGHUP`), error handling (`k.on_error` + `ERRORCODE`/`ERRORMSG`).
 - **Serve mode**: HTTP/WS/TCP servers, worker pool, hot reload (SIGHUP), lifecycle hooks (`init`/`shutdown`).
 - **Expression functions**: ~100 Kalipso-style globals (string, numeric, date/time, conditional).
 - **Data & integration**: JSON, XML, CSV, INI, YAML, result-set conversions, SQLite/MySQL/Postgres/SQL Server, FTP, SMTP, POP3, SOAP, sockets, AES/RSA crypto, ZIP.
-- **Tooling**: `KALUA check` static validation, `KALUA builder` visual form editor, `KALUA lsp` Language Server (+ VSCode extension).
+- **Tooling**: `KALUA check` static validation, `KALUA builder` multi-form visual editor (with an AI chat panel), `KALUA ai` natural-language app generation, `KALUA lsp` Language Server (+ VSCode extension). CLI flags can be persisted in a `KALUA.INI` file (see §3.7).
 
 ---
 
@@ -117,7 +117,7 @@ end
 ./KALUA builder myapp.lua
 ```
 
-Opens the [KALUA Builder](#7-kalua-builder) at `http://127.0.0.1:9001`.
+Opens the [KALUA Builder](#7-kalua-builder) at `http://127.0.0.1:9001`. The builder edits **every form** in a multi-form `.lua` file with source-preserving saves and includes an AI chat panel that generates/edits forms from natural language (see §7.6).
 
 ## 2.7 Editor support (LSP / VSCode)
 
@@ -135,7 +135,7 @@ The bundled VSCode extension (`extensions/vscode-kalua`) wires completion, hover
 Usage: KALUA <command> [args...]
 
 Commands:
-  run     <app.lua> [flags]   Run app as web app (opens browser)
+  run     <app.lua> [flags]   Run app as web app (--watch hot-reloads on change)
   serve   <app.lua> [flags]   Run app as headless API server
   check   <app.lua>           Validate script (syntax, unknown k.*, main)
   builder <app.lua|form.json> Visual form builder (opens browser)
@@ -145,14 +145,16 @@ Commands:
   version                     Print version
 ```
 
-Flags may be placed before or after the script argument.
+Flags may be placed before or after the script argument. Every command also
+accepts `--ini PATH` to load persistent flag values from a `KALUA.INI` file
+(see §3.7); a `KALUA.INI` next to the working directory is loaded automatically.
 
 ## 3.1 `run` — interactive web app
 
 ```
-KALUA run <app.lua> [--port 9000] [--no-browser] [--session-limit 8] [--test]
+KALUA run <app.lua> [--port 9000] [--no-browser] [--session-limit 8] [--test] [--watch]
             [--verbose] [--repl-on-error] [--debug] [--db NAME=DSN]...
-            [--arg K=V]... [--allow-fs PATH]...
+            [--arg K=V]... [--allow-fs PATH]... [--ini PATH]
 ```
 
 | Flag | Short | Default | Description |
@@ -161,19 +163,21 @@ KALUA run <app.lua> [--port 9000] [--no-browser] [--session-limit 8] [--test]
 | `--no-browser` | `-n` | off | Do not auto-open the browser |
 | `--session-limit N` | `-l` | `8` | Max concurrent browser tabs (sessions) |
 | `--test` | | off | Headless test mode: no HTTP server, run `main()` once |
+| `--watch` | | off | Poll the app script and hot-reload every open tab when it changes; a broken script keeps the old app running (`SIGHUP` triggers the same reload) |
 | `--verbose` | `-v` | off | Trace all `k.*` calls (args + returns) + full stack on error |
 | `--repl-on-error` | | off | Drop into an interactive Lua REPL at the crash site (`--test`) |
 | `--debug` | | off | EmmyLua debugger (Tier 2 stub, not yet implemented) |
 | `--db NAME=DSN` | `-d` | | Pre-register a named connection, usable as `k.connect_db("#NAME")` |
 | `--arg K=V` | `-a` | | Seed the `ARGS` global table |
 | `--allow-fs PATH` | `-f` | | Allow script file access outside the working directory (repeatable) |
+| `--ini PATH` | | | Read persistent flag values from a `KALUA.INI` file (see §3.7) |
 
 ## 3.2 `serve` — headless API
 
 ```
 KALUA serve <app.lua> [--host 127.0.0.1] [--port 8080] [--workers 4]
              [--mode http|ws|tcp] [--verbose] [--debug] [--debug-worker]
-             [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]...
+             [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]... [--ini PATH]
 ```
 
 | Flag | Short | Default | Description |
@@ -185,6 +189,7 @@ KALUA serve <app.lua> [--host 127.0.0.1] [--port 8080] [--workers 4]
 | `--verbose` | `-v` | off | Verbose k.* tracing |
 | `--debug` / `--debug-worker` | | off | EmmyLua debugger stubs (not yet implemented) |
 | `--db`, `--arg`, `--allow-fs` | `-d -a -f` | | Same as `run` |
+| `--ini PATH` | | | Read persistent flag values from a `KALUA.INI` file (see §3.7) |
 
 Signals:
 - `SIGTERM` / `SIGINT` — graceful shutdown (runs optional `shutdown()` hook once).
@@ -219,11 +224,63 @@ KALUA version
 
 ```bash
 ./KALUA run myapp.lua --port 8080
+./KALUA run myapp.lua --watch                  # dev loop: edit and watch the browser reload
 ./KALUA run app.lua -n -v --arg env=dev --db main=sqlite://app.db
 ./KALUA serve api.lua --mode http,ws,tcp --workers 8 -p 9090
 ./KALUA check myapp.lua
-./KALUA builder forms/app.lua --no-browser
+./KALUA builder forms/app.lua --no-browser --model local-model
+./KALUA run myapp.lua --ini ./myapp.ini        # persistent flags from a KALUA.INI (or just ./KALUA.INI)
 ```
+
+## 3.7 `KALUA.INI` — persistent configuration file
+
+Instead of repeating flags on every launch, put them in a `KALUA.INI` file.
+Values there behave exactly like CLI flags and apply to `run`, `serve`,
+`builder`, `check` and the `ai` subcommands.
+
+**Where it is searched** (first hit wins):
+
+1. `--ini <path>` on the command line.
+2. The `KALUA_INI` environment variable.
+3. `./KALUA.INI` — a file literally named `KALUA.INI` in the working directory.
+
+A missing default file is fine; requesting a non-existent path explicitly
+(e.g. `--ini nope.ini` or a dangling `KALUA_INI`) is an I/O error (exit 3).
+A prepared template lives at `KALUA.ini.sample` (copy it to `./KALUA.INI`).
+
+**Precedence:** CLI flags > `KALUA.INI` > environment variables > built-in
+defaults. An INI value only fills a flag that was **not** set on the command
+line, so command-line flags always win — including when the INI value would be
+invalid for that flag.
+
+**Format:** standard INI with `[Section]` headers, `key = value` lines, `;` or
+`#` comments and blank lines. The section binds the file to a command:
+`[RUN]`, `[SERVE]`, `[BUILDER]`, `[CHECK]` and `[AI]`, and the key names match
+the long flag names. Section and key names are case-insensitive and `-`/`_`
+are interchangeable (`no-browser` = `NO_BROWSER` = `no_browser`). Booleans
+accept `1/true/yes/on` and `0/false/no/off`; a bare key without `=` means
+`true`. Repeated keys append (used by the repeatable `db`, `arg` and
+`allow-fs` flags). Unknown keys are ignored.
+
+**Example `./KALUA.INI`:**
+
+```ini
+[RUN]
+no-browser    = 1            ; never auto-open the browser
+port          = 9000
+watch         = 1            ; hot-reload on change
+; db          = main=sqlite://app.db
+; arg         = env=dev
+[AI]
+KALUA_AI_BASE_URL = https://openrouter.ai/api/v1
+KALUA_AI_API_KEY  = sk-or-v1-...
+KALUA_AI_MODEL    = nvidia/nemotron-3.5-lightning:free
+```
+
+The `[AI]` section sets the LLM connection for `KALUA ai` and the builder's AI
+panel; it mirrors the `KALUA_AI_*` env vars and overrides them (flags still win
+over everything). If the base URL is an OpenRouter endpoint and no API key is
+set, the `OPENAI_API_KEY` env var is used as a fallback. See §7.6 for details.
 
 ---
 
@@ -3462,25 +3519,33 @@ local yml  = k.yaml_string({orders = rows})
 
 # 7. KALUA Builder
 
-The **KALUA Builder** is a design-time visual editor for forms. It never executes the app; it renders the **real Go renderer** in-process, so the preview is pixel-accurate. One form per builder file.
+The **KALUA Builder** is a design-time visual editor for forms. It never executes the app; it renders the **real Go renderer** in-process, so the preview is pixel-accurate (the builder embeds the same runtime stylesheet that `KALUA run` serves). A file may contain **many forms** plus non-form code (helpers, `main()`, DB setup, AI chat) — the builder edits any form without touching what it does not own.
 
 ## 7.1 Start
 
 ```bash
-./KALUA builder <app.lua|form.json> [--host 127.0.0.1] [--port 9001] [--no-browser] [-p N] [-n]
+./KALUA builder <app.lua|form.json> [--host 127.0.0.1] [--port 9001] [--no-browser]
+              [--model M] [--base-url U] [--api-key-env V] [-p N] [-n]
 ```
 
-The file need not exist: a new empty form is served, and **Save** creates it. Lua files are written as generated source; `.kalua-form.json` files as documents.
+The file need not exist: a new empty form is served, and **Save** creates it. Lua files are written as rebuilt source (non-form code preserved); `.kalua-form.json` files as documents. Flag-less launches read the LLM settings from the `KALUA_AI_*` env vars (see §7.6); `--model` / `--base-url` / `--api-key-env` override them.
 
 ## 7.2 Workflow
 
-1. Select the form layout (**Vertical** or **Grid** with cells) in the form editor.
-2. Drag controls from the palette onto the canvas (11 types: label, textbox, button, combo, list, table, looper, chart, image, checkbox, radio).
-3. Edit properties in the property panel (label, value, items, chart type/data, cell assignment, alignment…).
-4. The preview updates via a debounced server round-trip (the Go renderer is the source of truth).
-5. **Save:** for a `.lua` target, KALUA exports the generated `k.form.new` / `k.ctrl.*` / `k.form.on` source; for `.json`, it writes the document.
+1. Pick the form to edit from the **form dropdown** (top bar) or create a new one with **+ Form**. Only the selected form is edited at any time.
+2. Select the form layout (**Vertical** or **Grid** with cells) in the form editor.
+3. Drag controls from the palette onto the canvas (11 types: label, textbox, button, combo, list, table, looper, chart, image, checkbox, radio).
+4. Edit properties in the property panel (label, value, items, chart type/data, cell assignment, alignment…).
+5. The preview updates via a debounced server round-trip (the Go renderer is the source of truth).
+6. **Save:** for a `.lua` target, only the changed/new/deleted forms are spliced back into the original source — non-form code is preserved byte-for-byte and unchanged forms round-trip untouched (idempotent); for `.json`, it writes the document.
 
-### 7.2.1 Grid layout editing
+### 7.2.1 Multi-form files
+
+- A `.lua` (or `.json`) workspace can declare several forms. **Import** extracts every `k.form.new` (declaration order) with its controls and `k.form.on` handlers; the **Code** tab always shows the *assembled* file — the original source with the edited forms spliced in.
+- The **form dropdown** switches the active form; **+ Form** appends a new one, **Delete** removes the selected form *and* its `k.form.on` statements. Renames keep every handler statement verbatim (stale references are re-emitted, control/form renames never rewrite `k.form.on` lines).
+- The active form name is tracked in `activeForm` and preserved across Apply / AI-import.
+
+### 7.2.2 Grid layout editing
 
 - **Cells are an ordered array** (header → sidebar → main → footer renders in that order). In the form editor you can:
   - **Add** a cell (`+ Cell`), **rename** it (`Id`), **reorder** it (**▲/▼**), and **set** width, background, alignment, border width and border color.
@@ -3488,50 +3553,48 @@ The file need not exist: a new empty form is served, and **Save** creates it. Lu
 - In the canvas, grid cells render as dashed, tappable regions — click an empty cell to select it in the inspector.
 - Controls are assigned to a cell via the control's **Grid cell** property (or their `cell` opt directly).
 
-### 7.2.2 Undo / Redo
+### 7.2.3 Undo / Redo
 
 One-step **Undo / Redo** (toolbar buttons, `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` / `Ctrl/Cmd+Y`). A single step covers a typing burst in a field; form/cell/control structural changes and property edits each get their own step. `New` and loading a file reset the history.
 
-### 7.2.3 Deleting controls
+### 7.2.4 Deleting controls
 
 Delete the selected control with **Delete/Backspace** (when no input field is focused), the **`×`** in the control list, or the **`×`** in the control editor header.
 
 ## 7.3 Importing existing Lua
 
-- Structure is extracted from the AST: the **first** `k.form.new` wins.
-- Controls are imported in creation order (vertical rendering and grid bucketing depend on it).
-- Non-form code is noted as "will be lost on export".
-- Event handlers are **preserved**: inline `onclick = function() ... end` and
-  `k.form.on(..., function() ... end)` bodies are captured as source text
-  (stored in the document as `inline` / `handlerBodies`) and **re-injected on
-  Save/Export**, so the builder no longer drops your button and form behaviors.
-  The bodies are still not editable in the property editor (structural tool);
-  edit them in the `.lua` source and re-import. When no body was captured, a
-  `-- TODO: handle ...` stub is emitted instead.
-- Additional forms are skipped with a note.
+- Structure is extracted from the AST: **every** `k.form.new` is imported in declaration order, each with its controls (creation order — vertical rendering and grid bucketing depend on it) and `k.form.on` handlers. The first literal `k.form.show` of each form is attributed to that form.
+- Non-form code (helpers, `main()`, `function`s, DB setup) is **preserved byte-for-byte** on Save/Export — it is never rewritten. A script with no forms at all is served as an empty scaffold and saved back untouched.
+- Event handlers are **preserved verbatim** as source text: inline `onclick = function() ... end` and `k.form.on(..., function() ... end)` bodies are captured (stored in the document as `inline` / `handlerBodies`) and re-injected on Save/Export, so the builder no longer drops your button and form behaviors. The bodies are still not editable in the property editor (structural tool); edit them in the `.lua` source and re-import. When no body was captured, a `-- TODO: handle ...` stub is emitted instead.
+- Handlers whose control was renamed are kept **verbatim** (orphan keys) rather than rewritten; deleting a control/form removes its handler statements.
+- Non-direct calls (a `k.form.new` reached through a variable or helper) are skipped with a note — imports only follow literal calls.
 
 ## 7.4 Document format (`.kalua-form.json`)
 
 ```jsonc
 {
-  "version": 2,                        // v1 (object-form cells) is auto-migrated on load
-  "form": {
-    "name": "main",
-    "title": "Test Form",
-    "layout": "vertical",
-    "align": "left",
-    "gap": 16,
-    "cells": [                          // ordered array (declaration order is preserved)
-      { "id": "header", "width": 12, "bg": "#f5f5f5", "align": "center",
-        "border": { "width": 1, "color": "#ddd" } },
-      { "id": "sidebar", "width": 3 }
-    ],
-    "controls": [
-      { "name": "lbl1", "type": "label", "text": "Hello" },
-      { "name": "txt1", "type": "textbox", "label": "Name", "value": "World" }
-    ],
-    "handlers": { "btn1": ["click"] }   // read-only metadata
-  }
+  "version":    3,                      // multi-form schema; v2 ({form:...}) and
+                                        // v1 (object-form cells) auto-migrate on load
+  "activeForm": "main",                 // UI-selected form (falls back to the first)
+  "forms": [                            // every k.form.new, in declaration order
+    {
+      "name":   "main",
+      "title":  "Test Form",
+      "layout": "vertical",
+      "align":  "left",
+      "gap":    16,
+      "cells": [                        // ordered array (declaration order is preserved)
+        { "id": "header", "width": 12, "bg": "#f5f5f5", "align": "center",
+          "border": { "width": 1, "color": "#ddd" } },
+        { "id": "sidebar", "width": 3 }
+      ],
+      "controls": [
+        { "name": "lbl1", "type": "label", "text": "Hello" },
+        { "name": "txt1", "type": "textbox", "label": "Name", "value": "World" }
+      ],
+      "handlers": { "btn1": ["click"] } // read-only metadata
+    }
+  ]
 }
 ```
 
@@ -3558,17 +3621,17 @@ The builder is a small local HTTP server (embedded UI under `/`):
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /api/form` | Current document (imported from Lua or read from JSON) |
-| `PUT /api/form` | Save the document (writes Lua source export or the JSON file) |
+| `GET /api/form` | Current multi-form document (imported from Lua or read from JSON) |
+| `PUT /api/form` | Save the document — for `.lua` splices changed forms back into the source (non-form code preserved); writes the JSON file otherwise. A stale `activeForm` is sanitized on save |
 | `GET /api/source` | Raw file contents |
-| `POST /api/export` | Generated Lua source for a document |
-| `POST /api/import` | Document extracted from Lua source |
+| `POST /api/export` | Assembled Lua for a document: the original source with the edited forms spliced in (what Save writes) |
+| `POST /api/import` | Multi-form document extracted from Lua source; `mode = "replace"` (default) or `"merge"` (merge by form name, never deletes — used by "Apply to Builder") |
 | `POST /api/validate` | Static validation of Lua (`KALUA check` logic) |
-| `POST /api/preview` | HTML preview rendered by the real Go renderer |
+| `POST /api/preview` | HTML preview of the active form rendered by the real Go renderer |
 | `GET /api/ai/status` | LLM provider/model + reachability (live ping) |
-| `POST /api/ai/generate` | Natural language → Lua (validated, written to file) |
+| `POST /api/ai/generate` | Natural language → Lua (validated, written to the file) |
 | `POST /api/ai/fix` | Send script + errors → LLM returns a corrected script |
-| `POST /api/ai/stream` | SSE stream of the generation (tokens, status, done) |
+| `POST /api/ai/stream` | SSE stream of a generation (tokens, status, done) — backs the chat panel |
 | `GET /healthz` | Liveness |
 
 ## 7.6 AI builder (natural language → Lua)
@@ -3584,10 +3647,13 @@ result before it is used. Two surfaces are available:
 ./KALUA ai validate myapp.lua                  # static check (syntax + k.*)
 ```
 
-Flags: `--provider lmstudio|openrouter`, `--model`, `--base-url`,
+Flags: `--model`, `--base-url`,
 `--api-key-env`, `--full-doc` (include the full API reference in the prompt).
+`generate` writes to `-o app.lua` by default; when the base URL is an OpenRouter
+endpoint and no API key is set, the `OPENAI_API_KEY` env var is used.
 
-Configuration (env):
+Configuration (env, or the `[AI]` section of a `KALUA.INI` file — see §3.7;
+precedence is flags > `KALUA.INI` > env):
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
@@ -3602,8 +3668,9 @@ model for up to three automatic fix attempts.
 
 ### Builder chat panel
 
-Open the builder and click **AI** in the top bar. The builder reads the same
-`KALUA_AI_*` env vars, **export them in the same shell before launching it**
+Open the builder and click **AI** in the top bar. The builder reads the
+`KALUA_AI_*` env vars (or the `[AI]` section of a `KALUA.INI`),
+**export them in the same shell before launching it**
 (a running process keeps its startup environment). Alternatively pass them
 explicitly as flags:
 
@@ -3618,11 +3685,15 @@ The status dot turns green when the provider responds; if it stays red, the
 panel shows the exact backend error (e.g. `401 User not found`, `429 rate
 limited`, or a timeout) so you can tell a bad key from a cold model.
 Type a request (e.g. "a login form with username, password and a Sign in
-button"); the response streams live into the Code tab. Use **Fix** to resend
-the script with errors, **Apply to Builder** to import the generated script
-into the visual editor, and the **Edit current form** checkbox to include the
-currently open source as context for follow-up requests (multi-turn chat keeps
-earlier turns in the prompt).
+button"); the response streams live into the Code tab (SSE via `/api/ai/stream`).
+Use **Fix** to resend the script with errors, **Apply to Builder** to import the
+generated script into the visual editor, and the **Edit current form** checkbox
+to include the currently open source as context for follow-up requests
+(multi-turn chat keeps earlier turns in the prompt). Apply merges the result
+against the current document **by form name** — it never deletes anything, the
+generated forms win field-by-field, and the previously active form stays
+selected — so iterative tweaks ("add a Cancel button to the login form") update
+the existing form instead of replacing the whole app.
 
 ---
 

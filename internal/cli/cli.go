@@ -16,6 +16,7 @@ import (
 	"kalua/internal/bindings"
 	"kalua/internal/builder"
 	"kalua/internal/checker"
+	"kalua/internal/config"
 	"kalua/internal/host"
 	"kalua/internal/lsp"
 	"kalua/internal/server"
@@ -72,6 +73,18 @@ Run 'KALUA <command> -h' for command-specific flags.
 `)
 }
 
+// loadConfig resolves and loads the KALUA.INI configuration. iniFlag comes from
+// the command's --ini flag. An absent default file (./KALUA.INI / $KALUA_INI is
+// not set) yields an empty config; a missing file that was explicitly requested
+// (via --ini or $KALUA_INI) is an error.
+func loadConfig(iniFlag string) (*config.File, error) {
+	path := config.FindPath(iniFlag)
+	if path == "" {
+		return config.New(), nil
+	}
+	return config.Load(path)
+}
+
 func runCmd(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "run: requires a script argument")
@@ -98,6 +111,7 @@ func runCmd(args []string) int {
 		replOnError  = fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
 		debugMode    = fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
 		watch        = fs.Bool("watch", false, "Reload the app automatically when the script changes on disk")
+		iniFlag      = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
 		dbFlag       = multiFlag{}
 		argFlag      = multiFlag{}
 		allowFSFlag  = multiFlag{}
@@ -119,6 +133,18 @@ func runCmd(args []string) int {
 	}
 	if script == "" {
 		fmt.Fprintln(os.Stderr, "run: requires a script argument")
+		return int(host.ExitUsage)
+	}
+
+	// KALUA.INI values fill in flags that were not set on the command line
+	// (precedence: CLI flags > KALUA.INI > env vars > defaults).
+	ini, err := loadConfig(*iniFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run: %v\n", err)
+		return int(host.ExitIOError)
+	}
+	if err := ini.ApplyFlags(fs, "run", map[string][]string{"v": {"verbose"}}); err != nil {
+		fmt.Fprintln(os.Stderr, "run:", err)
 		return int(host.ExitUsage)
 	}
 
@@ -206,12 +232,24 @@ func runCmd(args []string) int {
 func checkCmd(args []string) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	var verbose = fs.Bool("v", false, "Verbose logging")
+	var (
+		verbose = fs.Bool("v", false, "Verbose logging")
+		iniFlag = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
+	)
 	if err := fs.Parse(args); err != nil {
 		return int(host.ExitUsage)
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "check: requires exactly one script argument")
+		return int(host.ExitUsage)
+	}
+	ini, err := loadConfig(*iniFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "check: %v\n", err)
+		return int(host.ExitIOError)
+	}
+	if err := ini.ApplyFlags(fs, "check", map[string][]string{"v": {"verbose"}}); err != nil {
+		fmt.Fprintln(os.Stderr, "check:", err)
 		return int(host.ExitUsage)
 	}
 	script := fs.Arg(0)
@@ -300,6 +338,7 @@ func serveCmd(args []string) int {
 		fs.Int("workers", 4, "Number of worker processes")
 		fs.String("mode", "http", "Server mode: http, ws, tcp, or comma-separated combination")
 		fs.Bool("v", false, "Verbose logging")
+		fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
 		fs.Var(&multiFlag{}, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 		fs.Var(&multiFlag{}, "d", "Shorthand for --db")
 		fs.Var(&multiFlag{}, "arg", "Seed ARGS table: K=V (repeatable)")
@@ -321,6 +360,7 @@ func serveCmd(args []string) int {
 		verbose     = fs.Bool("v", false, "Verbose logging")
 		debugMode   = fs.Bool("debug", false, "Enable EmmyLua debugger per worker (Tier 2, not yet implemented)")
 		debugWorker = fs.Bool("debug-worker", false, "Attach debugger to each worker (Tier 2, not yet implemented)")
+		iniFlag     = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
 		dbFlag      = multiFlag{}
 		argFlag     = multiFlag{}
 		allowFSFlag = multiFlag{}
@@ -342,6 +382,16 @@ func serveCmd(args []string) int {
 	}
 	if script == "" {
 		fmt.Fprintln(os.Stderr, "serve: requires a script argument")
+		return int(host.ExitUsage)
+	}
+
+	ini, err := loadConfig(*iniFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+		return int(host.ExitIOError)
+	}
+	if err := ini.ApplyFlags(fs, "serve", map[string][]string{"v": {"verbose"}}); err != nil {
+		fmt.Fprintln(os.Stderr, "serve:", err)
 		return int(host.ExitUsage)
 	}
 
@@ -400,7 +450,7 @@ func builderCmd(args []string) int {
 		return int(host.ExitUsage)
 	}
 	if args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "Usage: KALUA builder <app.lua|form.json> [--host 127.0.0.1] [--port 9001] [-n] [--model M] [--base-url U] [--api-key-env V]")
+		fmt.Fprintln(os.Stderr, "Usage: KALUA builder <app.lua|form.json> [--host 127.0.0.1] [--port 9001] [-n] [--model M] [--base-url U] [--api-key-env V] [--ini PATH]")
 		return int(host.ExitOK)
 	}
 
@@ -413,11 +463,12 @@ func builderCmd(args []string) int {
 		aiModel   = fs.String("model", "", "AI model (overrides KALUA_AI_MODEL)")
 		aiBaseURL = fs.String("base-url", "", "AI base URL (overrides KALUA_AI_BASE_URL)")
 		aiKeyEnv  = fs.String("api-key-env", "KALUA_AI_API_KEY", "Env var holding the AI API key")
+		iniFlag   = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
 	)
 	fs.IntVar(port, "p", 9001, "Shorthand for --port")
 	fs.BoolVar(noBrowser, "n", false, "Shorthand for --no-browser")
 
-	// Parse flags before and after the positional file.
+	// Parse flags before AND after the positional file.
 	file, err := parseArgsScript(fs, args)
 	if err != nil {
 		return int(host.ExitUsage)
@@ -427,22 +478,31 @@ func builderCmd(args []string) int {
 		return int(host.ExitUsage)
 	}
 
+	ini, err := loadConfig(*iniFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "builder: %v\n", err)
+		return int(host.ExitIOError)
+	}
+	if err := ini.ApplyFlags(fs, "builder", nil); err != nil {
+		fmt.Fprintln(os.Stderr, "builder:", err)
+		return int(host.ExitUsage)
+	}
+
 	srv, err := builder.New(file, *hostFlag, *port)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "builder error: %v\n", err)
 		return int(host.ExitError)
 	}
-	// Explicit AI flags override the KALUA_AI_* env vars read inside New.
-	cfg := srv.GetAI()
-	if *aiModel != "" {
-		cfg.Model = *aiModel
-	}
-	if *aiBaseURL != "" {
-		cfg.BaseURL = *aiBaseURL
-	}
-	if *aiKeyEnv != "" {
-		cfg.APIKey = os.Getenv(*aiKeyEnv)
-	}
+	// CLI flags (then KALUA.INI, then the KALUA_AI_* env vars) decide the LLM
+	// connection. --api-key-env applies only when passed explicitly, so an
+	// INI/OPENAI fallback key is not clobbered.
+	var keyOverride string
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "api-key-env" {
+			keyOverride = os.Getenv(*aiKeyEnv)
+		}
+	})
+	cfg := resolveAI(ini, aiOptions{BaseURL: *aiBaseURL, Model: *aiModel, APIKey: keyOverride})
 	srv.SetAI(cfg)
 	fmt.Fprintf(os.Stderr, "KALUA AI: %s (model %s)\n", cfg.BaseURL, cfg.Model)
 	defer srv.Close()
@@ -505,6 +565,7 @@ func addRunFlags(fs *flag.FlagSet) {
 	fs.Bool("test", false, "Run in test mode (headless, no server)")
 	fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
 	fs.Bool("watch", false, "Reload the app automatically when the script changes on disk")
+	fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
 	fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
 	fs.Var(&multiFlag{}, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 	fs.Var(&multiFlag{}, "d", "Shorthand for --db")

@@ -10,6 +10,7 @@ import (
 
 	"kalua/internal/ai"
 	"kalua/internal/checker"
+	"kalua/internal/config"
 	"kalua/internal/host"
 )
 
@@ -51,16 +52,19 @@ Subcommands:
   help                                        Show this help message
 
 Flags (all subcommands):
-  --provider string   LLM provider: lmstudio, openrouter (default: lmstudio)
-  --model string      Model name (default from env)
-  --base-url string   LLM base URL (default: http://localhost:1234/v1)
+  --model string      Model name (default from KALUA.INI / env)
+  --base-url string   LLM base URL (default from KALUA.INI / env)
   --api-key-env string Env var for API key (default: KALUA_AI_API_KEY)
   --full-doc          Include full API doc in prompt (default: run-mode subset)
+  --ini string        Path to KALUA.INI (default: ./KALUA.INI or $KALUA_INI)
 
-Environment:
+Configuration sources (precedence: flags > KALUA.INI > env > defaults):
+  KALUA.INI [AI] section, or the env vars below:
   KALUA_AI_BASE_URL   LLM base URL (default: http://localhost:1234/v1)
   KALUA_AI_API_KEY    API key (optional for local models)
   KALUA_AI_MODEL      Model name (default: local-model)
+  When the base URL points at OpenRouter and no API key is set, the
+  OPENAI_API_KEY environment variable is used as a fallback.
 
 Examples:
   KALUA ai generate "a form with name and email fields" -o myapp.lua
@@ -69,45 +73,92 @@ Examples:
 `)
 }
 
-func providerFromFlags(f *aiFlags) ai.ProviderConfig {
-	// Base config comes from the KALUA_AI_* env vars (via ai.defaultConfig);
-	// explicit --base-url/--model/--api-key-env flags override them.
+// aiOptions carries the explicit CLI overrides passed to resolveAI. Zero values
+// mean "not given"; APIKey only takes effect when --api-key-env was passed
+// explicitly, so an unset flag can never clobber an INI/env value.
+type aiOptions struct {
+	BaseURL string
+	Model   string
+	APIKey  string
+}
+
+// resolveAI computes the LLM config with the precedence
+// CLI flag > KALUA.INI > env var > default. The [AI] section in KALUA.INI
+// provides the base values. If the resolved base URL is an OpenRouter endpoint
+// with no API key set, OPENAI_API_KEY is used as a fallback.
+func resolveAI(cfg *config.File, o aiOptions) ai.ProviderConfig {
 	base := ai.EnvConfig()
-	if f.BaseURL != "" {
-		base.BaseURL = f.BaseURL
+	base = overlayAI(cfg, "ai", base)
+
+	if o.BaseURL != "" {
+		base.BaseURL = o.BaseURL
 	}
-	if f.Model != "" {
-		base.Model = f.Model
+	if o.Model != "" {
+		base.Model = o.Model
 	}
-	if f.APIKeyEnv != "" {
-		base.APIKey = os.Getenv(f.APIKeyEnv)
+	if strings.Contains(base.BaseURL, "openrouter") && base.APIKey == "" {
+		base.APIKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	}
-	if f.Provider == "openrouter" && base.APIKey == "" {
-		base.APIKey = os.Getenv("OPENAI_API_KEY")
+	if o.APIKey != "" {
+		base.APIKey = o.APIKey
+	}
+	return base
+}
+
+// overlayAI applies a section's keys onto a provider config. Both flag-style
+// (base-url, model, api-key) and env-style (KALUA_AI_*) keys are accepted.
+func overlayAI(cfg *config.File, section string, base ai.ProviderConfig) ai.ProviderConfig {
+	if v, ok := cfg.GetAny(section, "base-url", "baseurl", "kalua_ai_base_url"); ok {
+		base.BaseURL = v
+	}
+	if v, ok := cfg.GetAny(section, "model", "kalua_ai_model"); ok {
+		base.Model = v
+	}
+	if v, ok := cfg.GetAny(section, "api-key", "apikey", "kalua_ai_api_key"); ok {
+		base.APIKey = v
 	}
 	return base
 }
 
 func setAIFlags(fs *flag.FlagSet, f *aiFlags) {
-	fs.StringVar(&f.Provider, "provider", "lmstudio", "LLM provider: lmstudio, openrouter")
 	fs.StringVar(&f.Model, "model", "", "Model name")
 	fs.StringVar(&f.BaseURL, "base-url", "", "LLM base URL")
 	fs.StringVar(&f.APIKeyEnv, "api-key-env", "KALUA_AI_API_KEY", "Env var for API key")
+	fs.StringVar(&f.Ini, "ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
 	fs.BoolVar(&f.FullDoc, "full-doc", false, "Include full API doc in prompt")
 }
 
 type aiFlags struct {
-	Provider   string
 	Model      string
 	BaseURL    string
 	APIKeyEnv  string
 	FullDoc    bool
 	Output     string
 	ScriptPath string
+	Ini        string
+}
+
+// aiProviderFor loads the KALUA.INI config for a parsed ai subcommand and
+// resolves the LLM config (flags > INI > env > defaults). An explicitly passed
+// --api-key-env is the only way an API key override reaches resolveAI.
+func aiProviderFor(fs *flag.FlagSet, f *aiFlags) (ai.ProviderConfig, error) {
+	ini, err := loadConfig(f.Ini)
+	if err != nil {
+		return ai.ProviderConfig{}, err
+	}
+	var o aiOptions
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "api-key-env" {
+			o.APIKey = strings.TrimSpace(os.Getenv(f.APIKeyEnv))
+		}
+	})
+	o.BaseURL = f.BaseURL
+	o.Model = f.Model
+	return resolveAI(ini, o), nil
 }
 
 func aiGenerate(args []string) int {
-	f := &aiFlags{Provider: "lmstudio"}
+	f := &aiFlags{}
 	fs := flag.NewFlagSet("ai generate", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	setAIFlags(fs, f)
@@ -122,8 +173,12 @@ func aiGenerate(args []string) int {
 		return int(host.ExitUsage)
 	}
 
-	cfg := providerFromFlags(f)
-	fmt.Fprintf(os.Stderr, "KALUA AI: generating from \"%s\" (provider: %s, model: %s)\n", request, cfg.BaseURL, cfg.Model)
+	cfg, err := aiProviderFor(fs, f)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ai generate: %v\n", err)
+		return int(host.ExitIOError)
+	}
+	fmt.Fprintf(os.Stderr, "KALUA AI: generating from \"%s\" (endpoint: %s, model: %s)\n", request, cfg.BaseURL, cfg.Model)
 	req := ai.GenerateRequest{Request: request, FullDoc: f.FullDoc}
 	ctx, cancel := aiCtx()
 	defer cancel()
@@ -167,7 +222,11 @@ func aiFix(args []string) int {
 		return int(host.ExitUsage)
 	}
 
-	cfg := providerFromFlags(f)
+	cfg, err := aiProviderFor(fs, f)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ai fix: %v\n", err)
+		return int(host.ExitIOError)
+	}
 	src, err := os.ReadFile(scriptPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ai: cannot read %s: %v\n", scriptPath, err)

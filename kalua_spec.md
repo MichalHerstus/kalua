@@ -584,7 +584,7 @@ KALUA version
 backed by an OpenAI-compatible chat endpoint (LM Studio local or OpenRouter):
 
 ```
-KALUA ai generate "<request>" [-o app.lua] [--provider lmstudio|openrouter] [--model M] [--base-url U] [--api-key-env V] [--full-doc]
+KALUA ai generate "<request>" [-o app.lua] [--model M] [--base-url U] [--api-key-env V] [--full-doc]
 KALUA ai fix <app.lua>   [same flags]     # auto-fix validation errors via LLM
 KALUA ai validate <app.lua>               # static check only (syntax + unknown k.*)
 ```
