@@ -16,7 +16,7 @@ go test ./...
 go test ./internal/host
 
 # CLI usage
-./KALUA run <app.lua> [--port 0] [--no-browser] [--db NAME=DSN] [--arg K=V] [-v|--verbose] [--repl-on-error] [--debug] [--test]
+./KALUA run <app.lua> [--port 0] [--no-browser] [--watch] [--db NAME=DSN] [--arg K=V] [-v|--verbose] [--repl-on-error] [--debug] [--test]
 ./KALUA serve <app.lua> [--port 8080] [--host 127.0.0.1] [--workers 4] [--mode http|ws|tcp] [--db NAME=DSN] [--arg K=V] [-v|--verbose] [--debug] [--debug-worker]
 ./KALUA check <app.lua>     # static validation (syntax, unknown k.*, main)
 ./KALUA ai generate "request" [-o app.lua]  # NL → Lua (run-mode forms)
@@ -191,6 +191,10 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - Post-mortem dump: on runtime error with `--verbose`, prints full stack trace with locals using `xpcall` + `debug.traceback`
 - `--repl-on-error`: headless interactive Lua REPL at crash site (works with `--test` mode). Wraps `main()` in `xpcall(debug.traceback)`, captures full traceback, drops into REPL with access to `k.*`, `K.*`, `debug.*`, and script globals. Supports expressions (`1+1` or `= 1+1`), statements, and REPL commands (`exit`, `quit`, Ctrl+D).
 - CLI flags: `run --repl-on-error` (functional), `run --debug` / `serve --debug --debug-worker` (stub warnings, Tier 2 EmmyLua debugger not yet implemented)
+
+## Implemented Features (Hot Reload for `run`)
+
+- `run --watch`: polls the app script every 400 ms (zero deps, sha256 content hash dedupe) and hot-reloads all open tabs when the file actually changes. `web.Server.Reload()` re-reads the script, static-checks it with `internal/checker`, then broadcasts a `reload` outbox message to every session; the client (`app.js`) does `location.reload()` so each tab reconnects and a fresh `session.New` loads the new code. A broken script broadcasts a `status` message with the check errors and the old app keeps running ("failed reload keeps old app", mirroring serve mode). `SIGHUP` triggers the same `Reload()` path. Off in headless `--test`. Tests: `internal/web/server_test.go` (real WS: no-op on unchanged, `reload` on change, `status` on broken).
 ## Implemented Features (Phase 12 - Chart Control)
 
 - Chart.js v4.4.1 control (`kforms_enhancements.md` §3): `k.ctrl.chart(form, name, opts)` with types `line/bar/hbar/pie/doughnut/scatter/radar/area`; opts include `title,width,height,labels,datasets,options,responsive,maintainAspectRatio,legend,legendPosition,animation,stacked`

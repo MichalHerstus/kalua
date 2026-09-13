@@ -3,19 +3,24 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 
 	"kalua/internal/bindings"
+	"kalua/internal/checker"
 	"kalua/internal/common"
 	"kalua/internal/host"
 	"kalua/internal/session"
@@ -38,6 +43,12 @@ type Server struct {
 
 	sessionsMu sync.Mutex
 	sessions   map[string]*session.Session
+
+	// reloadMu guards lastReloadHash. File-change detection dedupes reloads by
+	// the hash of the app script content, so identical saves / touches never
+	// re-trigger the browser reload.
+	reloadMu       sync.Mutex
+	lastReloadHash string
 }
 
 // Port returns the configured port. If 0 was given (ephemeral), the actual port
@@ -72,6 +83,18 @@ func noCache(next http.Handler) http.Handler {
 // Run starts the HTTP server and blocks until context is cancelled.
 func (s *Server) Run(ctx context.Context, defaultScript string) error {
 	s.defaultScript = defaultScript
+
+	// Prime the reload hash so a watcher that starts with the app doesn't
+	// reload every tab on its first poll (the running script already matches
+	// the file on disk).
+	if src, err := os.ReadFile(defaultScript); err == nil {
+		h := sha256.New()
+		h.Write(src)
+		s.reloadMu.Lock()
+		s.lastReloadHash = hex.EncodeToString(h.Sum(nil))
+		s.reloadMu.Unlock()
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/ws/ui", s.handleWS)
@@ -110,6 +133,56 @@ func (s *Server) Run(ctx context.Context, defaultScript string) error {
 		return err
 	}
 	return nil
+}
+
+// Reload re-reads the app script from disk and, when its content actually
+// changed, statically checks it and asks every active tab to reload. On a
+// failed check the old app keeps running and a status message (with the check
+// errors) is broadcast instead — mirroring serve mode's "failed reload keeps
+// the old worker pool". Callers may invoke Reload repeatedly (file watcher,
+// SIGHUP): the last content hash dedupes no-op polls.
+func (s *Server) Reload() error {
+	src, err := os.ReadFile(s.defaultScript)
+	if err != nil {
+		return fmt.Errorf("reload: cannot read %s: %w", s.defaultScript, err)
+	}
+
+	// Hash the content; skip work when nothing changed on disk.
+	h := sha256.New()
+	h.Write(src)
+	digest := hex.EncodeToString(h.Sum(nil))
+
+	s.reloadMu.Lock()
+	if digest == s.lastReloadHash {
+		s.reloadMu.Unlock()
+		return nil
+	}
+	s.lastReloadHash = digest
+	s.reloadMu.Unlock()
+
+	// Static check first: never blow away a running app with broken code.
+	text := string(src)
+	if res := checker.Check(text, s.defaultScript); len(res.Errors) > 0 {
+		msg := "reload failed: " + strings.Join(res.Errors, "; ")
+		s.logger.Errorf("%s", msg)
+		s.broadcast(common.OutboxMsg{Type: "status", Text: msg})
+		return fmt.Errorf("%s", msg)
+	}
+
+	s.logger.Printf("reload: %s changed, reloading %d tab(s)", s.defaultScript, len(s.sessions))
+	s.broadcast(common.OutboxMsg{Type: "reload"})
+	return nil
+}
+
+// broadcast pushes a message to every active session's outbox. Each session's
+// outbox pump forwards it to that tab's WebSocket. Non-blocking: a full channel
+// simply drops the message (the tab reloads on the next change anyway).
+func (s *Server) broadcast(msg common.OutboxMsg) {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	for _, sess := range s.sessions {
+		sess.SendOutbox(msg)
+	}
 }
 
 // handleIndex serves the main HTML shell.

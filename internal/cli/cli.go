@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"kalua/internal/bindings"
 	"kalua/internal/builder"
@@ -60,7 +61,7 @@ func printUsage() {
 Usage: KALUA <command> [args...]
 
 Commands:
-  run     <app.lua> [flags]   Run app as web app (opens browser)
+  run     <app.lua> [flags]   Run app as web app (--watch hot-reloads on change)
   serve   <app.lua> [flags]   Run app as headless API server
   check   <app.lua>           Validate script (syntax, unknown k.*, main)
    builder <app.lua|form.json> Visual form builder (opens browser)
@@ -96,6 +97,7 @@ func runCmd(args []string) int {
 		testMode     = fs.Bool("test", false, "Run in test mode (headless, no server)")
 		replOnError  = fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
 		debugMode    = fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
+		watch        = fs.Bool("watch", false, "Reload the app automatically when the script changes on disk")
 		dbFlag       = multiFlag{}
 		argFlag      = multiFlag{}
 		allowFSFlag  = multiFlag{}
@@ -136,9 +138,18 @@ func runCmd(args []string) int {
 		return int(host.Run(cfg))
 	}
 
-	ctx := context.Background()
+	// INT/TERM stop the server cleanly; SIGHUP triggers a manual hot reload.
+	// The cancelable context also stops the --watch file watcher on shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	server := web.NewServer("127.0.0.1", *port, *sessionLimit,
 		bindings.Options{AllowFS: allowFSFlag.values, Verbose: *verbose}, host.NewLogger(*verbose))
+
+	// SIGHUP triggers a hot reload (same path as the --watch file watcher).
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
 
 	// Open browser with script parameter
 	if !*noBrowser {
@@ -146,11 +157,50 @@ func runCmd(args []string) int {
 		_ = openBrowser(url)
 	}
 
-	if err := server.Run(ctx, script); err != nil {
-		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-		return int(host.ExitError)
+	runDone := make(chan error, 1)
+	go func() { runDone <- server.Run(ctx, script) }()
+
+	// Poll the app script and hot-reload on real changes (--watch). The
+	// server's Reload() dedupes by content hash, so a 400ms poll is both cheap
+	// and exact; reload errors are logged to stderr only when they change.
+	watchErrSeen := ""
+	if *watch {
+		go func() {
+			t := time.NewTicker(400 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-t.C:
+					if err := server.Reload(); err != nil {
+						msg := err.Error()
+						if msg != watchErrSeen {
+							fmt.Fprintf(os.Stderr, "%v\n", err)
+							watchErrSeen = msg
+						}
+					} else {
+						watchErrSeen = ""
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 	}
-	return int(host.ExitOK)
+
+	for {
+		select {
+		case err := <-runDone:
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+				return int(host.ExitError)
+			}
+			return int(host.ExitOK)
+		case <-hup:
+			if err := server.Reload(); err != nil {
+				fmt.Fprintf(os.Stderr, "reload error: %v\n", err)
+			}
+		}
+	}
 }
 
 func checkCmd(args []string) int {
@@ -454,6 +504,7 @@ func addRunFlags(fs *flag.FlagSet) {
 	fs.Bool("v", false, "Verbose logging")
 	fs.Bool("test", false, "Run in test mode (headless, no server)")
 	fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
+	fs.Bool("watch", false, "Reload the app automatically when the script changes on disk")
 	fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
 	fs.Var(&multiFlag{}, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 	fs.Var(&multiFlag{}, "d", "Shorthand for --db")

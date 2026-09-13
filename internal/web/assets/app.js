@@ -693,6 +693,11 @@ function createTabulator(el) {
             case 'quit':
                 handleQuit();
                 break;
+            case 'reload':
+                // Hot reload (--watch): the server asks all tabs to reload so
+                // a fresh session is created from the current script on disk.
+                location.reload();
+                break;
             case 'focus':
                 handleFocusControl(msg.form, msg.ctrl);
                 break;
