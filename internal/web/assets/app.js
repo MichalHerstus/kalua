@@ -916,8 +916,10 @@ function createTabulator(el) {
     }
 
     // handleLooperDBBatch appends rows from a looper_db_batch payload.
-    // payload: { rows: [{index, data:{control:value, "control.prop":value}}],
-    //            has_more, last_page }.
+    // payload: { rows: [{index, data:{control:value, "control.prop":value}} |
+    //                    {index, html}], has_more, last_page }.
+    // Row-template loopers (data-k-looper-html="1") insert server-rendered
+    // html rows directly; legacy loopers clone the value-cell template.
     function handleLooperDBBatch(msg) {
         const el = looperById(msg.form, msg.ctrl, msg.selector);
         if (!el) return;
@@ -926,9 +928,11 @@ function createTabulator(el) {
         const rows = payload.rows || [];
         const hasMore = !!payload.has_more;
         const lastPage = payload.last_page || 0;
+        const htmlMode = el.hasAttribute('data-k-looper-html');
 
         el.setAttribute('data-k-looper-loading', '0');
         const rowsEl = el.querySelector('.kalua-looper-rows');
+        if (!rowsEl) return;
         const template = rowsEl.querySelector('[data-k-looper-template="1"]');
         let templateCells = [];
         if (template) {
@@ -938,6 +942,16 @@ function createTabulator(el) {
         }
 
         rows.forEach(function(row) {
+            if (htmlMode && row.html) {
+                const wrap = document.createElement('div');
+                wrap.innerHTML = row.html;
+                const htmlRow = wrap.firstElementChild;
+                if (htmlRow) {
+                    htmlRow.setAttribute('data-k-looper-index', String(row.index || ''));
+                    rowsEl.appendChild(htmlRow);
+                }
+                return;
+            }
             const rowEl = document.createElement('div');
             rowEl.className = 'kalua-looper-row';
             rowEl.setAttribute('data-k-looper-index', String(row.index || ''));
@@ -988,7 +1002,9 @@ function createTabulator(el) {
             rowsEl.querySelectorAll('.kalua-looper-row:not([data-k-looper-template="1"])').forEach(function(r) {
                 r.remove();
             });
-            template.setAttribute('data-k-looper-template', '1');
+            if (template) {
+                template.setAttribute('data-k-looper-template', '1');
+            }
         }
         el.setAttribute('data-k-looper-next', '1');
         el.setAttribute('data-k-looper-has-more', '1');

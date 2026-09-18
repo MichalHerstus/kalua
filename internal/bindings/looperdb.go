@@ -8,6 +8,7 @@ package bindings
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/yuin/gopher-lua"
@@ -32,6 +33,19 @@ type LooperDBColumnLink struct {
 	Field    string // result column name (mutually exclusive with Column)
 	Control  string // looper template control name, e.g. "txt_name"
 	Property string // control property to set, e.g. "value"
+}
+
+// LooperRowDef is one control template inside a looper's opts.row (Kalipso
+// row-template controls, kform_builder_plan.md "Advanced Table & Looper
+// Editor"). The type/name/opts produce a real control per row; field (or
+// 1-based column) binds a result value into the control property.
+type LooperRowDef struct {
+	Type     string
+	Name     string
+	Property string // control property receiving the bound value (default "value")
+	Field    string // result column name (mutually exclusive with Column)
+	Column   int    // 1-based result column index (mutually exclusive with Field)
+	Opts     *lua.LTable
 }
 
 // LooperPageReq is the parsed remote-pagination request for a looper. It is
@@ -130,6 +144,26 @@ func LooperDBLinkFromControl(ctrl *lua.LTable) (*LooperDBLink, bool) {
 					Property: prop,
 				})
 			})
+		}
+	}
+
+	// Row-template loopers (opts.row) carry links derived from their control
+	// defs, so the pager maps result columns even when the script never wrote a
+	// links table (the builder exports both; this keeps hand-written apps with a
+	// row + no links working).
+	if len(link.Links) == 0 {
+		if rowVal := ctrl.RawGetString("row"); rowVal != lua.LNil {
+			for _, d := range ParseLooperRowDefs(rowVal) {
+				if d.Field == "" && d.Column < 1 {
+					continue // control not bound to a result column
+				}
+				link.Links = append(link.Links, LooperDBColumnLink{
+					Column:   d.Column,
+					Field:    d.Field,
+					Control:  d.Name,
+					Property: d.Property,
+				})
+			}
 		}
 	}
 
@@ -273,4 +307,119 @@ func FetchLooperRows(L *lua.LState, link *LooperDBLink, req LooperPageReq) (*Loo
 	rows, _ := resMap["rows"].([]map[string]interface{})
 
 	return &LooperPageResult{Columns: columns, Rows: rows, LastPage: lastPage}, nil
+}
+
+// ParseLooperRowDefs reads a looper's opts.row (a Lua array of
+// {type,name,property,field,column,opts} tables) into Go structs. Non-table
+// entries and defs without a type/name are skipped.
+func ParseLooperRowDefs(rowVal lua.LValue) []LooperRowDef {
+	var defs []LooperRowDef
+	if rowVal == lua.LNil {
+		return defs
+	}
+	rowTbl, ok := rowVal.(*lua.LTable)
+	if !ok {
+		return defs
+	}
+	rowTbl.ForEach(func(_, v lua.LValue) {
+		defTbl, ok := v.(*lua.LTable)
+		if !ok {
+			return
+		}
+		d := LooperRowDef{}
+		defTbl.ForEach(func(k, cv lua.LValue) {
+			switch k.String() {
+			case "type", "ctrl_type":
+				d.Type = cv.String()
+			case "name", "control":
+				d.Name = cv.String()
+			case "property", "prop":
+				d.Property = cv.String()
+			case "field", "column_name":
+				d.Field = cv.String()
+			case "column", "col", "column_index":
+				d.Column = int(lua.LVAsNumber(cv))
+			case "opts", "options":
+				if optTbl, ok := cv.(*lua.LTable); ok {
+					d.Opts = optTbl
+				}
+			}
+		})
+		if d.Type != "" && d.Name != "" {
+			defs = append(defs, d)
+		}
+	})
+	return defs
+}
+
+// BuildLooperRowHTML renders one DB-linked looper row from opts.row template
+// defs (Kalipso row-template controls). Each def becomes a real control with a
+// synthetic form/name (ids c:<looper>:<def>:<idx>), its bound property set from
+// the fetched row, and rendered read-only via renderControl's looper_display
+// path. The row is wrapped in a .kalua-looper-row with one .kalua-looper-cell
+// per control so it lays out like the legacy value-cell rows.
+func BuildLooperRowHTML(L *lua.LState, looperName string, idx int, rowVal lua.LValue, rowData map[string]interface{}, columns []string) string {
+	defs := ParseLooperRowDefs(rowVal)
+	if len(defs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`<div class="kalua-looper-row" data-k-looper-index="` + strconv.Itoa(idx) + `">`)
+	for _, def := range defs {
+		ctrl := L.NewTable()
+		ctrl.RawSetString("type", lua.LString(def.Type))
+		ctrl.RawSetString("form", lua.LString(looperName))
+		ctrl.RawSetString("name", lua.LString(def.Name+":"+strconv.Itoa(idx)))
+		ctrl.RawSetString("looper_display", lua.LString("true"))
+		if def.Opts != nil {
+			def.Opts.ForEach(func(k, v lua.LValue) {
+				ctrl.RawSet(k, v)
+			})
+		}
+
+		var val interface{}
+		if def.Field != "" {
+			val = rowData[def.Field]
+		} else if def.Column >= 1 && def.Column <= len(columns) {
+			val = rowData[columns[def.Column-1]]
+		}
+		prop := def.Property
+		if prop == "" {
+			prop = "value"
+		}
+		ctrl.RawSetString(prop, luaValueFromGo(L, val))
+		if def.Type == "label" && prop != "label" {
+			ctrl.RawSetString("label", luaValueFromGo(L, val))
+		}
+
+		b.WriteString(`<div class="kalua-looper-cell" data-k-looper-control="` + escAttr(def.Name) + `">`)
+		b.WriteString(renderControl(ctrl))
+		b.WriteString(`</div>`)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+// luaValueFromGo converts a database row value into a Lua value for rendering.
+func luaValueFromGo(L *lua.LState, v interface{}) lua.LValue {
+	switch t := v.(type) {
+	case nil:
+		return lua.LNil
+	case string:
+		return lua.LString(t)
+	case bool:
+		return lua.LBool(t)
+	case float64:
+		return lua.LNumber(t)
+	case float32:
+		return lua.LNumber(float64(t))
+	case int:
+		return lua.LNumber(float64(t))
+	case int64:
+		return lua.LNumber(float64(t))
+	case []byte:
+		return lua.LString(string(t))
+	default:
+		return lua.LString(fmt.Sprintf("%v", t))
+	}
 }

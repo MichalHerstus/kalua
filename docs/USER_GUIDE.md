@@ -203,6 +203,37 @@ KALUA check <app.lua> [-v]
 
 Reports syntax errors, unknown `k.*` references and a missing `main()`. Does not execute anything.
 
+### Formatting modes (gofmt-style)
+
+`check` is also a script formatter: pass one of the flags below and it stops
+validating and formats instead. Formatting re-indents blocks with 2 spaces,
+normalizes spacing (tokens, operators, `=` in assignments/options), keeps
+comments where they are, and preserves strings (incl. long strings and block
+comments) byte-for-byte. The result is idempotent, and anything the formatter
+touches is re-parsed before it is returned, so a formatter bug can never write
+a broken file.
+
+- `check <app.lua> --format` — print the formatted source to stdout (exit 0 even if it changed; the file is not modified).
+- `check -w <app.lua>` — write the formatted source back in place, preserving file permissions (exit 0).
+- `check -l <a.lua> <b.lua> …` — print the names of files whose formatting differs (exit 1 if any; files can be enumerated, e.g. `check -l *.lua`).
+- `check -d <app.lua>` — print a 0-context unified diff of the changes (exit 1 if any).
+
+If several flags are given, `-w` wins over `-d` over `-l` over `--format`.
+Flags may come before or after a single file (`check app.lua -w` works);
+with several files, put the flag first. Formatting errors (unparseable
+input) are reported on stderr and exit with code 1 without writing anything.
+
+```bash
+./KALUA check app.lua --format        # preview formatted source
+./KALUA check -w app.lua              # canonicalize a file in place
+./KALUA check -l apps/*.lua           # which files need formatting?
+./KALUA check -d app.lua              # preview the changes as a diff
+```
+
+The `[CHECK]` section of `KALUA.INI` accepts the matching keys (`format`, `w`,
+`l`, `d`, `verbose`) so e.g. a project can default `check` to format-in-place
+with `w = 1`.
+
 ## 3.4 `new`, `lsp`, `version`
 
 ```bash
@@ -228,6 +259,8 @@ KALUA version
 ./KALUA run app.lua -n -v --arg env=dev --db main=sqlite://app.db
 ./KALUA serve api.lua --mode http,ws,tcp --workers 8 -p 9090
 ./KALUA check myapp.lua
+./KALUA check -d myapp.lua             # preview formatting changes as a diff
+./KALUA check -w myapp.lua             # canonicalize the file in place
 ./KALUA builder forms/app.lua --no-browser --model local-model
 ./KALUA run myapp.lua --ini ./myapp.ini        # persistent flags from a KALUA.INI (or just ./KALUA.INI)
 ```

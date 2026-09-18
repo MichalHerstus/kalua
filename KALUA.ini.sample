@@ -36,9 +36,16 @@ port       = 9001
 no-browser = 0
 ; model     = local-model   ; optional AI model override
 ; base-url  = http://localhost:1234/v1
+; db        = main=sqlite://app.db   ; live data previews for table/looper editors
 
 [CHECK]
 verbose = 1
+; Formatting flags (gofmt-style): as soon as one is set, check formats instead
+; of validating. -w wins over -d over -l over --format.
+; format = 1            ; print formatted source to stdout (exit 0 even if dirty)
+; w      = 1            ; write formatted source back in place (permissions kept)
+; l      = 1            ; list files whose formatting differs (exit 1 if any)
+; d      = 1            ; print a 0-context unified diff (exit 1 if any)
 
 [AI]
 ; LLM connection settings for KALUA ai and the builder's AI panel.

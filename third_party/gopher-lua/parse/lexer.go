@@ -44,8 +44,10 @@ func isDigit(ch int) bool {
 }
 
 type Scanner struct {
-	Pos    ast.Position
-	reader *bufio.Reader
+	Pos      ast.Position
+	reader   *bufio.Reader
+	offset   int64 // number of bytes consumed so far (byte offset of the next unread byte)
+	tokStart int64 // byte offset of the first byte of the token returned by the latest Scan
 }
 
 func NewScanner(reader io.Reader, source string) *Scanner {
@@ -59,6 +61,14 @@ func NewScanner(reader io.Reader, source string) *Scanner {
 	}
 }
 
+// Offset returns the number of source bytes consumed so far, which is also the
+// byte offset one past the last byte read.
+func (sc *Scanner) Offset() int64 { return sc.offset }
+
+// TokenStart returns the byte offset of the first character of the most
+// recently returned token.
+func (sc *Scanner) TokenStart() int64 { return sc.tokStart }
+
 func (sc *Scanner) Error(tok string, msg string) *Error { return &Error{sc.Pos, msg, tok} }
 
 func (sc *Scanner) TokenError(tok ast.Token, msg string) *Error { return &Error{tok.Pos, msg, tok.Str} }
@@ -68,6 +78,7 @@ func (sc *Scanner) readNext() int {
 	if err == io.EOF {
 		return EOF
 	}
+	sc.offset++
 	return int(ch)
 }
 
@@ -80,6 +91,7 @@ func (sc *Scanner) Newline(ch int) {
 	next := sc.Peek()
 	if ch == '\n' && next == '\r' || ch == '\r' && next == '\n' {
 		sc.reader.ReadByte()
+		sc.offset++
 	}
 }
 
@@ -102,6 +114,7 @@ func (sc *Scanner) Peek() int {
 	ch := sc.readNext()
 	if ch != EOF {
 		sc.reader.UnreadByte()
+		sc.offset--
 	}
 	return ch
 }
@@ -310,6 +323,7 @@ redo:
 	var _buf bytes.Buffer
 	buf := &_buf
 	tok.Pos = sc.Pos
+	sc.tokStart = sc.offset - 1
 
 	switch {
 	case isIdent(ch, 0):
@@ -332,9 +346,14 @@ redo:
 			tok.Type = EOF
 		case '-':
 			if sc.Peek() == '-' {
+				cstart := sc.TokenStart()
+				cline := sc.Pos.Line
 				err = sc.skipComments(sc.Next())
 				if err != nil {
 					goto finally
+				}
+				if lexer.CommentHook != nil {
+					lexer.CommentHook(int(cstart), int(sc.Offset()), cline)
 				}
 				goto redo
 			} else {
@@ -441,6 +460,11 @@ type Lexer struct {
 	PNewLine      bool
 	Token         ast.Token
 	PrevTokenType int
+	// CommentHook, when set, is invoked for every comment as it is skipped
+	// while scanning for the next token. start/end are byte offsets into the
+	// source (end is one past the last comment byte), line is the source line
+	// the comment begins on.
+	CommentHook func(start, end int, line int)
 }
 
 func (lx *Lexer) Lex(lval *yySymType) int {
@@ -466,7 +490,7 @@ func (lx *Lexer) TokenError(tok ast.Token, message string) {
 }
 
 func Parse(reader io.Reader, name string) (chunk []ast.Stmt, err error) {
-	lexer := &Lexer{NewScanner(reader, name), nil, false, ast.Token{Str: ""}, TNil}
+	lexer := &Lexer{NewScanner(reader, name), nil, false, ast.Token{Str: ""}, TNil, nil}
 	chunk = nil
 	defer func() {
 		if e := recover(); e != nil {
@@ -479,6 +503,91 @@ func Parse(reader io.Reader, name string) (chunk []ast.Stmt, err error) {
 }
 
 // }}}
+
+// FormatterToken is a single lexed token with exact source information used by
+// the KALUA formatter. Value is the decoded token text (string escapes
+// processed, like ast.Token.Str); Raw is the exact source bytes. Comment
+// items always have IsComment set and Type == commentToken.
+type FormatterToken struct {
+	Type          int
+	Value         string
+	Raw           string
+	Line          int
+	Col           int
+	Start         int
+	End           int
+	IsComment     bool
+	IsLineComment bool
+}
+
+const commentToken = -2
+
+// Tokenize lexes src into a stream of FormatterToken items, interleaving
+// comments (captured via Lexer.CommentHook) at their source position. String
+// and number Raw spans are the exact source text so the formatter can
+// re-emit them verbatim.
+func Tokenize(src []byte, name string) ([]FormatterToken, error) {
+	lx := &Lexer{scanner: NewScanner(bytes.NewReader(src), name), PrevTokenType: TNil}
+	var comments []FormatterToken
+	lx.CommentHook = func(start, end, line int) {
+		trimmed := bytes.TrimRight(src[start:end], " \t\r\n")
+		comments = append(comments, FormatterToken{
+			Type:          commentToken,
+			Value:         string(trimmed),
+			Raw:           string(trimmed),
+			Line:          line,
+			Start:         start,
+			End:           start + len(trimmed),
+			IsComment:     true,
+			IsLineComment: bytes.IndexByte(trimmed, '\n') < 0 && bytes.IndexByte(trimmed, '\r') < 0,
+		})
+	}
+
+	var tokens []FormatterToken
+	var err error
+	defer func() {
+		if e := recover(); e != nil {
+			if err == nil {
+				err, _ = e.(error)
+			}
+		}
+	}()
+
+	for {
+		tok, serr := lx.scanner.Scan(lx)
+		if serr != nil {
+			return nil, serr
+		}
+		if tok.Type == EOF {
+			break
+		}
+		tstart := int(lx.scanner.TokenStart())
+		tend := int(lx.scanner.Offset())
+		tokens = append(tokens, FormatterToken{
+			Type:  tok.Type,
+			Value: tok.Str,
+			Raw:   string(src[tstart:tend]),
+			Line:  tok.Pos.Line,
+			Col:   tok.Pos.Column,
+			Start: tstart,
+			End:   tend,
+		})
+	}
+
+	// Interleave comments at their source position (in order relative to the
+	// tokens that follow them; both lists are already in source order).
+	i := 0
+	for _, c := range comments {
+		for i < len(tokens) && tokens[i].Start < c.Start {
+			i++
+		}
+		tokens = append(tokens, FormatterToken{})
+		copy(tokens[i+1:], tokens[i:])
+		tokens[i] = c
+		i++
+	}
+	return tokens, nil
+}
 
 // Dump {{{
 

@@ -25,7 +25,8 @@ const TYPE_OPTS = {
              where: { t: 'string' }, order_by: { t: 'string' },
              tabulator: { t: 'bool' }, tabulatorOptions: { t: 'json' } },
   looper:  { db: { t: 'string' }, query: { t: 'string' }, links: { t: 'json' },
-             page_size: { t: 'number' }, count_query: { t: 'string' } },
+             page_size: { t: 'number' }, count_query: { t: 'string' },
+             where: { t: 'string' }, order_by: { t: 'string' }, row: { t: 'json' } },
   chart:   { type: { t: 'select', opts: ['line', 'bar', 'hbar', 'pie', 'doughnut', 'scatter', 'radar', 'area'] },
              labels: { t: 'json' }, datasets: { t: 'json' }, options: { t: 'json' },
              width: { t: 'string' }, height: { t: 'string' }, responsive: { t: 'bool' },
@@ -287,11 +288,54 @@ async function preview() {
     const wrap = $('#preview');
     wrap.innerHTML = r.html;
     wrap.dataset.layout = (form().layout || 'vertical');
+    renderPreviewTabulators(wrap);
     if (state.selected >= 0) flashSelected(form().controls[state.selected]?.name);
     flashCell();
   } catch (e) {
     $('#preview').innerHTML = '<div class="error">' + escapeHtml(e.message) + '</div>';
   }
+}
+
+/* The builder preview is server-rendered HTML — app.js (which instantiates
+ * Tabulator at runtime) is not loaded here. Convert every data-k-tabulator-*
+ * container into a plain <table> so configured tables are visible in the
+ * canvas preview, mirroring app.js's renderFallbackTable. */
+function renderPreviewTabulators(scope) {
+  const roots = scope ? [scope] : $$('#preview');
+  roots.forEach(w => {
+    w.querySelectorAll('.kalua-tabulator-table:not([data-k-tabulator-ready])').forEach(el => {
+      let cols = [];
+      try { cols = JSON.parse(el.dataset.kTabulatorColumns || '[]'); } catch (e) {}
+      let data = [];
+      try { data = JSON.parse(el.dataset.kTabulatorData || '[]'); } catch (e) {}
+      if (Array.isArray(data) && data.length && (!cols || !cols.length)) {
+        cols = Object.keys(data[0] || {}).map(f => ({ field: f, title: f }));
+      }
+      const rows = Array.isArray(data) ? data : [];
+      if (!cols.length && !rows.length) {
+        el.innerHTML = '<div class="kalua-tabulator-empty">No data</div>';
+        el.setAttribute('data-k-tabulator-ready', 'true');
+        return;
+      }
+      let html = '<table class="kalua-table"><thead><tr>';
+      cols.forEach(c => {
+        html += '<th>' + escapeHtml(c.title !== undefined ? c.title : c.field) + '</th>';
+      });
+      html += '</tr></thead><tbody>';
+      rows.forEach(row => {
+        html += '<tr>';
+        cols.forEach(c => {
+          let v = row && row[c.field];
+          if (typeof v === 'boolean') v = v ? '\u2713' : '';
+          html += '<td>' + escapeHtml(v === null || v === undefined ? '' : String(v)) + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      el.innerHTML = html;
+      el.setAttribute('data-k-tabulator-ready', 'true');
+    });
+  });
 }
 
 function flashCell() {
@@ -420,6 +464,8 @@ function renderEditor() {
     $('#ctrl-type').textContent = '';
     const del = $('#ctrl-del');
     del.hidden = true;
+    const edit = $('#ctrl-edit');
+    edit.hidden = true;
     editor.innerHTML = '<span class="hint">Select a control in the preview or the list.</span>';
     return;
   }
@@ -428,6 +474,8 @@ function renderEditor() {
   $('#ctrl-type').textContent = TYPE_NAMES[c.type] || c.type;
   const del = $('#ctrl-del');
   del.hidden = false;
+  const edit = $('#ctrl-edit');
+  edit.hidden = !(c.type === 'table' || c.type === 'looper');
   const fields = [];
   for (const [k, s] of Object.entries({ ...TYPE_OPTS[c.type], ...COMMON_OPTS })) {
     fields.push(fieldHTML(k, s, c));
@@ -1598,6 +1646,595 @@ function wireAI() {
   aiStatus();
 }
 
+/* ---------- table / looper editor modal ---------- */
+/* The visual editor for table and looper controls (Datasource / Setup /
+ * Preview tabs). Tabulator is instantiated only inside this modal so the main
+ * canvas stays inert for click-to-select. */
+const CM = {
+  mode: null,             // 'table' | 'looper'
+  tab: 'datasource',
+  dbs: [],
+  db: '', query: '', pageSize: undefined, countQuery: '', where: '', orderBy: '',
+  tabulator: false,
+  data: null,             // static rows (table mode, DB-less apps)
+  columns: [],            // table workspace: {field,title,sortable,headerFilter,editor,width,align,frozen}
+  links: [],              // looper legacy: {field,control,property}
+  row: [],                // looper new model: array of {type,name,property,field,opts}
+  rowOpts: -1,            // index of the row-template cell whose opts editor is open
+  lastResult: null,       // {columns, rows} from the last Run query
+  tbl: null,              // live Tabulator instance inside Preview
+};
+
+function cmModeLabel() { return CM.mode === 'looper' ? 'Looper' : 'Table'; }
+
+function openControlModal() {
+  const c = ctrl();
+  if (!c || (c.type !== 'table' && c.type !== 'looper')) return;
+  CM.mode = c.type;
+  CM.tab = 'datasource';
+  CM.tabulator = !!c.opts.tabulator;
+  CM.db = c.opts.db || '';
+  CM.query = c.opts.query || '';
+  CM.pageSize = c.opts.page_size;
+  CM.countQuery = c.opts.count_query || '';
+  CM.where = c.opts.where || '';
+  CM.orderBy = c.opts.order_by || '';
+  CM.data = c.opts.data !== undefined ? c.opts.data : null;
+  CM.columns = c.type === 'table' ? parseColumns(c.opts.columns) : [];
+  CM.row = [];
+  if (c.type === 'looper') {
+    if (Array.isArray(c.opts.row)) {
+      CM.row = c.opts.row.map(r => ({
+        type: r.type || 'label', name: r.name || '', property: r.property || 'value',
+        field: r.field || r.column || '', opts: r.opts || {},
+      }));
+    } else if (Array.isArray(c.opts.links)) {
+      // Legacy: derive a label-based row template from links
+      CM.row = c.opts.links.map(l => ({
+        type: 'label', name: l.control || l.ctrl || l.field || '',
+        field: l.field || l.column_name || '', property: l.property || l.prop || 'value',
+        opts: {},
+      }));
+    }
+  }
+  // Derive legacy links from row (kept for preview/reference)
+  CM.links = CM.row.map(r => ({ field: r.field, control: r.name, property: r.property }));
+  CM.rowOpts = -1;
+  CM.lastResult = null;
+  renderControlModal();
+  $('#control-modal').classList.remove('hidden');
+}
+
+function closeControlModal() {
+  destroyTableTabulator();
+  CM.lastResult = null;
+  $('#control-modal').classList.add('hidden');
+}
+
+async function renderControlModal() {
+  $('#cm-title').textContent = cmModeLabel() + ' Editor';
+  $('#cm-tab-setup').textContent = CM.mode === 'looper' ? 'Row Template' : 'Table Setup';
+  $('#cm-tabulator-row').style.display = CM.mode === 'table' ? '' : 'none';
+  $('#cm-query').value = CM.query;
+  $('#cm-page-size').value = CM.pageSize === undefined ? '' : CM.pageSize;
+  $('#cm-count-query').value = CM.countQuery;
+  $('#cm-where').value = CM.where;
+  $('#cm-order-by').value = CM.orderBy;
+  $('#cm-tabulator').checked = CM.tabulator;
+  renderStaticData();
+  $('#cm-datasource-out').innerHTML = '';
+  $('#cm-preview-box').innerHTML = '';
+  cmShowTab('datasource');
+  try {
+    CM.dbs = (await api('GET', '/api/db')).dbs || [];
+  } catch (e) {
+    CM.dbs = [];
+  }
+  $('#cm-db-hint').textContent = CM.dbs.length
+    ? ''
+    : 'No database handles — start the builder with --db NAME=DSN for live data (static data above still works).';
+  const sel = $('#cm-db');
+  sel.innerHTML = '<option value="">(none — static data)</option>' +
+    CM.dbs.map(n => `<option value="${escapeAttr(n)}" ${n === CM.db ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+}
+
+function renderStaticData() {
+  const wrap = $('#cm-data-row');
+  wrap.classList.toggle('hidden', !!CM.db);
+  $('#cm-data').value = Array.isArray(CM.data) ? JSON.stringify(CM.data, null, 1) : '';
+  $('#cm-data').classList.remove('baderr');
+}
+
+/* parseColumns converts a stored columns value (Tabulator array or basic
+ * {field: title} map) into the workspace array. */
+function parseColumns(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map(c => ({
+      field: c.field || '', title: c.title !== undefined ? c.title : '',
+      sortable: c.sortable !== false, headerFilter: c.headerFilter || 'none',
+      editor: c.editor || '', width: c.width, align: c.align || '', frozen: !!c.frozen,
+    }));
+  }
+  if (raw && typeof raw === 'object') {
+    return Object.entries(raw).map(([f, t]) => ({
+      field: f, title: t !== undefined && t !== null && String(t) !== f ? String(t) : titleCase(f),
+      sortable: true, headerFilter: 'none', editor: '', width: undefined, align: '', frozen: false,
+    }));
+  }
+  return [];
+}
+
+function titleCase(s) {
+  return String(s).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function cmShowTab(tab) {
+  CM.tab = tab;
+  $$('#control-modal .cm-tabs [data-cm-tab]').forEach(b =>
+    b.classList.toggle('sel', b.dataset.cmTab === tab));
+  $('#cm-datasource').classList.toggle('hidden', tab !== 'datasource');
+  $('#cm-setup').classList.toggle('hidden', tab !== 'setup');
+  $('#cm-preview').classList.toggle('hidden', tab !== 'preview');
+  if (tab === 'setup') cmRenderSetup();
+  if (tab === 'preview') cmRenderPreview();
+}
+
+/* ---------- Datasource ---------- */
+async function cmRunQuery() {
+  const out = $('#cm-datasource-out');
+  if (!CM.db) { out.innerHTML = '<div class="hint">Select a database first (or paste static data).</div>'; return; }
+  if (!CM.query.trim()) { out.innerHTML = '<div class="hint">Enter a query first.</div>'; return; }
+  try {
+    const r = await api('POST', '/api/db/query', { db: CM.db, query: CM.query, limit: CM.pageSize || 50 });
+    CM.lastResult = r;
+    const cols = r.columns || [];
+    out.innerHTML = '<div class="cm-hint">' + (r.rows || []).length + ' sample row(s)</div>' +
+      cmMiniGrid(cmColDefsFor(cols), r.rows || []);
+  } catch (e) {
+    out.innerHTML = '<div class="error">' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function cmGenerateColumns() {
+  const dbCols = CM.lastResult && CM.lastResult.columns ? CM.lastResult.columns : [];
+  let fields = dbCols.slice();
+  if (!fields.length && Array.isArray(CM.data) && CM.data[0] && typeof CM.data[0] === 'object') {
+    fields = Object.keys(CM.data[0]);
+  }
+  if (!fields.length) {
+    setStatus('No columns yet — run the query or paste static data first.', 'warning');
+    return;
+  }
+  if (CM.mode === 'table') {
+    CM.columns = fields.map(f => ({
+      field: f, title: titleCase(f), sortable: true, headerFilter: 'none',
+      editor: '', width: undefined, align: '', frozen: false,
+    }));
+    cmShowTab('setup');
+    cmRenderSetup();
+  } else {
+    // Row template: one label cell per column (field → text display)
+    CM.row = fields.map(f => ({ type: 'label', name: f, field: f, property: 'text', opts: {} }));
+    cmRenderSetup();
+  }
+}
+
+function cmMiniGrid(colDefs, rows) {
+  if (!colDefs || !colDefs.length) return '<div class="hint">No rows to show.</div>';
+  const head = '<tr>' + colDefs.map(c => '<th>' + escapeHtml(String(c.name)) + '</th>').join('') + '</tr>';
+  const body = rows.slice(0, 100).map(r => {
+    const tds = colDefs.map(c => {
+      let v = '';
+      if (Array.isArray(r)) v = c.idx >= 0 ? (r[c.idx] ?? '') : '';
+      else if (r && typeof r === 'object') v = r[c.field] !== undefined ? r[c.field] : '';
+      return '<td>' + escapeHtml(v === null || v === undefined ? '' : String(v)) + '</td>';
+    }).join('');
+    return '<tr>' + tds + '</tr>';
+  }).join('');
+  return '<table class="cm-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
+}
+
+function cmColDefsFor(columns) {
+  return (columns || []).map((c, i) => ({ name: c, field: c, idx: i }));
+}
+
+/* ---------- Setup / Row Template ---------- */
+function cmRenderSetup() {
+  if (CM.mode === 'looper') return renderRowTemplate();
+  $('#cm-col-hint').textContent = 'Tabulator → columns array; basic table → {field: title} map.';
+  const box = $('#cm-columns');
+  box.innerHTML = (CM.columns.length ? '' : '<div class="hint">No columns yet — Generate columns from the query result or add below.</div>') +
+    CM.columns.map((col, i) => `
+      <div class="cm-colrow" data-i="${i}">
+        <button class="mv up" data-cmcol="up" title="Move up">▲</button>
+        <button class="mv dn" data-cmcol="down" title="Move down">▼</button>
+        <button class="del" data-cmcol="del" title="Delete column">×</button>
+        <input data-cmcolf="field" value="${escapeAttr(col.field)}" placeholder="field">
+        <input data-cmcolf="title" value="${escapeAttr(col.title)}" placeholder="title">
+        <label class="chk">sort<input type="checkbox" data-cmcolf="sortable" ${col.sortable ? 'checked' : ''}></label>
+        <select data-cmcolf="headerFilter">
+          <option value="none" ${col.headerFilter === 'none' ? 'selected' : ''}>filter —</option>
+          <option value="text" ${col.headerFilter === 'text' ? 'selected' : ''}>filter text</option>
+          <option value="number" ${col.headerFilter === 'number' ? 'selected' : ''}>filter number</option>
+        </select>
+        <input data-cmcolf="editor" value="${escapeAttr(col.editor)}" placeholder="editor">
+        <input data-cmcolf="width" type="number" value="${col.width === undefined ? '' : col.width}" placeholder="width">
+        <select data-cmcolf="align">
+          <option value="" ${col.align === '' ? 'selected' : ''}>align —</option>
+          <option value="left" ${col.align === 'left' ? 'selected' : ''}>left</option>
+          <option value="center" ${col.align === 'center' ? 'selected' : ''}>center</option>
+          <option value="right" ${col.align === 'right' ? 'selected' : ''}>right</option>
+        </select>
+        <label class="chk">frozen<input type="checkbox" data-cmcolf="frozen" ${col.frozen ? 'checked' : ''}></label>
+      </div>`).join('');
+}
+
+const LOOPER_CELL_TYPES = [
+  {type: 'label', label: 'Label', defaultProp: 'text'},
+  {type: 'textbox', label: 'Textbox (display)', defaultProp: 'value'},
+  {type: 'checkbox', label: 'Checkbox (display)', defaultProp: 'value'},
+  {type: 'image', label: 'Image', defaultProp: 'src'},
+];
+
+function renderRowTemplate() {
+  $('#cm-col-hint').textContent = 'Row template: each control maps a data field to a display property. Drag to reorder.';
+  const box = $('#cm-columns');
+  box.innerHTML = (CM.row.length ? '' : '<div class="hint">No cells yet — Add a cell type below.</div>') +
+    CM.row.map((rc, i) => {
+      const propOpts = getCellPropOptions(rc.type);
+      return `
+      <div class="cm-colrow" data-i="${i}" data-ctype="${escapeAttr(rc.type)}">
+        <button class="mv up" data-cmcol="up" title="Move up">▲</button>
+        <button class="mv dn" data-cmcol="down" title="Move down">▼</button>
+        <button class="del" data-cmcol="del" title="Delete cell">×</button>
+        <select data-cmrowf="type">
+          ${LOOPER_CELL_TYPES.map(t => `<option value="${t.type}" ${t.type === rc.type ? 'selected' : ''}>${t.label}</option>`).join('')}
+        </select>
+        <input data-cmrowf="name" value="${escapeAttr(rc.name)}" placeholder="cell key (control name)" title="Unique key for this cell">
+        <input data-cmrowf="field" value="${escapeAttr(rc.field)}" placeholder="data field" title="Column name from query result">
+        <select data-cmrowf="property">
+          ${propOpts.map(p => `<option value="${p}" ${p === rc.property ? 'selected' : ''}>${p}</option>`).join('')}
+        </select>
+        <button class="opt" data-cmrowf="opts" data-i="${i}" title="Cell options">⚙</button>
+      </div>`;
+    }).join('') +
+    `<div class="cm-add-row">
+      <label>Add cell: </label>
+      <select id="cm-add-cell-type">
+        ${LOOPER_CELL_TYPES.map(t => `<option value="${t.type}">${t.label}</option>`).join('')}
+      </select>
+      <button id="cm-add-cell" data-cm-addcell="1">Add</button>
+    </div>` +
+    (CM.rowOpts >= 0 && CM.rowOpts < CM.row.length ? renderRowCellOpts(CM.row[CM.rowOpts], CM.rowOpts) : '');
+}
+
+const LOOPER_CELL_OPTS = {
+  label:   { multiline: { t: 'bool' } },
+  textbox: { multiline: { t: 'bool' }, rows: { t: 'number' }, cols: { t: 'number' }, placeholder: { t: 'string' } },
+  checkbox:{ label: { t: 'string' } },
+  image:   { alt: { t: 'string' }, width: { t: 'string' }, height: { t: 'string' },
+             fit: { t: 'select', opts: ['contain', 'cover', 'fill', 'scale-down', 'none'] } },
+};
+
+function renderRowCellOpts(rc, i) {
+  const fields = LOOPER_CELL_OPTS[rc.type] || {};
+  const entries = Object.entries(fields);
+  if (!entries.length) return '<div class="cm-hint">No extra options for this cell type.</div>';
+  return `
+    <div class="cm-cell-opts" data-i="${i}">
+      <div class="cm-hint">Options for cell “${escapeHtml(rc.name || rc.type + ' ' + (i + 1))}”:</div>
+      <div class="cm-grid">
+      ${entries.map(([k, s]) => {
+        const v = rc.opts[k];
+        if (s.t === 'bool') {
+          return `<label class="chk">${k}<input type="checkbox" data-cmopt="bool" data-optkey="${k}" ${v ? 'checked' : ''}></label>`;
+        }
+        if (s.t === 'select') {
+          return `<label>${k}<select data-cmopt="raw" data-optkey="${k}">${s.opts.map(o => `<option value="${o}" ${String(v) === o ? 'selected' : ''}>${o}</option>`).join('')}</select></label>`;
+        }
+        if (s.t === 'number') {
+          return `<label>${k}<input type="number" data-cmopt="num" data-optkey="${k}" value="${v === undefined ? '' : escapeAttr(String(v))}"></label>`;
+        }
+        return `<label>${k}<input type="text" data-cmopt="raw" data-optkey="${k}" value="${v === undefined ? '' : escapeAttr(String(v))}"></label>`;
+      }).join('')}
+      </div>
+      <button class="opt close" data-cmoptclose="1">Done</button>
+    </div>`;
+}
+
+function removeEmptyOpts(rc) {
+  const o = {};
+  Object.entries(rc.opts || {}).forEach(([k, v]) => {
+    if (v === undefined || v === null || v === '') return;
+    o[k] = v;
+  });
+  rc.opts = o;
+}
+
+function getCellPropOptions(type) {
+  switch (type) {
+    case 'label': return ['text'];
+    case 'textbox': return ['value'];
+    case 'checkbox': return ['value', 'hidden_value'];
+    case 'image': return ['src', 'alt', 'width', 'height'];
+    default: return ['value'];
+  }
+}
+
+function getDefaultCell(type) {
+  const t = LOOPER_CELL_TYPES.find(x => x.type === type) || LOOPER_CELL_TYPES[0];
+  return {type, name: '', field: '', property: t.defaultProp, opts: {}};
+}
+
+function wireCMSetup() {
+  $('#cm-columns').addEventListener('input', onCMSetupInput);
+  $('#cm-columns').addEventListener('change', onCMSetupInput);
+  $('#cm-columns').addEventListener('click', e => {
+    // Add-cell button (rendered dynamically with the Row Template editor, so
+    // it is handled here via delegation rather than a startup binding).
+    if (e.target.closest('[data-cm-addcell]')) {
+      const type = $('#cm-add-cell-type').value;
+      CM.row.push(getDefaultCell(type));
+      cmRenderSetup();
+      return;
+    }
+    // Cell options open/close
+    const optBtn = e.target.closest('[data-cmrowf="opts"]');
+    if (optBtn) {
+      const i = +optBtn.dataset.i;
+      CM.rowOpts = CM.rowOpts === i ? -1 : i;
+      cmRenderSetup();
+      return;
+    }
+    const optClose = e.target.closest('[data-cmoptclose]');
+    if (optClose) {
+      CM.rowOpts = -1;
+      cmRenderSetup();
+      return;
+    }
+    const btn = e.target.closest('[data-cmcol]');
+    if (!btn) return;
+    const row = btn.closest('.cm-colrow');
+    if (!row) return;
+    const i = +row.dataset.i;
+    let arr;
+    if (CM.mode === 'table') arr = CM.columns;
+    else if (CM.mode === 'looper') arr = CM.row;
+    else return;
+    const act = btn.dataset.cmcol;
+    if (act === 'up' && i > 0) { const t = arr[i - 1]; arr[i - 1] = arr[i]; arr[i] = t; }
+    else if (act === 'down' && i < arr.length - 1) { const t = arr[i + 1]; arr[i + 1] = arr[i]; arr[i] = t; }
+    else if (act === 'del') { arr.splice(i, 1); CM.rowOpts = -1; }
+    else return;
+    cmRenderSetup();
+  });
+  $('#cm-add-col').addEventListener('click', () => {
+    if (CM.mode === 'table') CM.columns.push({ field: '', title: '', sortable: true, headerFilter: 'none', editor: '', width: undefined, align: '', frozen: false });
+    else if (CM.mode === 'looper') { CM.row.push(getDefaultCell('label')); CM.rowOpts = -1; }
+    cmRenderSetup();
+  });
+}
+
+function onCMSetupInput(e) {
+  const t = e.target;
+  // Cell options editor (not inside a .cm-colrow)
+  if (t.dataset.cmopt) {
+    const wrap = t.closest('.cm-cell-opts');
+    if (!wrap) return;
+    const i = +wrap.dataset.i;
+    const rc = CM.row[i];
+    if (!rc) return;
+    const key = t.dataset.optkey;
+    if (t.dataset.cmopt === 'bool') rc.opts[key] = t.checked;
+    else if (t.dataset.cmopt === 'num') rc.opts[key] = t.value === '' ? '' : +t.value;
+    else rc.opts[key] = t.value;
+    return;
+  }
+  const row = t.closest('.cm-colrow');
+  if (!row) return;
+  const i = +row.dataset.i;
+  if (CM.mode === 'looper') {
+    const k = t.dataset.cmrowf;
+    const rc = CM.row[i];
+    if (!rc) return;
+    if (k === 'type') {
+      rc.type = t.value;
+      // Update property options when type changes
+      const propOpts = getCellPropOptions(rc.type);
+      if (!propOpts.includes(rc.property)) rc.property = propOpts[0];
+      cmRenderSetup();
+    } else {
+      rc[k] = t.value;
+    }
+    return;
+  }
+  const k = t.dataset.cmcolf;
+  const c = CM.columns[i];
+  if (!c) return;
+  if (k === 'sortable' || k === 'frozen') c[k] = t.checked;
+  else if (k === 'width') c[k] = t.value === '' ? undefined : +t.value;
+  else c[k] = t.value;
+}
+
+/* ---------- Preview ---------- */
+async function cmFetchRows(limit) {
+  if (CM.db && CM.query.trim()) {
+    const r = await api('POST', '/api/db/query', { db: CM.db, query: CM.query, limit });
+    return r.rows || [];
+  }
+  return Array.isArray(CM.data) ? CM.data : [];
+}
+
+async function cmFetchLooperRows(limit) {
+  if (!CM.db || !CM.query.trim() || !CM.row.length) return null;
+  try {
+    const rowDefs = CM.row.filter(rc => rc.name && rc.field).map(rc => ({
+      type: rc.type, name: rc.name, property: rc.property, field: rc.field, opts: rc.opts || {},
+    }));
+    const r = await api('POST', '/api/looper/rows', { db: CM.db, query: CM.query, row: rowDefs, limit });
+    return { columns: r.columns, rows: r.html_rows || [] };
+  } catch (e) {
+    return null;
+  }
+}
+
+async function cmRenderPreview() {
+  const hint = $('#cm-preview-hint');
+  const box = $('#cm-preview-box');
+  destroyTableTabulator();
+  box.innerHTML = '<div class="hint">Loading…</div>';
+
+  if (CM.mode === 'looper') {
+    // Try pixel-faithful preview via /api/looper/rows when row template exists
+    let usedLooperEndpoint = false;
+    if (CM.row.length) {
+      const lr = await cmFetchLooperRows(20);
+      if (lr) {
+        usedLooperEndpoint = true;
+        hint.textContent = 'Live looper row-template preview (server-rendered).';
+        // html_rows are {index, html} - render as a list of rendered rows
+        box.innerHTML = '<div class="looper-preview">' +
+          lr.rows.map(r => `<div class="looper-row">${r.html}</div>`).join('') +
+          '</div>';
+        return;
+      }
+    }
+    // Fallback: basic grid preview from /api/db/query
+    hint.textContent = CM.db ? 'Live sample rows (basic grid — row template not configured).' : 'Static sample rows.';
+    let rows = [];
+    try { rows = await cmFetchRows(50); } catch (e) { box.innerHTML = '<div class="error">' + escapeHtml(e.message) + '</div>'; return; }
+    const cols = CM.lastResult && CM.lastResult.columns ? CM.lastResult.columns : (rows[0] && typeof rows[0] === 'object' ? Object.keys(rows[0]) : []);
+    box.innerHTML = cmMiniGrid(cmColDefsFor(cols), rows);
+    return;
+  }
+
+  const defs = CM.columns.filter(c => c.field);
+  if (CM.tabulator) {
+    if (!defs.length) { box.innerHTML = '<div class="hint">Add columns in the Table Setup tab first.</div>'; return; }
+    let rows = [];
+    try { rows = await cmFetchRows(CM.pageSize || 50); } catch (e) { box.innerHTML = '<div class="error">' + escapeHtml(e.message) + '</div>'; return; }
+    hint.textContent = CM.db ? 'Live Tabulator preview (read-only).' : 'Static data Tabulator preview.';
+    initTableTabulator(defs.map(cmTabulatorColumn), rows);
+    return;
+  }
+
+  hint.textContent = 'Basic table (no Tabulator).';
+  let rows = [];
+  try { rows = await cmFetchRows(50); } catch (e) { box.innerHTML = '<div class="error">' + escapeHtml(e.message) + '</div>'; return; }
+  if (!defs.length) { box.innerHTML = '<div class="hint">Add columns in the Table Setup tab first.</div>'; return; }
+  const dbCols = CM.lastResult && CM.lastResult.columns ? CM.lastResult.columns : [];
+  const colDefs = defs.map(c => ({ name: c.title || c.field, field: c.field, idx: dbCols.indexOf(c.field) }));
+  box.innerHTML = cmMiniGrid(colDefs, rows);
+}
+
+function cmTabulatorColumn(col) {
+  const c = { title: col.title || col.field, field: col.field };
+  if (col.sortable !== false) c.sortable = true;
+  if (col.headerFilter === 'text') c.headerFilter = 'input';
+  else if (col.headerFilter === 'number') c.headerFilter = 'number';
+  if (col.editor) c.editor = col.editor;
+  if (col.width) c.width = col.width;
+  if (col.align) c.hozAlign = col.align;
+  if (col.frozen) c.frozen = true;
+  return c;
+}
+
+function initTableTabulator(columns, rows) {
+  if (typeof Tabulator === 'undefined') {
+    $('#cm-preview-box').innerHTML = '<div class="hint">Tabulator bundle not loaded.</div>';
+    return;
+  }
+  destroyTableTabulator();
+  CM.tbl = new Tabulator('#cm-preview-box', {
+    layout: 'fitColumns',
+    columns,
+    data: rows,
+    pagination: false,
+  });
+}
+
+function destroyTableTabulator() {
+  if (CM.tbl) { try { CM.tbl.destroy(); } catch (e) { /* ignore */ } CM.tbl = null; }
+}
+
+/* ---------- Apply / Cancel ---------- */
+function cmApply() {
+  const c = ctrl();
+  if (!c || CM.mode !== c.type) return;
+  snapshot('edit-cm');
+  setOpt(c, 'db', CM.db);
+  setOpt(c, 'query', CM.query);
+  setOpt(c, 'page_size', CM.pageSize);
+  setOpt(c, 'count_query', CM.countQuery);
+  setOpt(c, 'where', CM.where);
+  setOpt(c, 'order_by', CM.orderBy);
+  if (CM.mode === 'table') {
+    if (CM.tabulator) setOpt(c, 'tabulator', true); else delete c.opts.tabulator;
+    if (CM.tabulator) {
+      const cols = CM.columns.filter(x => x.field).map(x => {
+        const o = { field: x.field };
+        if (x.title) o.title = x.title;
+        o.sortable = x.sortable !== false;
+        if (x.headerFilter === 'text' || x.headerFilter === 'number') o.headerFilter = x.headerFilter;
+        if (x.editor) o.editor = x.editor;
+        if (x.width) o.width = x.width;
+        if (x.align) o.align = x.align;
+        if (x.frozen) o.frozen = true;
+        return o;
+      });
+      setOpt(c, 'columns', cols.length ? cols : null);
+    } else {
+      const m = {};
+      CM.columns.forEach(x => { if (x.field) m[x.field] = x.title || x.field; });
+      setOpt(c, 'columns', Object.keys(m).length ? m : null);
+    }
+    if (!CM.db) setOpt(c, 'data', CM.data); else delete c.opts.data;
+  } else {
+    // Save new row model
+    const row = CM.row.filter(rc => rc.name && rc.field).map(rc => {
+      const o = { type: rc.type, name: rc.name, field: rc.field, property: rc.property };
+      removeEmptyOpts(rc);
+      if (rc.opts && Object.keys(rc.opts).length) o.opts = rc.opts;
+      return o;
+    });
+    setOpt(c, 'row', row.length ? row : null);
+    // Derive legacy links from row for backward compatibility
+    const links = row.map(rc => ({
+      field: rc.field, control: rc.name, property: rc.property,
+    }));
+    setOpt(c, 'links', links.length ? links : null);
+  }
+  schedulePreview();
+  closeControlModal();
+  setStatus('Applied ' + cmModeLabel().toLowerCase() + ' settings.');
+}
+
+function wireControlModal() {
+  $('#ctrl-edit').addEventListener('click', openControlModal);
+  $('#cm-close').addEventListener('click', closeControlModal);
+  $('#cm-cancel').addEventListener('click', closeControlModal);
+  $$('#control-modal .cm-tabs [data-cm-tab]').forEach(b =>
+    b.addEventListener('click', () => cmShowTab(b.dataset.cmTab)));
+  $('#cm-db').addEventListener('change', e => { CM.db = e.target.value; renderStaticData(); });
+  $('#cm-query').addEventListener('input', e => { CM.query = e.target.value; });
+  $('#cm-page-size').addEventListener('input', e => { CM.pageSize = e.target.value === '' ? undefined : +e.target.value; });
+  $('#cm-count-query').addEventListener('input', e => { CM.countQuery = e.target.value; });
+  $('#cm-where').addEventListener('input', e => { CM.where = e.target.value; });
+  $('#cm-order-by').addEventListener('input', e => { CM.orderBy = e.target.value; });
+  $('#cm-tabulator').addEventListener('change', e => { CM.tabulator = e.target.checked; });
+  $('#cm-run-query').addEventListener('click', cmRunQuery);
+  $('#cm-generate-cols').addEventListener('click', cmGenerateColumns);
+  $('#cm-static-data').addEventListener('click', () => $('#cm-data-row').classList.toggle('hidden'));
+  $('#cm-data').addEventListener('input', e => {
+    const raw = e.target.value.trim();
+    if (!raw) { CM.data = null; e.target.classList.remove('baderr'); return; }
+    try { CM.data = JSON.parse(raw); e.target.classList.remove('baderr'); }
+    catch (err) { e.target.classList.add('baderr'); }
+  });
+  wireCMSetup();
+  $('#cm-apply').addEventListener('click', cmApply);
+}
+
 /* ---------- init ---------- */
 wirePalette();
 wireControlList();
@@ -1608,6 +2245,7 @@ wireCanvasSwitch();
 wireTopbar();
 wireTheme();
 wireAI();
+wireControlModal();
 loadInitial().catch(e => {
   $('#preview').innerHTML = '<div class="error">Failed to load: ' + escapeHtml(e.message) + '</div>';
   setStatus(e.message, 'error');

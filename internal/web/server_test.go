@@ -69,7 +69,7 @@ func pumpStart(conn *websocket.Conn) *wsPump {
 	}
 	go func() {
 		defer close(p.end)
-		ctx, _ := context.WithCancel(context.Background())
+		ctx := context.Background()
 		for {
 			_, data, err := p.conn.Read(ctx)
 			if err != nil {

@@ -32,6 +32,14 @@ var assetsFS embed.FS
 //go:embed templates/*
 var templatesFS embed.FS
 
+// StaticSubFS returns a subdirectory of the embedded runtime assets (e.g.
+// "tabulator", "chartjs", "flatpickr") so other servers — like the builder,
+// which proxies /static/tabulator/ — can reuse the same bundles without a
+// second copy on disk.
+func StaticSubFS(name string) (fs.FS, error) {
+	return fs.Sub(assetsFS, filepath.Join("assets", name))
+}
+
 // Server is the KALUA web server for run mode.
 type Server struct {
 	host          string

@@ -19,7 +19,11 @@ import (
 	"time"
 
 	"kalua/internal/ai"
+	"kalua/internal/bindings"
 	"kalua/internal/checker"
+	"kalua/internal/web"
+
+	lua "github.com/yuin/gopher-lua"
 )
 
 //go:embed assets/*
@@ -112,10 +116,17 @@ func (s *Server) mux() http.Handler {
 	mux.HandleFunc("/api/import", s.handleImport)
 	mux.HandleFunc("/api/validate", s.handleValidate)
 	mux.HandleFunc("/api/preview", s.handlePreview)
+	mux.HandleFunc("/api/db", s.handleDBList)
+	mux.HandleFunc("/api/db/query", s.handleDBQuery)
+	mux.HandleFunc("/api/looper/rows", s.handleLooperRows)
 	mux.HandleFunc("/api/ai/status", s.handleAIStatus)
 	mux.HandleFunc("/api/ai/generate", s.handleAIGenerate)
 	mux.HandleFunc("/api/ai/fix", s.handleAIFix)
 	mux.HandleFunc("/api/ai/stream", s.handleAIStream)
+	// Reuse the embedded runtime Tabulator bundle (no second copy on disk).
+	if tabFS, err := web.StaticSubFS("tabulator"); err == nil {
+		mux.Handle("/static/tabulator/", noCache(http.StripPrefix("/static/tabulator/", http.FileServer(http.FS(tabFS)))))
+	}
 	return security(noCache(mux))
 }
 
@@ -283,9 +294,9 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Lua  string     `json:"lua"`
-		Mode string     `json:"mode"` // "replace" (default) | "merge"
-		Base *Document  `json:"base"` // current open doc, required for merge
+		Lua  string    `json:"lua"`
+		Mode string    `json:"mode"` // "replace" (default) | "merge"
+		Base *Document `json:"base"` // current open doc, required for merge
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, err)
@@ -337,6 +348,140 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"html": html})
+}
+
+// handleDBList returns the preregistered named databases (the builder's
+// --db NAME=DSN flags). An empty list tells the client to hint at --db.
+func (s *Server) handleDBList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, map[string]any{"dbs": bindings.NamedDBs()})
+}
+
+// DBQueryRequest is the JSON body for POST /api/db/query.
+type DBQueryRequest struct {
+	DB    string `json:"db"`
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// handleDBQuery runs a read-only query on a preregistered named database and
+// returns column names + rows for the builders' live data previews.
+func (s *Server) handleDBQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req DBQueryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.DB == "" || strings.TrimSpace(req.Query) == "" {
+		http.Error(w, `{"error":"db and query are required"}`, http.StatusBadRequest)
+		return
+	}
+	cols, rows, err := bindings.QueryPreview(req.DB, req.Query, req.Limit)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "unknown database") || strings.HasPrefix(err.Error(), "only read-only") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"columns": cols, "rows": rows})
+}
+
+// LooperRowsRequest is the JSON body for POST /api/looper/rows.
+type LooperRowsRequest struct {
+	DB    string `json:"db"`
+	Query string `json:"query"`
+	Row   []any  `json:"row"` // array of row-template control defs (optional)
+	Limit int    `json:"limit,omitempty"`
+}
+
+// handleLooperRows returns a looper preview: with opts.row control defs it
+// renders server-side HTML sample rows via the Phase 4 renderer (pixel-faithful
+// preview, no client widget code); without row defs it falls back to the raw
+// {columns, rows} mini-grid for the legacy value-cell model.
+func (s *Server) handleLooperRows(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req LooperRowsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.DB == "" || strings.TrimSpace(req.Query) == "" {
+		http.Error(w, `{"error":"db and query are required"}`, http.StatusBadRequest)
+		return
+	}
+	cols, rows, err := bindings.QueryPreview(req.DB, req.Query, req.Limit)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "unknown database") || strings.HasPrefix(err.Error(), "only read-only") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+	if len(req.Row) > 0 {
+		L := lua.NewState()
+		defer L.Close()
+		rowTable := jsonToLuaValue(L, req.Row)
+		htmlRows := make([]map[string]any, 0, len(rows))
+		for i, row := range rows {
+			byCol := map[string]any{}
+			for j, col := range cols {
+				if j < len(row) {
+					if v := row[j]; v != nil {
+						byCol[col] = v
+					}
+				}
+			}
+			htmlRows = append(htmlRows, map[string]any{
+				"index": i + 1,
+				"html":  bindings.BuildLooperRowHTML(L, "looper", i+1, rowTable, byCol, cols),
+			})
+		}
+		writeJSON(w, map[string]any{"columns": cols, "html_rows": htmlRows})
+		return
+	}
+	writeJSON(w, map[string]any{"columns": cols, "rows": rows})
+}
+
+// jsonToLuaValue converts decoded JSON into a gopher-lua value so the server
+// can feed JSON row-template defs to the Lua rendering path.
+func jsonToLuaValue(L *lua.LState, v any) lua.LValue {
+	switch t := v.(type) {
+	case nil:
+		return lua.LNil
+	case string:
+		return lua.LString(t)
+	case bool:
+		return lua.LBool(t)
+	case float64:
+		return lua.LNumber(t)
+	case map[string]any:
+		tbl := L.NewTable()
+		for k, val := range t {
+			tbl.RawSetString(k, jsonToLuaValue(L, val))
+		}
+		return tbl
+	case []any:
+		tbl := L.NewTable()
+		for i, val := range t {
+			tbl.RawSetInt(i+1, jsonToLuaValue(L, val))
+		}
+		return tbl
+	default:
+		return lua.LString(fmt.Sprintf("%v", t))
+	}
 }
 
 // load reads the document from disk: Lua sources are imported via the AST

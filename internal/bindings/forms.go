@@ -1036,7 +1036,9 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("db_order_by", opts.RawGetString("order_by"))
 	}
 
-	// DB-linked looper options (Kalipso "connect to DB" parity)
+	// DB-linked looper options (Kalipso "connect to DB" parity). `row` holds the
+	// row-template control defs (Phase 4 looper row-template controls); `columns`
+	// is the grid column count for the row layout.
 	if ctrlType == "looper" {
 		ctrlTbl.RawSetString("db", opts.RawGetString("db"))
 		ctrlTbl.RawSetString("query", opts.RawGetString("query"))
@@ -1045,6 +1047,8 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("count_query", opts.RawGetString("count_query"))
 		ctrlTbl.RawSetString("db_where", opts.RawGetString("where"))
 		ctrlTbl.RawSetString("db_order_by", opts.RawGetString("order_by"))
+		ctrlTbl.RawSetString("columns", opts.RawGetString("columns"))
+		ctrlTbl.RawSetString("row", opts.RawGetString("row"))
 	}
 
 	// Chart options (Chart.js)
@@ -1574,6 +1578,16 @@ func renderControl(ctrl *lua.LTable) string {
 		}
 		return `<label class="kalua-label" id="` + escAttr(id) + `">` + label + `</label>`
 	case "textbox":
+		if looperDisplay(ctrl) {
+			// Raw value (escaped exactly once below); the shared `value` var is
+			// already attribute-escaped and must not be re-escaped as text.
+			raw := ctrl.RawGetString("value")
+			rawStr := ""
+			if raw != lua.LNil {
+				rawStr = raw.String()
+			}
+			return `<span class="kalua-looper-cell-value" id="` + escAttr(id) + `">` + escText(rawStr) + `</span>`
+		}
 		if ctrl.RawGetString("multiline").String() == "true" {
 			rows := 4
 			if v := ctrl.RawGetString("rows"); v != lua.LNil {
@@ -1621,6 +1635,13 @@ func renderControl(ctrl *lua.LTable) string {
 			<select class="kalua-select" id="` + escAttr(id) + `" name="` + name + `"` + attrs + size + enabled + `>` + options + `</select>
 		</div>`
 	case "checkbox":
+		if looperDisplay(ctrl) {
+			mark := ""
+			if value == "true" || value == "1" {
+				mark = "\u2713"
+			}
+			return `<span class="kalua-looper-cell-value" id="` + escAttr(id) + `">` + mark + `</span>`
+		}
 		checked := ""
 		if value == "true" || value == "1" {
 			checked = ` checked`
@@ -1691,12 +1712,18 @@ func renderLooper(ctrl *lua.LTable, formName, name, id, visible string) string {
 	if ctrl.RawGetString("db") != lua.LNil {
 		dbLinked = ` data-k-looper-links="` + escAttr(looperLinksAttr(ctrl)) + `"`
 	}
+	// Row-template loopers (opts.row) get server-rendered rows ({index,html}
+	// batches) instead of the value-cell model, signalled to the client here.
+	htmlAttr := ""
+	if ctrl.RawGetString("row") != lua.LNil {
+		htmlAttr = ` data-k-looper-html="1"`
+	}
 
 	return `<div class="kalua-control"` + visible + `>
 		<div class="kalua-looper" id="` + escAttr(id) + `"
 		     data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `"
 		     data-k-looper-columns="` + strconv.Itoa(columns) + `"
-		     data-k-looper-page-size="` + strconv.Itoa(pageSize) + `"` + dbLinked + `>
+		     data-k-looper-page-size="` + strconv.Itoa(pageSize) + `"` + dbLinked + htmlAttr + `>
 			<div class="kalua-looper-rows">` + templateCells + `</div>
 			<div class="kalua-looper-sentinel"></div>
 		</div>
@@ -1708,6 +1735,10 @@ func renderLooper(ctrl *lua.LTable, formName, name, id, visible string) string {
 // looper_db_batch data onto them. A non-DB looper renders a single empty cell
 // (no rows until a data source is attached).
 func looperTemplateHTML(ctrl *lua.LTable, formName, name string) string {
+	// Row-template loopers render rows server-side; no value-cell template.
+	if ctrl.RawGetString("row") != lua.LNil {
+		return ""
+	}
 	links := ctrl.RawGetString("links")
 	if links == lua.LNil {
 		return `<div class="kalua-looper-row" data-k-looper-template="1">
@@ -1791,6 +1822,13 @@ func looperLinkProp(linkTbl *lua.LTable, key string) string {
 		return ""
 	}
 	return v.String()
+}
+
+// looperDisplay reports whether a control is a read-only value display inside a
+// server-rendered looper row (Phase 4 row-template controls).
+func looperDisplay(ctrl *lua.LTable) bool {
+	v := ctrl.RawGetString("looper_display")
+	return v == lua.LTrue || (v != lua.LNil && v.String() == "true")
 }
 
 // renderImage renders the §4.3 image control. When clickable, the <img> carries

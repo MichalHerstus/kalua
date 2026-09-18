@@ -726,21 +726,22 @@ k.ctrl.list("main", "sel", { items = {"a", "b", "c"} })
 ```
 
 **`k.ctrl.looper(form, name, optsTable)`**  
-Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}.
+Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}; db is a k.connect_db handle or a --db NAME prereregistered at startup. With opts.row (array of {type,name,property?,field?|column?,opts?} row-template control defs) rows are rendered server-side as real controls (label/textbox/image/checkbox, read-only); links can be omitted — they are derived from row.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `form` | string | Parent form name. |
 | `name` | string | Unique control name. |
-| `optsTable.db` | string | DB handle for a DB-linked looper. |
+| `optsTable.db` | string | DB handle (k.connect_db result) or a --db NAME. |
 | `optsTable.query` | string | SQL query for a DB-linked looper. |
-| `optsTable.links` | list | Maps result columns to template controls. |
+| `optsTable.links` | list | Maps result columns to template controls (optional when row is set). |
+| `optsTable.row` | list | Row-template control defs {type, name, property, field or column, opts} — server-rendered read-only rows. |
 | `optsTable.page_size` | number | Rows per page for pagination. |
 
 **Example:**
 
 ```lua
-k.ctrl.looper("main", "rows", { db = h, query = "SELECT * FROM items", links = { {field = "name", control = "tpl_name", property = "text"} } })
+k.ctrl.looper("main", "rows", { db = h, query = "SELECT * FROM items", row = { {type="label", name="lb_name", field="name"}, {type="textbox", name="tx_qty", field="qty"} } })
 ```
 
 **`k.ctrl.radio(form, name, optsTable)`**  
@@ -849,14 +850,14 @@ k.ctrl.set_value("main", "age", 31)
 ```
 
 **`k.ctrl.table(form, name, optsTable)`**  
-Adds a table control; rows manipulated via k.table.*. With opts {db, query, ...} the table is DB-linked (Tabulator mode).
+Adds a table control; rows manipulated via k.table.*. With opts {db, query, ...} the table is DB-linked (Tabulator mode). db is a k.connect_db handle or a --db NAME prereregistered at startup.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `form` | string | Parent form name. |
 | `name` | string | Unique control name. |
 | `optsTable.columns` | list | Column definitions (Tabulator mode). |
-| `optsTable.db` | string | DB handle for a DB-linked table. |
+| `optsTable.db` | string | DB handle (k.connect_db result) or a --db NAME. |
 | `optsTable.query` | string | SQL query for a DB-linked table. |
 
 **Example:**
@@ -1309,7 +1310,7 @@ k.db_update(h, "items", { price = 11.5 }, { name = "widget" })
 ```
 
 **`k.disconnect_db([handle])`**  
-Closes a connection, or all connections when no handle is given.
+Closes a database handle. With no argument closes all handles including --db prereregistered connections.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

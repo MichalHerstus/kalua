@@ -40,11 +40,11 @@ func RebuildLua(source string, doc *Document) (string, error) {
 	// position, replacing it in place. Otherwise alignment is by name.
 	renIdx := renameIndex(cur, doc)
 
-	del := map[int]bool{}                  // 1-based lines to drop
-	insertAt := map[int][]string{}         // 1-based anchor line → replacement block lines
-	var newForms []*Form                   // appended after the last form block
+	del := map[int]bool{}          // 1-based lines to drop
+	insertAt := map[int][]string{} // 1-based anchor line → replacement block lines
+	var newForms []*Form           // appended after the last form block
 	var consumedSrc []bool = make([]bool, len(cur.Forms))
-	maxEnd := 0                            // last owned line across all source forms
+	maxEnd := 0 // last owned line across all source forms
 
 	// iterate source forms; find their document counterpart
 	for i, sf := range cur.Forms {
@@ -107,9 +107,9 @@ func RebuildLua(source string, doc *Document) (string, error) {
 	}
 
 	// Anchor for appended new forms: just after the last source form block.
-	insertPos := len(lines)+1
+	insertPos := len(lines) + 1
 	if maxEnd > 0 {
-		for ln := maxEnd+1; ln <= len(lines); ln++ {
+		for ln := maxEnd + 1; ln <= len(lines); ln++ {
 			if !del[ln] {
 				insertPos = ln
 				break
@@ -118,7 +118,7 @@ func RebuildLua(source string, doc *Document) (string, error) {
 		if insertPos == len(lines)+1 {
 			for ln := maxEnd; ln >= 1; ln-- {
 				if !del[ln] {
-					insertPos = ln+1
+					insertPos = ln + 1
 					break
 				}
 			}
@@ -242,7 +242,7 @@ func markDeleted(del map[int]bool, f *Form) {
 func markBlankGaps(del map[int]bool, f *Form, lines []string) {
 	n := len(f.Lines)
 	for i := 0; i+1 < n; i++ {
-		for ln := f.Lines[i][1]+1; ln < f.Lines[i+1][0]; ln++ {
+		for ln := f.Lines[i][1] + 1; ln < f.Lines[i+1][0]; ln++ {
 			if ln >= 1 && ln <= len(lines) && strings.Trim(lines[ln-1], " \t") == "" {
 				del[ln] = true
 			}

@@ -812,7 +812,7 @@ func (s *Session) handleLooperScrollRequest(msg inboxMsg, logger Logger) {
 	// Try the DB-linked pager first.
 	if ctrl := s.controlTable(msg.form, msg.ctrl); ctrl != nil {
 		if link, ok := bindings.LooperDBLinkFromControl(ctrl); ok {
-			s.dispatchDBLooperPage(link, msg, logger)
+			s.dispatchDBLooperPage(ctrl, link, msg, logger)
 			return
 		}
 	}
@@ -884,9 +884,11 @@ func (s *Session) handleLooperRefreshRequest(msg inboxMsg, logger Logger) {
 }
 
 // dispatchDBLooperPage pages a DB-linked looper in-process and sends the
-// mapped batch to the browser. Errors surface as a banner; they never crash the
-// session (the client simply stops requesting more rows).
-func (s *Session) dispatchDBLooperPage(link *bindings.LooperDBLink, msg inboxMsg, logger Logger) {
+// mapped batch to the browser. Loopers with opts.row get server-rendered HTML
+// rows; legacy loopers get {control:value} data maps. Errors surface as a
+// banner; they never crash the session (the client simply stops requesting more
+// rows).
+func (s *Session) dispatchDBLooperPage(ctrl *lua.LTable, link *bindings.LooperDBLink, msg inboxMsg, logger Logger) {
 	req, startIdx := parseLooperScrollReq(msg.raw)
 	res, err := bindings.FetchLooperRows(s.L, link, req)
 	if err != nil {
@@ -898,7 +900,11 @@ func (s *Session) dispatchDBLooperPage(link *bindings.LooperDBLink, msg inboxMsg
 
 	payload := looperBatchPayload{LastPage: res.LastPage}
 	if res != nil {
-		payload.Rows = looperBatchRows(link, res, startIdx)
+		if rowVal := ctrl.RawGetString("row"); rowVal != lua.LNil {
+			payload.Rows = looperBatchHTMLRows(s.L, msg.ctrl, rowVal, res, startIdx)
+		} else {
+			payload.Rows = looperBatchRows(link, res, startIdx)
+		}
 		payload.HasMore = req.Page < res.LastPage
 	}
 	data, err := json.Marshal(payload)
@@ -924,10 +930,12 @@ type looperBatchPayload struct {
 }
 
 // looperBatchRow is one rendered looper row. data keys are template control
-// names (or "control.property" for non-default properties).
+// names (or "control.property" for non-default properties); html carries a
+// server-rendered row for row-template loopers (data-k-looper-html=1).
 type looperBatchRow struct {
 	Index int                    `json:"index"`
-	Data  map[string]interface{} `json:"data"`
+	Data  map[string]interface{} `json:"data,omitempty"`
+	HTML  string                 `json:"html,omitempty"`
 }
 
 // looperBatchRows maps a fetched page of plain rows onto the template controls
@@ -953,6 +961,22 @@ func looperBatchRows(link *bindings.LooperDBLink, res *bindings.LooperPageResult
 			data[key] = val
 		}
 		out = append(out, looperBatchRow{Index: startIdx + i, Data: data})
+	}
+	return out
+}
+
+// looperBatchHTMLRows renders a fetched page of plain rows via the looper's
+// opts.row templates (server-side HTML) instead of bare data maps.
+func looperBatchHTMLRows(L *lua.LState, looperName string, rowVal lua.LValue, res *bindings.LooperPageResult, startIdx int) []looperBatchRow {
+	if res == nil {
+		return nil
+	}
+	var out []looperBatchRow
+	for i, row := range res.Rows {
+		out = append(out, looperBatchRow{
+			Index: startIdx + i,
+			HTML:  bindings.BuildLooperRowHTML(L, looperName, startIdx+i, rowVal, row, res.Columns),
+		})
 	}
 	return out
 }

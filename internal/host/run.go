@@ -66,6 +66,13 @@ func Run(cfg RunConfig) ExitCode {
 		return ExitError
 	}
 
+	// 2b. Pre-register named --db handles (db="NAME" usable without a Lua-side
+	// k.connect_db()). A bad DSN fails startup fast.
+	if err := bindings.RegisterNamedDBPairs(cfg.DBs); err != nil {
+		log.Errorf("--db: %v", err)
+		return ExitError
+	}
+
 	// 3. Sandbox VM
 	L := vm.New()
 	defer L.Close()

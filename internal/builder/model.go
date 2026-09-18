@@ -43,10 +43,10 @@ var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // transient and never authoritative (see rebuild.go). Lines/Indent/OrphanKeys
 // below are carried on the Form so Import → JSON → Export stays self-contained.
 type Document struct {
-	Version    int     `json:"version"`
-	Forms      []*Form `json:"forms"`
-	ActiveForm string  `json:"activeForm,omitempty"` // name of the UI-selected form
-	Notes      []string `json:"notes,omitempty"`     // document-level notices
+	Version    int      `json:"version"`
+	Forms      []*Form  `json:"forms"`
+	ActiveForm string   `json:"activeForm,omitempty"` // name of the UI-selected form
+	Notes      []string `json:"notes,omitempty"`      // document-level notices
 }
 
 // Form is the source-level form definition.
@@ -63,9 +63,9 @@ type Form struct {
 	Notes         []string            `json:"notes,omitempty"`         // import/export notices
 
 	// Transient source bookkeeping (import-populated, re-derived on save):
-	Lines      [][]int  `json:"lines,omitempty"` // owned statement [start,end] line ranges (1-based, inclusive)
-	Indent     string   `json:"indent,omitempty"` // leading whitespace of the form's k.form.new line
-	HasShow    bool     `json:"hasShow,omitempty"` // source had a literal k.form.show (owned)
+	Lines      [][]int  `json:"lines,omitempty"`      // owned statement [start,end] line ranges (1-based, inclusive)
+	Indent     string   `json:"indent,omitempty"`     // leading whitespace of the form's k.form.new line
+	HasShow    bool     `json:"hasShow,omitempty"`    // source had a literal k.form.show (owned)
 	OrphanKeys []string `json:"orphanKeys,omitempty"` // handler keys kept verbatim for renamed (stale) controls
 }
 
@@ -240,7 +240,7 @@ func NewEmptyDoc() *Document {
 	return &Document{
 		Version:    DocVersion,
 		ActiveForm: "main",
-		Forms: []*Form{&Form{Name: "main", Layout: "vertical", Align: "left"}},
+		Forms:      []*Form{&Form{Name: "main", Layout: "vertical", Align: "left"}},
 	}
 }
 

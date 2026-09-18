@@ -4,6 +4,7 @@ package bindings
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -29,6 +30,13 @@ type DBHandle struct {
 // dbHandles stores database handles by ID (Go-side only)
 var dbHandles = make(map[string]*DBHandle)
 var dbHandlesMu sync.Mutex
+
+// namedDBs holds preregistered named database handles (--db NAME=DSN). They
+// live in their own map so builder/table/looper lookups can distinguish a
+// readable name from an opaque runtime id (db_0x…). getDBHandle also consults
+// them so db="NAME" resolves anywhere a runtime handle would.
+var namedDBs = make(map[string]*DBHandle)
+var namedMu sync.Mutex
 
 // registerDB installs k.db.* bindings
 func registerDB(e *Env) {
@@ -79,6 +87,7 @@ func registerDB(e *Env) {
 			}
 			dbHandles = make(map[string]*DBHandle)
 			dbHandlesMu.Unlock()
+			CloseNamedDBs()
 			return 0
 		}
 
@@ -458,6 +467,7 @@ func closeDB(e *Env, L *lua.LState, handleID string) int {
 		}
 		dbHandles = make(map[string]*DBHandle)
 		dbHandlesMu.Unlock()
+		CloseNamedDBs()
 		return 0
 	}
 	h, ok := dbHandles[handleID]
@@ -669,11 +679,190 @@ func isValidIdentifier(s string) bool {
 	return true
 }
 
-// getDBHandle retrieves a database handle by ID
+// getDBHandle retrieves a database handle by ID (opaque runtime id or a
+// preregistered --db name).
 func getDBHandle(L *lua.LState, id string) *DBHandle {
+	if h := getNamedDB(id); h != nil {
+		return h
+	}
 	dbHandlesMu.Lock()
 	defer dbHandlesMu.Unlock()
 	return dbHandles[id]
+}
+
+// RegisterNamedDB preregisters a database connection under the given name,
+// making db="NAME" usable by k.ctrl.table/k.ctrl.looper (and any DB binding)
+// without a Lua-side k.connect_db(). Re-registering a name replaces and closes
+// the previous handle. The DSN is parsed with the same scheme rules as
+// k.connect_db (postgres://, sqlserver://, mysql://, sqlite://…).
+func RegisterNamedDB(name, dsn string) error {
+	if !isValidIdentifier(name) {
+		return fmt.Errorf("invalid database name %q (must be alphanumeric + underscore)", name)
+	}
+	driver, cleanDSN := parseDSN(dsn)
+	if driver == "" {
+		return fmt.Errorf("unsupported database driver in DSN: %s", dsn)
+	}
+	db, err := sql.Open(driver, cleanDSN)
+	if err != nil {
+		return fmt.Errorf("connect %q: %w", name, err)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return fmt.Errorf("connect %q: %w", name, err)
+	}
+	h := &DBHandle{db: db, driver: driver}
+	namedMu.Lock()
+	if old, ok := namedDBs[name]; ok {
+		old.Close()
+	}
+	namedDBs[name] = h
+	namedMu.Unlock()
+	return nil
+}
+
+// RegisterNamedDBPair registers one "NAME=DSN" spec (the --db flag format).
+func RegisterNamedDBPair(spec string) error {
+	name, dsn, ok := strings.Cut(spec, "=")
+	if !ok || strings.TrimSpace(name) == "" {
+		return fmt.Errorf("invalid --db value %q (expected NAME=DSN)", spec)
+	}
+	return RegisterNamedDB(strings.TrimSpace(name), dsn)
+}
+
+// RegisterNamedDBPairs registers each "NAME=DSN" spec in order, failing on the
+// first bad entry.
+func RegisterNamedDBPairs(specs []string) error {
+	for _, s := range specs {
+		if err := RegisterNamedDBPair(s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// NamedDBs lists the names of preregistered named database handles, sorted.
+func NamedDBs() []string {
+	namedMu.Lock()
+	defer namedMu.Unlock()
+	names := make([]string, 0, len(namedDBs))
+	for n := range namedDBs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// getNamedDB returns a preregistered named handle, or nil.
+func getNamedDB(name string) *DBHandle {
+	namedMu.Lock()
+	defer namedMu.Unlock()
+	return namedDBs[name]
+}
+
+// CloseNamedDBs closes and clears all preregistered named handles.
+func CloseNamedDBs() {
+	namedMu.Lock()
+	defer namedMu.Unlock()
+	for _, h := range namedDBs {
+		h.Close()
+	}
+	namedDBs = make(map[string]*DBHandle)
+}
+
+// previewRowLimit caps how many rows QueryPreview returns per call.
+const previewRowLimit = 200
+
+// QueryPreview executes a read-only query on a preregistered named database
+// handle and returns the column names plus up to limit rows (capped at 200).
+// Only SELECT/WITH/PRAGMA/EXPLAIN/SHOW statements are allowed; the guard is
+// advisory, designed to keep the builder preview surface read-only.
+func QueryPreview(name, query string, limit int) (cols []string, rows [][]any, err error) {
+	if !isReadOnlyQuery(query) {
+		return nil, nil, fmt.Errorf("only read-only queries are allowed (select/with/pragma/explain/show)")
+	}
+	h := getNamedDB(name)
+	if h == nil {
+		return nil, nil, fmt.Errorf("unknown database %q (start the CLI with --db %s=DSN)", name, name)
+	}
+	if limit <= 0 || limit > previewRowLimit {
+		limit = previewRowLimit
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	res, err := h.db.Query(query)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer res.Close()
+	cols, err = res.Columns()
+	if err != nil {
+		return nil, nil, err
+	}
+	seen := 0
+	for res.Next() {
+		if seen >= limit {
+			break
+		}
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := res.Scan(ptrs...); err != nil {
+			return nil, nil, err
+		}
+		row := make([]any, len(cols))
+		for i, v := range vals {
+			if b, ok := v.([]byte); ok {
+				row[i] = string(b)
+			} else {
+				row[i] = v
+			}
+		}
+		rows = append(rows, row)
+		seen++
+	}
+	if err := res.Err(); err != nil {
+		return nil, nil, err
+	}
+	return cols, rows, nil
+}
+
+// isReadOnlyQuery reports whether the first significant keyword of q is a
+// read-only statement (select/with/pragma/explain/show). Leading comments and
+// trailing semicolons are tolerated.
+func isReadOnlyQuery(q string) bool {
+	t := strings.TrimSpace(q)
+	for {
+		if strings.HasPrefix(t, "--") {
+			nl := strings.IndexByte(t, '\n')
+			if nl < 0 {
+				return false
+			}
+			t = strings.TrimSpace(t[nl+1:])
+			continue
+		}
+		break
+	}
+	t = strings.TrimRight(t, " \t\r\n;")
+	if t == "" {
+		return false
+	}
+	lower := strings.ToLower(t)
+	for _, kw := range []string{"select", "with", "pragma", "explain", "show"} {
+		if strings.HasPrefix(lower, kw) {
+			rest := lower[len(kw):]
+			if rest == "" {
+				return true
+			}
+			c := rest[0]
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '(' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Placeholder returns the parameter placeholder for the driver

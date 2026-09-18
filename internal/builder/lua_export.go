@@ -243,12 +243,18 @@ func exportControl(sb *strings.Builder, f *Form, c *Control, p string) {
 	// function options (e.g. onclick) so handlers are re-injected on Save.
 	keys := sortedKeys(c.Opts)
 	var opts []string
-	hasDB := false
+	hasDB := false      // runtime handle id was skipped → emit a hint comment
+	dbExported := false // a static --db name was exported as db = "NAME"
 	for _, k := range keys {
 		v := c.Opts[k]
 		if k == "db" {
-			hasDB = true
-			continue // DB handles are runtime values; cannot be exported
+			if isRuntimeDBHandle(v) {
+				hasDB = true
+			} else {
+				opts = append(opts, fmt.Sprintf("db = %s", jsonToLuaLiteral(v)))
+				dbExported = true
+			}
+			continue // opaque runtime ids cannot be exported
 		}
 		if v == nil {
 			continue
@@ -265,7 +271,7 @@ func exportControl(sb *strings.Builder, f *Form, c *Control, p string) {
 	if c.Type == "table" || c.Type == "looper" {
 		hasDB = true
 	}
-	if hasDB {
+	if hasDB && !dbExported {
 		fmt.Fprintf(sb, "%s-- k.ctrl.%s(%q, %q, {...}) configured with a DB handle (assigned at runtime)\n",
 			p, c.Type, f.Name, c.Name)
 	}
@@ -278,6 +284,17 @@ func exportControl(sb *strings.Builder, f *Form, c *Control, p string) {
 	} else {
 		fmt.Fprintf(sb, "%sk.ctrl.%s(%q, %q, {%s})\n\n", p, c.Type, f.Name, c.Name, strings.Join(opts, ", "))
 	}
+}
+
+// isRuntimeDBHandle reports whether a control's db value is an opaque runtime
+// handle id (returned by k.connect_db, formatted "db_0x…") rather than a
+// preregistered --db name that can be exported as a static literal.
+func isRuntimeDBHandle(v any) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(s, "db_0x")
 }
 
 func jsonToLuaLiteral(v any) string {

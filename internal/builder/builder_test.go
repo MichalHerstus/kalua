@@ -721,14 +721,14 @@ func TestExportEmitsDefaultHandlerStubs(t *testing.T) {
 		Name:   "main",
 		Layout: "vertical",
 		Controls: []*Control{
-			{Name: "lbl",   Type: "label",     Opts: map[string]any{"text": "Hi"}},
-			{Name: "name",  Type: "textbox",   Opts: map[string]any{}},
-			{Name: "go",    Type: "button",    Opts: map[string]any{}},
-			{Name: "pic",   Type: "image",     Opts: map[string]any{"src": "/x.png"}},
-			{Name: "pic2",  Type: "image",     Opts: map[string]any{"src": "/y.png", "clickable": true}},
-			{Name: "chart1", Type: "chart",    Opts: map[string]any{"type": "line"}},
-			{Name: "list1", Type: "list",      Opts: map[string]any{}},
-			{Name: "loop1", Type: "looper",    Opts: map[string]any{}},
+			{Name: "lbl", Type: "label", Opts: map[string]any{"text": "Hi"}},
+			{Name: "name", Type: "textbox", Opts: map[string]any{}},
+			{Name: "go", Type: "button", Opts: map[string]any{}},
+			{Name: "pic", Type: "image", Opts: map[string]any{"src": "/x.png"}},
+			{Name: "pic2", Type: "image", Opts: map[string]any{"src": "/y.png", "clickable": true}},
+			{Name: "chart1", Type: "chart", Opts: map[string]any{"type": "line"}},
+			{Name: "list1", Type: "list", Opts: map[string]any{}},
+			{Name: "loop1", Type: "looper", Opts: map[string]any{}},
 		},
 		Handlers:      map[string][]string{},
 		HandlerBodies: map[string]string{},
@@ -915,7 +915,9 @@ func TestMergeDocumentHandlersMerged(t *testing.T) {
 	kpEvents := main_.Handlers["save"]
 	kpFound := false
 	for _, ev := range kpEvents {
-		if ev == "key_pressed" { kpFound = true }
+		if ev == "key_pressed" {
+			kpFound = true
+		}
 	}
 	if !kpFound {
 		t.Errorf("save.key_pressed from base handler bodies should be present: %v", kpEvents)
@@ -924,7 +926,9 @@ func TestMergeDocumentHandlersMerged(t *testing.T) {
 	events := dash.Handlers["btn_refresh"]
 	found := false
 	for _, ev := range events {
-		if ev == "click" { found = true }
+		if ev == "click" {
+			found = true
+		}
 	}
 	if !found {
 		t.Errorf("btn_refresh.click missing after merge: %v", events)
@@ -986,8 +990,12 @@ end`
 	merged := MergeDocument(base, gen)
 
 	hdr := findCell(firstForm(merged), "header")
-	if hdr == nil { t.Fatal("header cell missing") }
-	if hdr.Width != 6 { t.Errorf("header.width=%d want 6 (gen wins)", hdr.Width) }
+	if hdr == nil {
+		t.Fatal("header cell missing")
+	}
+	if hdr.Width != 6 {
+		t.Errorf("header.width=%d want 6 (gen wins)", hdr.Width)
+	}
 	if findCell(firstForm(merged), "sidebar") == nil {
 		t.Error("sidebar (base-only cell) should be preserved")
 	}
@@ -1019,11 +1027,14 @@ end`
 	}
 }
 
-
 func TestMergeDocumentNilSafety(t *testing.T) {
 	d, _ := Import(sampleLua, "d.lua")
-	if MergeDocument(nil, d) != d { t.Error("nil base") }
-	if MergeDocument(d, nil) != d { t.Error("nil gen") }
+	if MergeDocument(nil, d) != d {
+		t.Error("nil base")
+	}
+	if MergeDocument(d, nil) != d {
+		t.Error("nil gen")
+	}
 }
 
 func TestImportMergeEndpoint(t *testing.T) {
@@ -1040,7 +1051,9 @@ end`
 
 	// Reload to get the doc.
 	_, body := httpJSON(t, "GET", baseURL+"/api/form", nil)
-	var loaded struct { Doc Document `json:"doc"` }
+	var loaded struct {
+		Doc Document `json:"doc"`
+	}
 	json.Unmarshal(body, &loaded)
 
 	// Import a new control via merge.
@@ -1101,7 +1114,9 @@ end`
 	if code != 200 {
 		t.Fatalf("replace import status=%d body=%s", code, body)
 	}
-	var r struct { Doc Document `json:"doc"` }
+	var r struct {
+		Doc Document `json:"doc"`
+	}
 	json.Unmarshal(body, &r)
 	if firstForm(&r.Doc).Name != "newform" {
 		t.Errorf("expected new form, got %+v", firstForm(&r.Doc))
@@ -1179,9 +1194,15 @@ func TestRebuildLuaIdempotent(t *testing.T) {
 		b := strings.Split(out, "\n")
 		for i := 0; i < len(a) || i < len(b); i++ {
 			av, bv := "⟂", "⟂"
-			if i < len(a) { av = a[i] }
-			if i < len(b) { bv = b[i] }
-			if av != bv { t.Logf("line %d:|%s| vs |%s|", i+1, av, bv) }
+			if i < len(a) {
+				av = a[i]
+			}
+			if i < len(b) {
+				bv = b[i]
+			}
+			if av != bv {
+				t.Logf("line %d:|%s| vs |%s|", i+1, av, bv)
+			}
 		}
 		t.Errorf("byte-identical expected when nothing changed")
 	}
@@ -1413,7 +1434,9 @@ func TestServerMultiFormEndToEnd(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("export status=%d body=%s", code, body)
 	}
-	var out struct { Lua string `json:"lua"` }
+	var out struct {
+		Lua string `json:"lua"`
+	}
 	json.Unmarshal(body, &out)
 	if strings.Count(out.Lua, `k.form.new("login"`) != 1 {
 		t.Error("assembled export must not duplicate login")

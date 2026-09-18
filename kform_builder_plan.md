@@ -487,3 +487,104 @@ panel.webview.onDidReceiveMessage(msg => {
 5. **File format**: `.kalua-form.json` as primary, Lua as export-only?
 
 Please confirm decisions on open questions, and I'll create detailed technical specs for Phase 1.
+
+---
+
+## Advanced Table & Looper Editor (Next Phase)
+
+Visual, tabbed configuration for the **table** and **looper** widgets replaces the raw
+JSON/text fields currently shown in the Properties panel. Both controls get an
+**Edit** button in the Properties header (right of the delete button) that opens a
+modal with three tabs. The two editors share one backend and one modal shell.
+
+### Shared Backend
+
+1. **Named DB handles** (`--db` becomes real; today the flag is parsed but never consumed):
+   - `internal/bindings/db.go`: `RegisterNamedDB(name, dsn) error` — `parseDSN`, `sql.Open`
+     + `Ping`, store into the existing `dbHandles` map under `name`, so `db="NAME"` resolves
+     everywhere `getDBHandle` is used. Empty/non-identifier names rejected.
+   - `QueryPreview(db, query string, limit int) (cols []string, rows [][]any, err error)` —
+     read-only guard (`select|with|pragma|explain` only), hard cap ~200 rows.
+   - Wire the dead `--db` flags in run (`internal/host/run.go`), serve (`internal/server`),
+     and builder (`builderCmd` → `builder.New`). A bad DSN fails startup fast. `k.disconnect_db()`
+     with no args closes named handles too (documented).
+   - Runtime tables/loopers set `db="NAME"` work in `KALUA run app.lua --db main=sqlite://x.db`
+     without a Lua-side `k.connect_db()`.
+2. **Static `db` export**: `lua_export.go` emits `db = "NAME"` as a literal for readable names;
+   only opaque runtime ids (`db_0x…`) keep the current skip + comment.
+3. **Builder endpoints** (`internal/builder/server.go`):
+   - `GET /api/db` → `{dbs: ["main", …]}` (empty ⇒ client hints `--db NAME=DSN`).
+   - `POST /api/db/query` `{db, query, limit}` → `QueryPreview` result; 400 when no DB configured.
+   - `POST /api/looper/rows` `{db, query, row, links, limit}` → server-rendered looper sample rows
+     (Phase 4 renderer reuse; pixel-faithful preview, no client widget code).
+   - Route `/static/tabulator/` proxying `internal/web/assets/tabulator` via a new exported
+     `web.StaticFS()` (no 437 KB copy).
+
+### Table Editor Modal (mode `table`)
+
+- Modal shell `#control-modal` (patterned on `#ai-panel`), tabs **Datasource / Table Setup / Preview**,
+  Apply/Cancel. Apply snapshots, writes into `ctrl.opts`, `dirty=true`, `schedulePreview()`.
+- **Datasource**: `tabulator` toggle (basic table vs Tabulator); DB dropdown (`/api/db`);
+  `query` textarea + `page_size`/`count_query`/`where`/`order_by`. **Run query** → mini results
+  grid via `/api/db/query`; **Generate columns** seeds the Setup columns list (`{field,title}`).
+  Static path: paste-JSON `data` rows when no DB (hybrid).
+- **Table Setup**: row-grid column editor — `field`, `title`, `sortable`, `headerFilter`
+  (none/text/number), `editor`, `width`, `align`, `frozen`; add/remove/reorder; writes `columns`
+  (array for Tabulator, `{key: title}` map for basic). Global pagination size + layout fold into
+  `tabulatorOptions` (deep-merge preserved).
+- **Preview**: builds the config from working state; DB active → debounced `/api/db/query` refill;
+  `new Tabulator(...)` in the modal (Tabulator JS/CSS loaded in the builder shell). Main canvas
+  stays inert so the library never swallows click-to-select. Basic mode → plain `<table>`.
+
+### Looper Editor Modal (mode `looper`)
+
+Same shell, tabs **Datasource / Row Template / Preview**; Edit shown for both `table` and `looper`.
+
+- **Datasource**: DB dropdown; `query`, `page_size`, `count_query`, `where`, `order_by`
+  (`where`/`order_by` are currently missing from `TYPE_OPTS.looper`). **Run query** → mini grid
+  + **Generate cells** seeds the template from result columns. No `tabulator` toggle (looper is
+  always the custom virtual-scroll widget).
+- **Row Template**: `links` row editor — `field` (select from query columns else free text),
+  `control` (cell key), `property` (default `"value"`); plus `columns` int. In Phase 4 this tab
+  becomes a mini form-designer (see below) while staying backward compatible with the legacy
+  value-cell model.
+- **Preview**: `.kalua-looper`-class markup from `/api/db/query` sample rows (no Tabulator, no WS);
+  no DB → config-only + hint.
+
+### Looper Row-Template Controls (runtime + builder)
+
+Looper rows render as real controls (Kalipso-style form-template rows) instead of plain value spans.
+
+- **Model**: new `opts.row` = array of control defs `{type, name, property, field, opts}`. Export
+  derives the existing `links` contract (`{{field, control, property}}`) from `row`; both are stored.
+  No `row` ⇒ legacy value-cell behavior (backward compatible).
+- **Renderer** (`internal/bindings`): `BuildLooperRowHTML(L, rowDefs, rowData) string` — per template
+  control set `form`/`name` synthetically, inject `value` from `rowData[field]`, call the existing
+  `renderControl` (ids `c:<looper>:<ctrl>:<idx>`). v1 cell types: `label`, `textbox` (display),
+  `image`, `checkbox` (display), rendered read-only.
+- **Session pager** (`internal/session` `dispatchDBLooperPage`/`looperBatchRows`): ctrl with `row`
+  produces `{index, html}` batch rows via the renderer; `renderLooper` adds `data-k-looper-html="1"`.
+- **Client** (`app.js` `handleLooperDBBatch`): insert server-rendered `html` rows directly (skip the
+  template-clone/text path); event delegation excludes `.kalua-looper-row` scopes so row inputs never
+  fire normal control events.
+
+### Tests & Docs
+
+- Go: named-DB registration + `QueryPreview` against `t.TempDir()` SQLite; export literals (`db="NAME"`,
+  `links` derived from `row`); builder e2e `/api/db`, `/api/db/query`, `/api/looper/rows`;
+  `BuildLooperRowHTML` (bound values, escaping, read-only); session e2e batch with `row` (html rows);
+  run-mode `--db` smoke test.
+- JS: `node --check` on `builder.js` / `app.js`.
+- Docs: AGENTS.md feature note, `api_doc.go` (named DBs + looper `row`/`links`), `KALUA.ini.sample`
+  `[BUILDER] db=`.
+
+### Sequencing
+
+Phase 1 (shared backend) → Phase 4 runtime renderer → Phase 2 (table modal) → Phase 3 + Phase 4 UI
+(modal shell built once, `table`/`looper` modes). `node --check` + `go test ./...` green throughout.
+
+### Out of Scope (v1)
+
+Interactive looper-row controls firing host events (editable inputs/combos per row), per-row click
+handlers, grid/cell layout inside looper rows, table DB write-back / edit-in-grid, function-valued
+Tabulator column props (formatters), looper reuse of the table's drag UI.

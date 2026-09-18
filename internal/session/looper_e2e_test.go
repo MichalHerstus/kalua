@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,6 +286,122 @@ end
 	}
 	if v := lp.RawGetString("value"); v != glua.LNil {
 		t.Errorf("looper control value set to %v, want nil", v)
+	}
+}
+
+// TestRealLooperRowTemplates runs a session whose looper uses opts.row
+// (row-template controls) and no links table. The pager derives DB links from
+// the row defs and answers looper_scroll_request with server-rendered HTML rows
+// ({index, html}) carrying escaped bound values and per-row control ids.
+func TestRealLooperRowTemplates(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "test.db")
+	script := filepath.Join(tmp, "app.lua")
+	src := `
+function main()
+  local db = k.connect_sqlite(%q)
+  k.sql(db, "CREATE TABLE items (id INTEGER, name TEXT, is_active INTEGER)")
+  for i = 1, 30 do
+    k.sql(db, "INSERT INTO items (id, name, is_active) VALUES (?, ?, ?)", i, "item<" .. i .. ">", (i %% 2))
+  end
+
+  k.form.new("f", {title="t"})
+  k.ctrl.looper("f", "lp", {
+    db = db,
+    query = "SELECT id, name, is_active FROM items",
+    page_size = 10,
+    row = {
+      {type="label",   name="lb_id",   property="text",   field="id"},
+      {type="textbox", name="tx_name", property="value",  field="name"},
+      {type="checkbox",name="ck_ok",   property="value",  field="is_active"},
+    },
+  })
+  k.form.show("f")
+end
+`
+	if err := os.WriteFile(script, []byte(fmt.Sprintf(src, dbPath)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New("t1", script, bindings.Options{AllowFS: []string{tmp}}, tLogger{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	out := make(chan outboxWire, 32)
+	go func() {
+		for msg := range s.Outbox() {
+			out <- outboxWire{Type: msg.Type, Selector: msg.Selector, Data: msg.Data, Form: msg.Form, Ctrl: msg.Ctrl}
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	s.PostLooperScrollRequest("f", "lp", map[string]interface{}{
+		"start_idx": 1, "count": 10,
+	})
+
+	deadline := time.After(4 * time.Second)
+	var got string
+	for {
+		select {
+		case w := <-out:
+			if w.Type != "looper_db_batch" {
+				continue
+			}
+			got = w.Data
+			goto done
+		case <-deadline:
+			t.Fatalf("timed out waiting for looper_db_batch")
+		}
+	}
+done:
+	var payload struct {
+		Rows []struct {
+			Index int                    `json:"index"`
+			Data  map[string]interface{} `json:"data"`
+			HTML  string                 `json:"html"`
+		} `json:"rows"`
+		HasMore  bool `json:"has_more"`
+		LastPage int  `json:"last_page"`
+	}
+	if err := json.Unmarshal([]byte(got), &payload); err != nil {
+		t.Fatalf("looper_db_batch JSON: %v", err)
+	}
+	if payload.LastPage != 3 || !payload.HasMore {
+		t.Errorf("last_page=%d has_more=%v, want 3/true", payload.LastPage, payload.HasMore)
+	}
+	if len(payload.Rows) != 10 {
+		t.Fatalf("batch rows = %d, want 10", len(payload.Rows))
+	}
+	first := payload.Rows[0]
+	if first.Index != 1 {
+		t.Errorf("first row index = %d, want 1", first.Index)
+	}
+	if first.HTML == "" {
+		t.Fatal("row-template batch rows must carry html")
+	}
+	for _, want := range []string{
+		`data-k-looper-index="1"`,
+		`id="c:lp:lb_id:1"`,
+		`id="c:lp:tx_name:1"`,
+		`id="c:lp:ck_ok:1"`,
+		`data-k-looper-control="tx_name"`,
+	} {
+		if !strings.Contains(first.HTML, want) {
+			t.Errorf("row html missing %q:\n%s", want, first.HTML)
+		}
+	}
+	// Bound values are escaped (name contains literal < >).
+	if !strings.Contains(first.HTML, "item&lt;1&gt;") {
+		t.Errorf("row html should contain escaped bound value:\n%s", first.HTML)
+	}
+	if strings.Contains(first.HTML, "item<1>") {
+		t.Errorf("row html must not contain raw bound value:\n%s", first.HTML)
+	}
+	// Row-template controls are display-only spans, never editable inputs.
+	if strings.Contains(got, "<input") || strings.Contains(got, "<textarea") {
+		t.Errorf("row-template controls must render read-only, got inputs in batch")
 	}
 }
 

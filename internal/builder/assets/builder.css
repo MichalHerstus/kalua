@@ -327,3 +327,87 @@ button.ai-toggle { display: flex; align-items: center; gap: 6px; }
 }
 #btn-del-form:hover { border-color: var(--red); }
 #btn-del-form[hidden] { display: none; }
+
+/* ---------- table / looper editor modal ---------- */
+summary .ctrl-edit-btn {
+  margin-left: 8px; padding: 0 8px; line-height: 1.3;
+}
+.control-modal {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 640px; max-width: 92vw;
+  background: var(--panel); border-left: 1px solid var(--border);
+  box-shadow: -4px 0 12px rgba(0,0,0,.18);
+  z-index: 31; display: flex; flex-direction: column; padding: 10px 14px;
+}
+.control-modal.hidden { display: none; }
+.cm-head { display: flex; align-items: center; gap: 8px; }
+.cm-head h2 { flex: 1; margin: 0; font-size: 15px; }
+.cm-tabs { display: flex; gap: 6px; margin: 8px 0; }
+.cm-tabs button { flex: 1; }
+.cm-tabs button.sel { background: var(--sel); border-color: var(--accent); }
+.cm-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.cm-tabpane { padding: 2px 0; }
+.cm-hint { color: var(--muted); font-size: 11px; margin: 4px 0 8px; }
+.cm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.cm-body label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+.cm-body label.wide { width: 100%; }
+.cm-body label.row { flex-direction: row; align-items: center; gap: 6px; margin: 6px 0; }
+.cm-body label.chk {
+  flex-direction: row; align-items: center; gap: 4px; white-space: nowrap;
+  color: var(--fg); font-size: 11px;
+}
+.cm-body textarea, .cm-body input[type="text"], .cm-body input[type="number"],
+.cm-body select {
+  font-size: 12px; padding: 3px 6px;
+}
+.cm-body textarea { font: 11px/1.45 ui-monospace, Menlo, monospace; resize: vertical; }
+.cm-run { display: flex; gap: 6px; margin: 10px 0 6px; flex-wrap: wrap; }
+.cm-table {
+  width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 6px;
+  border: 1px solid var(--border); border-radius: 5px;
+}
+.cm-table th {
+  text-align: left; padding: 4px 8px; background: var(--sel);
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.cm-table td { padding: 3px 8px; border-bottom: 1px solid var(--border); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cm-datasource-out { overflow: auto; max-height: 220px; }
+.cm-colrow {
+  display: flex; align-items: center; gap: 6px; padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.cm-colrow .mv, .cm-colrow .del { min-width: 26px; padding: 0 4px; }
+.cm-colrow input[data-cmcolf="field"], .cm-colrow input[data-cmlink="field"] { flex: 2; }
+.cm-colrow input[data-cmcolf="title"], .cm-colrow input[data-cmlink="control"],
+.cm-colrow input[data-cmlink="property"] { flex: 1; }
+.cm-colrow input[data-cmcolf="editor"] { flex: 1; }
+.cm-colrow input[data-cmcolf="width"] { width: 60px; }
+.cm-colrow select[data-cmcolf="headerFilter"], .cm-colrow select[data-cmcolf="align"] { width: 110px; }
+.cm-actions-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.cm-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); margin-top: 8px; }
+#cm-preview-box { overflow: auto; }
+#cm-preview-box .tabulator { font-size: 12px; }
+#cm-data.baderr { border-color: var(--red); }
+.cm-colrow select[data-cmrowf="type"] { width: 130px; }
+.cm-colrow input[data-cmrowf="name"] { flex: 1.4; }
+.cm-colrow input[data-cmrowf="field"] { flex: 1.2; }
+.cm-colrow select[data-cmrowf="property"] { width: 110px; }
+.cm-colrow .opt { min-width: 30px; padding: 0 6px; }
+.cm-add-row { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.cm-add-row label { color: var(--muted); font-size: 12px; }
+.cm-add-row select { width: 150px; }
+.cm-cell-opts {
+  margin: 8px 4px; padding: 6px 10px; border: 1px dashed var(--border);
+  border-radius: 5px; background: var(--bg);
+}
+.cm-cell-opts .cm-grid { grid-template-columns: repeat(4, 1fr); }
+.cm-cell-opts .opt.close { margin-top: 4px; }
+.cm-cell-opts label { font-size: 11px; }
+.looper-preview {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 6px; max-height: 300px; overflow: auto;
+}
+.looper-preview .looper-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 4px 6px; border-bottom: 1px solid var(--border);
+}
+.looper-preview .looper-row:last-child { border-bottom: none; }

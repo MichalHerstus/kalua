@@ -625,6 +625,11 @@ body {
     height: 1px;
 }
 
+/* Server-rendered looper row-template controls stay compact and inert. */
+.kalua-looper-cell > .kalua-control {
+    margin-bottom: 0;
+}
+
 /* Chart control (Chart.js) */
 .kalua-chart-container {
     position: relative;

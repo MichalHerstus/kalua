@@ -64,7 +64,7 @@ Usage: KALUA <command> [args...]
 Commands:
   run     <app.lua> [flags]   Run app as web app (--watch hot-reloads on change)
   serve   <app.lua> [flags]   Run app as headless API server
-  check   <app.lua>           Validate script (syntax, unknown k.*, main)
+  check   <app.lua> [flags]   Validate script; --format/-w/-l/-d format it gofmt-style
    builder <app.lua|form.json> Visual form builder (opens browser)
    ai      AI builder (generate, fix, validate scripts)
    version                     Print version
@@ -169,6 +169,11 @@ func runCmd(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Pre-register named --db handles (db="NAME" in scripts, table/looper rows).
+	if code := registerNamedDBs(dbFlag.values); code != int(host.ExitOK) {
+		return code
+	}
+
 	server := web.NewServer("127.0.0.1", *port, *sessionLimit,
 		bindings.Options{AllowFS: allowFSFlag.values, Verbose: *verbose}, host.NewLogger(*verbose))
 
@@ -233,16 +238,28 @@ func checkCmd(args []string) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var (
-		verbose = fs.Bool("v", false, "Verbose logging")
-		iniFlag = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
+		verbose  = fs.Bool("v", false, "Verbose logging")
+		iniFlag  = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
+		formatTo = fs.Bool("format", false, "Print formatted source to stdout (exit 0 even when changed)")
+		writeOut = fs.Bool("w", false, "Write formatted source back in place (permissions preserved)")
+		listOnly = fs.Bool("l", false, "List files whose formatting differs (exit 1 if any)")
+		diffOut  = fs.Bool("d", false, "Print a 0-context unified diff of the formatting changes (exit 1 if any)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return int(host.ExitUsage)
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "check: requires exactly one script argument")
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "check: requires a script argument")
 		return int(host.ExitUsage)
 	}
+	// Two-pass parse so trailing flags after the first script work
+	// (e.g. `check app.lua -w`); multi-file runs are gofmt-style flags-first.
+	if err := fs.Parse(rest[1:]); err != nil {
+		return int(host.ExitUsage)
+	}
+	scripts := append([]string{rest[0]}, fs.Args()...)
+
 	ini, err := loadConfig(*iniFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check: %v\n", err)
@@ -252,9 +269,29 @@ func checkCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "check:", err)
 		return int(host.ExitUsage)
 	}
-	script := fs.Arg(0)
+
+	// Format modes (gofmt-style, -w wins over -d over -l over --format).
+	var fm formatMode
+	switch {
+	case *writeOut:
+		fm = formatWrite
+	case *diffOut:
+		fm = formatDiff
+	case *listOnly:
+		fm = formatList
+	case *formatTo:
+		fm = formatStdout
+	}
+	if fm != formatNone {
+		return runFormat(fm, scripts)
+	}
+
+	if len(scripts) != 1 {
+		fmt.Fprintln(os.Stderr, "check: requires exactly one script argument")
+		return int(host.ExitUsage)
+	}
 	cfg := host.RunConfig{
-		ScriptPath: script,
+		ScriptPath: scripts[0],
 		Verbose:    *verbose,
 	}
 	// check reuses RunConfig but only does static check; we just call checker directly
@@ -398,6 +435,11 @@ func serveCmd(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Pre-register named --db handles for the workers.
+	if code := registerNamedDBs(dbFlag.values); code != int(host.ExitOK) {
+		return code
+	}
+
 	cfg := server.Config{
 		Host:        *hostFlag,
 		Port:        *port,
@@ -464,7 +506,10 @@ func builderCmd(args []string) int {
 		aiBaseURL = fs.String("base-url", "", "AI base URL (overrides KALUA_AI_BASE_URL)")
 		aiKeyEnv  = fs.String("api-key-env", "KALUA_AI_API_KEY", "Env var holding the AI API key")
 		iniFlag   = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
+		dbFlag    = multiFlag{}
 	)
+	fs.Var(&dbFlag, "db", "Pre-register DB connection for live previews: NAME=DSN (repeatable)")
+	fs.Var(&dbFlag, "d", "Shorthand for --db")
 	fs.IntVar(port, "p", 9001, "Shorthand for --port")
 	fs.BoolVar(noBrowser, "n", false, "Shorthand for --no-browser")
 
@@ -486,6 +531,12 @@ func builderCmd(args []string) int {
 	if err := ini.ApplyFlags(fs, "builder", nil); err != nil {
 		fmt.Fprintln(os.Stderr, "builder:", err)
 		return int(host.ExitUsage)
+	}
+
+	// Pre-register named --db handles so the builder can run live preview
+	// queries against them (/api/db, /api/db/query).
+	if code := registerNamedDBs(dbFlag.values); code != int(host.ExitOK) {
+		return code
 	}
 
 	srv, err := builder.New(file, *hostFlag, *port)
@@ -515,6 +566,16 @@ func builderCmd(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "KALUA Form Builder: %s\n", srv.URL())
 	srv.Run(ctx)
+	return int(host.ExitOK)
+}
+
+// registerNamedDBs pre-registers each --db NAME=DSN spec (the dbFlag values
+// are parsed into configs elsewhere). Returns the exit code on failure.
+func registerNamedDBs(dbs []string) int {
+	if err := bindings.RegisterNamedDBPairs(dbs); err != nil {
+		fmt.Fprintf(os.Stderr, "--db: %v\n", err)
+		return int(host.ExitError)
+	}
 	return int(host.ExitOK)
 }
 

@@ -64,22 +64,22 @@ func Import(src, fileName string) (*Document, error) {
 }
 
 type formDef struct {
-	name         string
-	title        string
-	layout       string
-	align        string
-	gap          *int
-	cells        []*CellDef
-	controls     []*Control
-	handlers     map[string][]string
-	bodies       map[string]string
-	notes        []string
-	starts       []int // owned statement start lines (1-based)
-	endsMax      []int // owned statement max descendant line (before bracket-close expansion)
-	keys         []string // parallel body key ("@form.event" / "ctrl.event"/"")
-	lines        [][]int
-	indent       string
-	hasShow      bool
+	name     string
+	title    string
+	layout   string
+	align    string
+	gap      *int
+	cells    []*CellDef
+	controls []*Control
+	handlers map[string][]string
+	bodies   map[string]string
+	notes    []string
+	starts   []int    // owned statement start lines (1-based)
+	endsMax  []int    // owned statement max descendant line (before bracket-close expansion)
+	keys     []string // parallel body key ("@form.event" / "ctrl.event"/"")
+	lines    [][]int
+	indent   string
+	hasShow  bool
 }
 
 type importer struct {
@@ -578,7 +578,7 @@ func (im *importer) finish() {
 				return b
 			}
 		}
-		return len(im.srcLines)+1
+		return len(im.srcLines) + 1
 	}
 	for _, fd := range im.forms {
 		var lines [][]int
@@ -589,7 +589,7 @@ func (im *importer) finish() {
 			if fd.endsMax[i] > start {
 				// multi-line statement: extend past the closing bracket line,
 				// but never into the next statement or a block "end".
-				end = boundAfter(fd.endsMax[i])-1
+				end = boundAfter(fd.endsMax[i]) - 1
 				if end < fd.endsMax[i] {
 					end = fd.endsMax[i]
 				}
