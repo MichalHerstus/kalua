@@ -108,6 +108,7 @@ func runCmd(args []string) int {
 		sessionLimit = fs.Int("session-limit", 8, "Max concurrent browser tabs")
 		verbose      = fs.Bool("v", false, "Verbose logging")
 		testMode     = fs.Bool("test", false, "Run in test mode (headless, no server)")
+		jsonOutput   = fs.Bool("json", false, "Emit the headless result as JSON (with --test)")
 		replOnError  = fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
 		debugMode    = fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
 		watch        = fs.Bool("watch", false, "Reload the app automatically when the script changes on disk")
@@ -160,6 +161,9 @@ func runCmd(args []string) int {
 		}
 		if *debugMode {
 			fmt.Fprintln(os.Stderr, "warning: --debug (EmmyLua debugger) not yet implemented")
+		}
+		if *jsonOutput {
+			return runTestJSON(cfg)
 		}
 		return int(host.Run(cfg))
 	}
@@ -244,6 +248,7 @@ func checkCmd(args []string) int {
 		writeOut = fs.Bool("w", false, "Write formatted source back in place (permissions preserved)")
 		listOnly = fs.Bool("l", false, "List files whose formatting differs (exit 1 if any)")
 		diffOut  = fs.Bool("d", false, "Print a 0-context unified diff of the formatting changes (exit 1 if any)")
+		jsonOut  = fs.Bool("json", false, "Emit the check result as JSON (issues carry line/col)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return int(host.ExitUsage)
@@ -283,7 +288,7 @@ func checkCmd(args []string) int {
 		fm = formatStdout
 	}
 	if fm != formatNone {
-		return runFormat(fm, scripts)
+		return runFormat(fm, scripts, *jsonOut)
 	}
 
 	if len(scripts) != 1 {
@@ -295,10 +300,10 @@ func checkCmd(args []string) int {
 		Verbose:    *verbose,
 	}
 	// check reuses RunConfig but only does static check; we just call checker directly
-	return runCheck(cfg)
+	return runCheck(cfg, *jsonOut)
 }
 
-func runCheck(cfg host.RunConfig) int {
+func runCheck(cfg host.RunConfig, jsonOut bool) int {
 	src, err := os.ReadFile(cfg.ScriptPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot read %s: %v\n", cfg.ScriptPath, err)
@@ -308,6 +313,17 @@ func runCheck(cfg host.RunConfig) int {
 		return int(host.ExitError)
 	}
 	res := checker.Check(string(src), cfg.ScriptPath)
+	if jsonOut {
+		writeJSON(checkResult{
+			OK:     len(res.Errors) == 0,
+			Files:  1,
+			Issues: issuesJSON(cfg.ScriptPath, res.Issues),
+		})
+		if len(res.Errors) > 0 {
+			return int(host.ExitError)
+		}
+		return int(host.ExitOK)
+	}
 	if len(res.Errors) > 0 {
 		for _, e := range res.Errors {
 			fmt.Fprintln(os.Stderr, e)
@@ -321,24 +337,39 @@ func runCheck(cfg host.RunConfig) int {
 func newCmd(args []string) int {
 	fs := flag.NewFlagSet("new", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	if err := fs.Parse(args); err != nil {
+	var (
+		templateName = fs.String("template", "", "Scaffold template: run-form (default), run-crud, serve-http, serve-ws, serve-tcp, serve-all")
+		jsonOut      = fs.Bool("json", false, "Emit the creation result as JSON")
+	)
+	// Two-pass parse so flags may appear before or after the name
+	// (e.g. `new app.lua --template serve-all`).
+	name, err := parseArgsScript(fs, args)
+	if err != nil {
 		return int(host.ExitUsage)
 	}
-	if fs.NArg() != 1 {
+	if name == "" {
 		fmt.Fprintln(os.Stderr, "new: requires exactly one name argument")
 		return int(host.ExitUsage)
 	}
-	name := fs.Arg(0)
-	path := name + ".lua"
-	if _, err := os.Stat(path); err == nil {
-		fmt.Fprintf(os.Stderr, "%s already exists\n", path)
+	path, err := resolveScriptName(name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "new: %v\n", err)
 		return int(host.ExitError)
 	}
-	if err := os.WriteFile(path, []byte(template), 0o644); err != nil {
+	body, err := selectTemplate(*templateName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "new: %v\n", err)
+		return int(host.ExitUsage)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "cannot write %s: %v\n", path, err)
 		return int(host.ExitIOError)
 	}
-	fmt.Printf("Created %s\n", path)
+	if *jsonOut {
+		writeJSON(checkResult{OK: true, Files: 1, Message: "Created " + path})
+	} else {
+		fmt.Printf("Created %s\n", path)
+	}
 	return int(host.ExitOK)
 }
 
@@ -375,7 +406,15 @@ func serveCmd(args []string) int {
 		fs.Int("workers", 4, "Number of worker processes")
 		fs.String("mode", "http", "Server mode: http, ws, tcp, or comma-separated combination")
 		fs.Bool("v", false, "Verbose logging")
+		fs.Bool("test", false, "Run once as a headless smoke test (ephemeral port, PASS/FAIL)")
+		fs.Bool("json", false, "Emit the smoke-test result as JSON (with --test)")
 		fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
+		fs.Var(&multiFlag{}, "http", "HTTP probe 'METHOD /path' against handle_http (repeatable, with --test)")
+		fs.Int("expect-status", 0, "Expected HTTP status for --http probes (default 200)")
+		fs.String("expect-body-json", "", "Object of key/value assertions on --http probe bodies")
+		fs.String("expect-contains", "", "Substring assertion on --http probe bodies")
+		fs.String("ws-echo", "", "Payload sent to handle_ws; any reply passes the ws probe")
+		fs.String("tcp-echo", "", "Payload sent to handle_tcp; any reply passes the tcp probe")
 		fs.Var(&multiFlag{}, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 		fs.Var(&multiFlag{}, "d", "Shorthand for --db")
 		fs.Var(&multiFlag{}, "arg", "Seed ARGS table: K=V (repeatable)")
@@ -398,10 +437,19 @@ func serveCmd(args []string) int {
 		debugMode   = fs.Bool("debug", false, "Enable EmmyLua debugger per worker (Tier 2, not yet implemented)")
 		debugWorker = fs.Bool("debug-worker", false, "Attach debugger to each worker (Tier 2, not yet implemented)")
 		iniFlag     = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
+		testMode    = fs.Bool("test", false, "Run once as a headless smoke test (ephemeral port, PASS/FAIL)")
+		jsonOutput  = fs.Bool("json", false, "Emit the smoke-test result as JSON (with --test)")
+		expectStatus = fs.Int("expect-status", 0, "Expected HTTP status for --http probes (default 200)")
+		expectBodyJSON = fs.String("expect-body-json", "", "Object of key/value assertions on --http probe bodies")
+		expectContain  = fs.String("expect-contains", "", "Substring assertion on --http probe bodies")
+		wsEcho     = fs.String("ws-echo", "", "Payload sent to handle_ws; any reply passes the ws probe")
+		tcpEcho    = fs.String("tcp-echo", "", "Payload sent to handle_tcp; any reply passes the tcp probe")
+		httpProbes = multiFlag{}
 		dbFlag      = multiFlag{}
 		argFlag     = multiFlag{}
 		allowFSFlag = multiFlag{}
 	)
+	fs.Var(&httpProbes, "http", "HTTP probe 'METHOD /path' against handle_http (repeatable, with --test)")
 	fs.Var(&dbFlag, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 	fs.Var(&dbFlag, "d", "Shorthand for --db")
 	fs.Var(&argFlag, "arg", "Seed ARGS table: K=V (repeatable)")
@@ -438,6 +486,29 @@ func serveCmd(args []string) int {
 	// Pre-register named --db handles for the workers.
 	if code := registerNamedDBs(dbFlag.values); code != int(host.ExitOK) {
 		return code
+	}
+
+	if *testMode {
+		if *debugMode || *debugWorker {
+			fmt.Fprintln(os.Stderr, "warning: --debug/--debug-worker (EmmyLua debugger) not yet implemented")
+		}
+		return runServeTest(serveTestOptions{
+			ScriptPath:    script,
+			Host:          *hostFlag,
+			Workers:       *workers,
+			Mode:          *mode,
+			DBs:           dbFlag.values,
+			Args:          argFlag.values,
+			AllowFS:       allowFSFlag.values,
+			Verbose:       *verbose,
+			JSON:          *jsonOutput,
+			HTTP:          httpProbes.values,
+			ExpectStatus:  *expectStatus,
+			ExpectJSON:    *expectBodyJSON,
+			ExpectContain: *expectContain,
+			WSEcho:        *wsEcho,
+			TCPEcho:       *tcpEcho,
+		})
 	}
 
 	cfg := server.Config{
@@ -603,16 +674,6 @@ func (m *multiFlag) Set(s string) error {
 	m.values = append(m.values, s)
 	return nil
 }
-
-const template = `-- minimal KALUA app
-function main()
-  local arg = ARGS[1]
-  if arg == nil then arg = "KALUA" end
-  k.print("Hello from " .. arg)
-  k.sleep(100)
-  k.quit()
-end
-`
 
 // addRunFlags registers the run-mode flags (used for --help output). The
 // values are discarded; only the definitions/usage text matter.

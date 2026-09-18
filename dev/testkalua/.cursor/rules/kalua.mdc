@@ -1,0 +1,17 @@
+---
+description: KALUA agentic development rules
+globs: ["**/*.lua"]
+---
+
+## KALUA Lua development
+
+Author and validate KALUA apps headlessly with the CLI. Guide:
+`./docs/agentic/development.md`. API reference (full copy):
+`./.opencode/skills/kalua-api/api.md`.
+
+- **Golden loop**: `./KALUA check app.lua` → `./KALUA run app.lua --test` → `./KALUA serve app.lua --test`
+- **Machine-readable output**: append `--json` to `check`, `run --test`, `serve --test`, and `new`
+- **Prefer `k.*` / `K.*` / expression functions over generic Lua** when an equivalent exists (`left`, `upper`, `round`, `sys_date`, `k.http_request`, `k.csv_parse`, `k.file_*`, …)
+- **Fix the suffix**: `new` appends `.lua` automatically and refuses to overwrite existing files.
+
+Exit codes: 0 ok · 1 script/runtime error · 2 usage · 3 I/O error.

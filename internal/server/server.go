@@ -44,7 +44,11 @@ type Server struct {
 	workerCh      chan *Worker
 	nextWorkerIdx atomic.Uint64 // round-robin cursor
 	httpServer    *http.Server
+	httpListener  net.Listener
 	tcpListener   net.Listener
+	httpAddr      string // actual bound HTTP/WS address (for Port 0)
+	tcpAddr       string // actual bound TCP address (for Port 0)
+	shutdownRan   atomic.Bool
 	wg            sync.WaitGroup
 	stopCh        chan struct{}
 }
@@ -83,8 +87,9 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Start HTTP server if mode includes http
-	if s.modeHas("http") {
+	// Start HTTP server if mode includes http or ws (WS upgrades over the
+	// same HTTP listener, so a ws-only server still needs it running).
+	if s.modeHas("http") || s.modeHas("ws") {
 		if err := s.startHTTP(ctx); err != nil {
 			return err
 		}
@@ -102,8 +107,20 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 
-	s.cfg.Logger.Printf("KALUA serve mode listening on %s:%d (workers=%d, mode=%s)",
-		s.cfg.Host, s.cfg.Port, s.cfg.Workers, s.cfg.Mode)
+	httpPort := s.cfg.Port
+	if s.httpAddr != "" {
+		if _, p, err := net.SplitHostPort(s.httpAddr); err == nil {
+			fmt.Sscanf(p, "%d", &httpPort)
+		}
+	}
+	tcpPort := httpPort + 1
+	if s.tcpAddr != "" {
+		if _, p, err := net.SplitHostPort(s.tcpAddr); err == nil {
+			fmt.Sscanf(p, "%d", &tcpPort)
+		}
+	}
+	s.cfg.Logger.Printf("KALUA serve mode listening on %s:%d (tcp=%d, workers=%d, mode=%s)",
+		s.cfg.Host, httpPort, tcpPort, s.cfg.Workers, s.cfg.Mode)
 
 	// Wait for context cancellation
 	<-ctx.Done()
@@ -115,10 +132,14 @@ func (s *Server) Run(ctx context.Context) error {
 // runShutdownHandlers invokes the optional shutdown() callback once, on the
 // first worker, before workers are torn down (spec §2.2 shutdown).
 func (s *Server) runShutdownHandlers() {
+	s.shutdownRan.Store(true)
 	if len(s.workers) > 0 {
 		s.workers[0].CallShutdown()
 	}
 }
+
+// ShutdownRan reports whether Run() reached the shutdown-handler phase.
+func (s *Server) ShutdownRan() bool { return s.shutdownRan.Load() }
 
 func (s *Server) modeHas(m string) bool {
 	// Check if mode contains the substring (e.g., "http,ws" contains "http")
@@ -169,8 +190,19 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	mux.HandleFunc("/ws", s.handleWSUpgrade)
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
+
+	// Bind the listener up front so Port 0 yields an ephemeral port the caller
+	// can discover via HTTPAddr(). Anybind error (port in use) surfaces from
+	// Run() instead of being swallowed by the goroutine.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+	s.httpListener = ln
+	s.httpAddr = ln.Addr().String()
+
 	s.httpServer = &http.Server{
-		Addr:              addr,
+		Addr:              s.httpAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -181,12 +213,11 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			s.cfg.Logger.Errorf("HTTP server error: %v", err)
 		}
 	}()
 
-	// Shutdown on context cancel
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -330,18 +361,24 @@ func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startWS(ctx context.Context) {
 	// WebSocket is handled via HTTP upgrade on same port
 	// This is just for logging
-	s.cfg.Logger.Printf("WebSocket endpoint available at ws://%s:%d/ws", s.cfg.Host, s.cfg.Port)
+	s.cfg.Logger.Printf("WebSocket endpoint available at ws://%s/ws", s.httpAddr)
 }
 
 func (s *Server) startTCP(ctx context.Context) error {
-	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port+1) // TCP on port+1
+	// TCP on port+1 by convention; ephemeral when the HTTP port is 0.
+	tcpPort := s.cfg.Port + 1
+	if s.cfg.Port == 0 {
+		tcpPort = 0
+	}
+	addr := fmt.Sprintf("%s:%d", s.cfg.Host, tcpPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	s.tcpListener = listener
+	s.tcpAddr = listener.Addr().String()
 
-	s.cfg.Logger.Printf("TCP server listening on %s", addr)
+	s.cfg.Logger.Printf("TCP server listening on %s", s.tcpAddr)
 
 	s.wg.Add(1)
 	go func() {
@@ -488,6 +525,9 @@ func (s *Server) shutdown() {
 	if s.httpServer != nil {
 		s.httpServer.Close()
 	}
+	if s.httpListener != nil {
+		s.httpListener.Close()
+	}
 	if s.tcpListener != nil {
 		s.tcpListener.Close()
 	}
@@ -505,6 +545,14 @@ func (s *Server) shutdown() {
 	}
 	s.wg.Wait()
 }
+
+// HTTPAddr returns the actual bound HTTP/WS address ("host:port"), useful
+// when Port 0 requested an ephemeral port.
+func (s *Server) HTTPAddr() string { return s.httpAddr }
+
+// TCPAddr returns the actual bound TCP address ("host:port"), useful when
+// Port 0 requested an ephemeral port.
+func (s *Server) TCPAddr() string { return s.tcpAddr }
 
 // TLSConfig holds TLS configuration for HTTPS/WSS.
 type TLSConfig struct {

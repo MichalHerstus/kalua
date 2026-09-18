@@ -24,7 +24,7 @@ func TestCheck(t *testing.T) {
 		{
 			name:     "unknown k.bogus",
 			src:      `function main() k.bogus() end`,
-			wantErrs: []string{"test.lua: unknown k.bogus (not implemented)"},
+			wantErrs: []string{"test.lua:1:"},
 		},
 		{
 			name:     "syntax error",

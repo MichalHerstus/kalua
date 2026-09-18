@@ -68,7 +68,11 @@ func resultFromIssues(name string, issues []Issue) Result {
 func buildErrors(name string, issues []Issue) []string {
 	var out []string
 	for _, iss := range issues {
-		out = append(out, fmt.Sprintf("%s: %s", name, iss.Message))
+		if iss.Line > 0 {
+			out = append(out, fmt.Sprintf("%s:%d:%d: %s", name, iss.Line, iss.Col, iss.Message))
+		} else {
+			out = append(out, fmt.Sprintf("%s: %s", name, iss.Message))
+		}
 	}
 	return out
 }

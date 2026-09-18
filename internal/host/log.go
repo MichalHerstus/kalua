@@ -30,6 +30,16 @@ func NewLogger(verbose bool) *Logger {
 	return l
 }
 
+// NewLoggerWriter returns a logger writing to the supplied writers instead of
+// stdout/stderr. Useful for capturing headless --json output.
+func NewLoggerWriter(out, errOut io.Writer, verbose bool) *Logger {
+	l := &Logger{out: out, errOut: errOut, level: LevelInfo}
+	if verbose {
+		l.level = LevelTrace
+	}
+	return l
+}
+
 func (l *Logger) SetLevel(lv Level) { l.level = lv }
 
 func (l *Logger) Printf(format string, args ...any) {

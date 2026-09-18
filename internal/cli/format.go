@@ -29,8 +29,9 @@ const (
 //
 // Any formatting error (unparseable input, formatter bug) is reported to
 // stderr, nothing is written, and the exit code is ExitError.
-func runFormat(fm formatMode, scripts []string) int {
+func runFormat(fm formatMode, scripts []string, jsonOut bool) int {
 	status := int(host.ExitOK)
+	fr := formatResult{OK: true, Files: len(scripts)}
 	for _, s := range scripts {
 		src, err := os.ReadFile(s)
 		if err != nil {
@@ -57,19 +58,34 @@ func runFormat(fm formatMode, scripts []string) int {
 				fmt.Fprintf(os.Stderr, "%s: %v\n", s, err)
 				return int(host.ExitError)
 			}
+			fr.Changed = append(fr.Changed, s)
+			status = int(host.ExitOK)
 		case formatList:
 			if dirty {
-				fmt.Println(s)
+				if jsonOut {
+					fr.Changed = append(fr.Changed, s)
+				} else {
+					fmt.Println(s)
+				}
+				fr.OK = false
 				status = int(host.ExitError)
 			}
 		case formatDiff:
 			if dirty {
-				fmt.Print(format.Diff(s, string(src), string(formatted)))
+				if jsonOut {
+					fr.Changed = append(fr.Changed, s+"\n"+format.Diff(s, string(src), string(formatted)))
+				} else {
+					fmt.Print(format.Diff(s, string(src), string(formatted)))
+				}
+				fr.OK = false
 				status = int(host.ExitError)
 			}
 		default: // formatStdout
 			os.Stdout.Write(formatted)
 		}
+	}
+	if jsonOut && fm != formatStdout {
+		writeJSON(fr)
 	}
 	return status
 }

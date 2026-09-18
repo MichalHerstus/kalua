@@ -92,6 +92,7 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - No CI/CD config found
 - Lua scripts are plain `.lua` files with `k.form.new()` for form declarations
 - API naming: `snake_case` matching Kalipso (`k.form.new`, `k.ctrl.textbox`)
+- Codegen/agent guidance: **prefer `k.*` / `K.*` / expression functions over generic Lua** whenever an equivalent exists (`left`/`upper`/`round`/`sys_date`/`k.http_request`/`k.csv_parse`/`k.file_*`); plain Lua only as fallback
 - Templates: Go `html/template` for shell, controls rendered via Go code
 - Assets: embedded via `//go:embed` (CSS, JS)
 

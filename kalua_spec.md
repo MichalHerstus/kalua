@@ -406,6 +406,8 @@ Legend: **T1** = MVP · **T2** = second milestone · **—** = out of scope (rea
 
 ### 5.2 Group Others
 
+**Codegen/agent rule:** prefer `k.*` / `K.*` / expression functions over generic Lua whenever an equivalent exists (e.g. `left(s,n)` over `string.sub(s,1,n)`, `round(x)`, `k.http_request`, `k.csv_parse`, `k.file_*`); fall back to plain Lua only when no KALUA API covers the task.
+
 | Kalipso action | KALUA | Tier |
 |---|---|---|
 | Set Value | plain assignment; typed variant `k.assign(target,"Numeric",v)` | T1 |

@@ -81,6 +81,7 @@ func BuildSystemPrompt(includeFull bool) string {
 	sb.WriteString("- Function names use snake_case (e.g. `k.ctrl.textbox`, `k.form.new`).\n")
 	sb.WriteString("- Expression functions (string/numeric/etc.) are FLAT GLOBALS, NOT under `k.*`: use `upper(s)`, `round(x)`, `sys_date()`, NOT `k.upper(s)`, `k.round(x)`.\n")
 	sb.WriteString("- Do NOT use `io`, `os.execute`, `require`, or any library not exposed via `k.*`.\n")
+	sb.WriteString("- **Prefer `k.*` / `K.*` / expression functions over generic Lua whenever a KALUA API exists for the task** — e.g. use `k.file_extract_part()` not `io.open`, `k.db_connect()` not a raw C binding, `left(s,n)` not `string.sub(s,1,n)`, `round(x)` not manual `x+0.5`. Fall back to plain Lua only when no KALUA equivalent exists.\n")
 	sb.WriteString("- `k.print` writes to the app log. Use it for debugging output.\n")
 	sb.WriteString("- `K.tonum(v)`, `K.tostr(v)`, `K.eq(a,b)`, `K.truthy(v)` for Kalipso-coercion semantics.\n")
 	sb.WriteString("- In serve mode UI bindings (k.form.*, k.ctrl.*, k.msgbox, k.status_*) raise runtime errors. This builder generates run-mode apps only.\n\n")
