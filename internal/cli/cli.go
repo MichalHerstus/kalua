@@ -19,6 +19,7 @@ import (
 	"kalua/internal/config"
 	"kalua/internal/host"
 	"kalua/internal/lsp"
+	"kalua/internal/mcp"
 	"kalua/internal/server"
 	"kalua/internal/web"
 )
@@ -36,6 +37,10 @@ func Run(args []string) int {
 		return runCmd(args[1:])
 	case "check":
 		return checkCmd(args[1:])
+	case "test":
+		return testCmd(args[1:])
+	case "describe":
+		return describeCmd(args[1:])
 	case "new":
 		return newCmd(args[1:])
 	case "lsp":
@@ -46,6 +51,10 @@ func Run(args []string) int {
 		return builderCmd(args[1:])
 	case "ai":
 		return aiCmd(args[1:])
+	case "scenario":
+		return scenarioCmd(args[1:])
+	case "mcp":
+		return mcpCmd()
 	case "version":
 		fmt.Println("KALUA dev (phase 2)")
 		return int(host.ExitOK)
@@ -62,12 +71,16 @@ func printUsage() {
 Usage: KALUA <command> [args...]
 
 Commands:
-  run     <app.lua> [flags]   Run app as web app (--watch hot-reloads on change)
-  serve   <app.lua> [flags]   Run app as headless API server
-  check   <app.lua> [flags]   Validate script; --format/-w/-l/-d format it gofmt-style
-   builder <app.lua|form.json> Visual form builder (opens browser)
-   ai      AI builder (generate, fix, validate scripts)
-   version                     Print version
+  run       <app.lua> [flags]   Run app as web app (--watch hot-reloads on change)
+  serve     <app.lua> [flags]   Run app as headless API server
+  check     <app.lua> [flags]   Validate script; --format/-w/-l/-d format it gofmt-style
+  test      <app.lua> [flags]   Headless test: check + format + run/serve smoke (auto-detected)
+  scenario  <app.lua> [flags]   Run UI scenario test (--scenario file.json)
+  describe  <app.lua> [flags]   Structural overview: entry, forms, k.* API usage (AST-derived)
+  builder  <app.lua|form.json> Visual form builder (opens browser)
+  ai       AI builder (generate, fix, validate scripts)
+  mcp       Model Context Protocol server (stdio)
+  version                     Print version
 
 Run 'KALUA <command> -h' for command-specific flags.
 `)
@@ -387,6 +400,14 @@ func (stdioConn) Close() error                  { return nil }
 func lspCmd() int {
 	if err := lsp.Serve(stdioConn{in: os.Stdin, out: os.Stdout}, "dev"); err != nil {
 		fmt.Fprintf(os.Stderr, "lsp error: %v\n", err)
+		return int(host.ExitError)
+	}
+	return int(host.ExitOK)
+}
+
+func mcpCmd() int {
+	if err := mcp.ServeForTest(stdioConn{in: os.Stdin, out: os.Stdout}); err != nil {
+		fmt.Fprintf(os.Stderr, "mcp error: %v\n", err)
 		return int(host.ExitError)
 	}
 	return int(host.ExitOK)

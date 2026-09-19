@@ -17,8 +17,12 @@ var LuaBlockRE = regexp.MustCompile("(?s)" + "```" + "(?:lua)?\\s*\n(.*?)" + "``
 type GenerateRequest struct {
 	Request string // natural language description
 	Script  string // existing script to edit (empty = new)
-	// FullDoc controls whether BuildSystemPrompt includes the full API or the run-mode subset.
+	// FullDoc controls whether BuildSystemPrompt includes the full API or the mode subset.
 	FullDoc bool
+	// Mode selects the app shape: ModeRun (default / empty) or ModeServe.
+	// Serve mode enforces a serve entry point (handle_http/handle_ws/handle_tcp)
+	// and teaches the serve response contracts instead of the run UI surface.
+	Mode string
 	// History carries earlier user/assistant turns (oldest first) so a chat
 	// conversation can refine a request across multiple generations. Each
 	// ChatMessage must be Role "user" or "assistant"; the current Request is
@@ -41,6 +45,14 @@ func Generate(ctx context.Context, cfg ProviderConfig, req GenerateRequest) (*Ge
 	return generate(ctx, client, buildMessages(req), req)
 }
 
+// modeFor normalizes req.Mode to ModeRun or ModeServe (empty → run).
+func modeFor(req GenerateRequest) string {
+	if req.Mode == ModeServe {
+		return ModeServe
+	}
+	return ModeRun
+}
+
 // generate runs the single LLM generation then the validation→fix loop.
 // messages are pre-assembled (system + user) so streaming and non-streaming
 // share the same pipeline.
@@ -60,8 +72,9 @@ func generate(ctx context.Context, client *Client, messages []ChatMessage, req G
 	}
 	result.Logs = append(result.Logs, "Generated script from natural language request.")
 
+	mode := modeFor(req)
 	for attempt := 1; attempt <= maxFixRetries; attempt++ {
-		lintResult := lint(script)
+		lintResult := lint(script, mode)
 		if len(lintResult.Errors) == 0 {
 			result.Logs = append(result.Logs, fmt.Sprintf("Validation passed on attempt %d.", attempt))
 			return result, nil
@@ -70,7 +83,7 @@ func generate(ctx context.Context, client *Client, messages []ChatMessage, req G
 		if attempt == maxFixRetries {
 			break
 		}
-		fixScript, fixErr := fix(client, script, lintResult.Errors)
+		fixScript, fixErr := fix(client, script, lintResult.Errors, mode)
 		if fixErr != nil {
 			result.Logs = append(result.Logs, fmt.Sprintf("Fix attempt %d failed: %v", attempt, fixErr))
 			break
@@ -120,8 +133,9 @@ func GenerateStream(ctx context.Context, cfg ProviderConfig, req GenerateRequest
 		Logs:      []string{"Generated script from natural language request."},
 	}
 
+	mode := modeFor(req)
 	for attempt := 1; attempt <= maxFixRetries; attempt++ {
-		lintResult := lint(scriptText)
+		lintResult := lint(scriptText, mode)
 		if len(lintResult.Errors) == 0 {
 			result.Logs = append(result.Logs, fmt.Sprintf("Validation passed on attempt %d.", attempt))
 			emit(StreamEvent{Type: "done", Script: scriptText, Ok: true, Logs: result.Logs})
@@ -134,7 +148,7 @@ func GenerateStream(ctx context.Context, cfg ProviderConfig, req GenerateRequest
 			break
 		}
 		emit(StreamEvent{Type: "status", Text: fmt.Sprintf("Fixing errors (attempt %d)...", attempt)})
-		fixScript, fixErr := fix(client, scriptText, lintResult.Errors)
+		fixScript, fixErr := fix(client, scriptText, lintResult.Errors, mode)
 		if fixErr != nil {
 			result.Logs = append(result.Logs, fmt.Sprintf("Fix attempt %d failed: %v", attempt, fixErr))
 			emit(StreamEvent{Type: "status", Text: "Fix failed: " + fixErr.Error()})
@@ -144,7 +158,7 @@ func GenerateStream(ctx context.Context, cfg ProviderConfig, req GenerateRequest
 		scriptText = fixScript
 		result.Script = fixScript
 	}
-	emit(StreamEvent{Type: "done", Script: result.Script, Ok: false, Errors: lint(result.Script).Errors, Logs: result.Logs})
+	emit(StreamEvent{Type: "done", Script: result.Script, Ok: false, Errors: lint(result.Script, mode).Errors, Logs: result.Logs})
 	return result, nil
 }
 
@@ -155,11 +169,15 @@ func buildPrompt(req GenerateRequest) string {
 	return BuildUserPrompt(req.Request, "")
 }
 
-func fix(client *Client, script string, errors []string) (string, error) {
+func fix(client *Client, script string, errors []string, mode string) (string, error) {
 	errorText := strings.Join(errors, "\n")
 	prompt := fmt.Sprintf("Fix the following KALUA Lua script errors:\n\n%s\n\nScript:\n```lua\n%s\n```\n\nReturn the corrected script in a ```lua ... ``` block.", errorText, script)
+	appendix := KaluaComponentPrompt()
+	if mode == ModeServe {
+		appendix = KaluaServePrompt()
+	}
 	messages := []ChatMessage{
-		{Role: "system", Content: BuildSystemPrompt(false) + KaluaComponentPrompt()},
+		{Role: "system", Content: BuildSystemPromptFor(mode, false) + appendix},
 		{Role: "user", Content: prompt},
 	}
 	out, err := client.Completion(context.Background(), messages)
@@ -169,8 +187,15 @@ func fix(client *Client, script string, errors []string) (string, error) {
 	return extractLuaBlock(out), nil
 }
 
-func lint(script string) checker.Result {
-	return checker.Check(script, "ai-generated")
+// lint runs the static checker and, in serve mode, additionally requires a
+// serve entry point so a run-only app is rejected for serve-mode requests.
+func lint(script string, mode string) checker.Result {
+	res := checker.Check(script, "ai-generated")
+	if mode == ModeServe && len(res.Errors) == 0 && !checker.ServeMode(script, "ai-generated") {
+		res.Errors = append(res.Errors,
+			"serve mode requires a serve entry point: define handle_http(req), handle_ws(msg), or handle_tcp(msg)")
+	}
+	return res
 }
 
 // extractLuaBlock extracts Lua code from a ```lua ... ``` fence,

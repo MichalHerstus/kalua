@@ -18,4 +18,5 @@ of KALUA `.lua` apps. **pwd = this directory.** All tools are local.
 ./KALUA serve app.lua --test --json                        # headless API smoke
 ./KALUA serve app.lua --test --json --http "GET /healthz"  # headless API smoke with HTTP request
 ./KALUA new app --template serve-all                       # scaffold
+./KALUA mcp                                                # MCP stdio server (protocol 2025-06-18)
 ```

@@ -1,6 +1,6 @@
 # KALUA Makefile
 
-.PHONY: build test test-race fmt vet clean lint run serve lsp check new ai version gen-api check-api
+.PHONY: build test test-race fmt vet clean lint run serve lsp check new ai version gen-api check-api check-agents
 
 # Build the KALUA binary
 build:
@@ -108,13 +108,25 @@ help:
 	@echo "  ci           - Full CI pipeline (build + test-race + vet)"
 	@echo "  ext-build    - Build VSCode extension"
 	@echo "  ext-install  - Install VSCode extension"
-	@echo "  gen-api      - Generate API reference (_opencode/skills/kalua-api/api.md)"
-	@echo "  check-api    - Verify committed api.md matches generated output"
+	@echo "  gen-api      - Generate API reference (_opencode/skills/kalua-api/api.md) + quickref (docs/agentic/quickref.md)"
+	@echo "  check-api    - Verify committed api.md + quickref.md match generated output"
 
-# Generate API reference markdown from api_doc.go
+# Generate API reference markdown from api_doc.go, plus the compact quickref
+# card used by agents (docs/agentic/quickref.md).
 gen-api:
-	go run ./cmd/kalua-apidoc -o _opencode/skills/kalua-api/api.md
+	go run ./cmd/kalua-apidoc -o _opencode/skills/kalua-api/api.md -quickref docs/agentic/quickref.md
 
-# Check if committed api.md matches generated output (fails on drift)
+# Check if committed api.md + quickref.md match generated output (fails on drift)
 check-api:
 	go run ./cmd/kalua-apidoc -check
+
+# Verify agentic development artifacts exist and are wired correctly
+check-agents:
+	@test -f docs/agentic/development.md && echo "development.md exists" || (echo "ERROR: docs/agentic/development.md missing" && exit 1)
+	@test -f docs/agentic/quickref.md && echo "quickref.md exists" || (echo "ERROR: docs/agentic/quickref.md missing" && exit 1)
+	@test -f CLAUDE.md && echo "CLAUDE.md exists" || (echo "ERROR: CLAUDE.md missing" && exit 1)
+	@test -f .github/copilot-instructions.md && echo "copilot-instructions.md exists" || (echo "ERROR: .github/copilot-instructions.md missing" && exit 1)
+	@test -f .cursor/rules/kalua.mdc && echo "cursor rules exist" || (echo "ERROR: .cursor/rules/kalua.mdc missing" && exit 1)
+	@test -f AGENTS.md && echo "AGENTS.md exists" || (echo "ERROR: AGENTS.md missing" && exit 1)
+	@$(MAKE) check-api
+	@echo "All agentic artifacts verified"

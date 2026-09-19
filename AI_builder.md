@@ -142,7 +142,7 @@ Gaps that block *full* agentic development:
 
 ### P2 — Depth (larger builds)
 
-- **P2.1 Run-mode UI scenario testing** — `test runapp.lua --scenario scenarios/login.json`: `set_control → click → assert_value / assert_outbox / assert_msgbox`. Small harness driving `session.Session` inbox/outbox (same pattern as `internal/session/*_test.go`), exposed as a CLI command. Deepest new work — the real payoff for frontend logic.
+- **P2.1 Run-mode UI scenario testing** ✅ — `test runapp.lua --scenario scenarios/login.json`: `set_control → click → assert_value / assert_outbox / assert_msgbox`. Small harness driving `session.Session` inbox/outbox (same pattern as `internal/session/*_test.go`), exposed as a CLI command. Deepest new work — the real payoff for frontend logic. Implemented: `internal/scenario/` package with runner; `KALUA scenario app.lua --scenario file.json` and `KALUA test app.lua --scenario file.json` commands; auto-handles msgbox, popup, clipboard_get, pick_file outbox messages; global variable assertions; set_control/click/wait/timer steps.
 - **P2.2 `KALUA mcp` (stdio)** — expose `check`, `format`, `run_test`, `serve_test`, `describe`, `query_db`, `lsp_complete`, `lsp_hover` as MCP tools. Strongest agent-independence win (Copilot, Claude, Codex, Cursor, OpenCode all speak MCP); cheap once P0–P1 land since the components exist.
 
 ## 3. Effort summary
@@ -153,7 +153,7 @@ Gaps that block *full* agentic development:
 | **P1** | test aggregator, describe, ai serve, quickref, CI | ~1.5 weeks | Polished, one-command workflow for agents |
 | **P2** | UI scenarios, MCP server | ~3+ weeks | Deep frontend logic testing; universal agent interop |
 
-**Status**: planning only (2026-09-18) — nothing implemented yet. Next step when green-lit: P0.1–P0.4 (diagnostics + conventions, fast wins), then P0.3 (`serve --test`) and P0.5 (testbed wiring).
+**Status**: P0 complete, P1 complete, **P2.1 complete (2026-09-19)** — scenario testing implemented with `internal/scenario/` package and CLI integration. P2.2 (MCP) pending.
 
 ## 4. How OpenCode stays the testbed without coupling
 

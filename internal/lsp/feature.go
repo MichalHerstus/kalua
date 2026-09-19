@@ -382,6 +382,16 @@ func markdown(info bindings.Info) string {
 	return b.String()
 }
 
+// Markdown is the exported version of markdown for external callers (e.g., MCP tools).
+func Markdown(info bindings.Info) string {
+	return markdown(info)
+}
+
+// Match is the exported version of match for external callers (e.g., MCP tools).
+func Match(text string, cursor int) (*bindings.Info, int, int) {
+	return match(text, cursor)
+}
+
 // /////// Go-to-definition via a generated API reference stub /////////
 
 // ensureReference materializes a synthetic Lua source that declares every k.*

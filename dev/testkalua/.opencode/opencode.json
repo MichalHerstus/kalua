@@ -6,6 +6,13 @@
       "extensions": [".lua"]
     }
   },
+  "mcp": {
+    "kalua": {
+      "type": "local",
+      "command": ["./KALUA", "mcp"],
+      "enabled": true
+    }
+  },
   "permission": {
     "bash": {
       "commands": [
@@ -14,6 +21,7 @@
         "./KALUA serve *",
         "./KALUA new *",
         "./KALUA lsp",
+        "./KALUA mcp",
         "./KALUA version",
         "go build -o KALUA ./cmd/KALUA *",
         "go test ./..."

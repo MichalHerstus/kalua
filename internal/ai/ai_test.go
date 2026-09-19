@@ -203,14 +203,14 @@ func TestLintPasses(t *testing.T) {
 	res := lint(`function main()
   k.print("ok")
   k.quit()
-end`)
+end`, ModeRun)
 	if len(res.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", res.Errors)
 	}
 }
 
 func TestLintFails(t *testing.T) {
-	res := lint("k.nonexistent()")
+	res := lint("k.nonexistent()", ModeRun)
 	if len(res.Errors) == 0 {
 		t.Error("expected errors for unknown k.* reference")
 	}

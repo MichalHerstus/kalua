@@ -56,6 +56,7 @@ Flags (all subcommands):
   --base-url string   LLM base URL (default from KALUA.INI / env)
   --api-key-env string Env var for API key (default: KALUA_AI_API_KEY)
   --full-doc          Include full API doc in prompt (default: run-mode subset)
+  --mode string       App shape to generate: run (forms) or serve (headless API) (default run)
   --ini string        Path to KALUA.INI (default: ./KALUA.INI or $KALUA_INI)
 
 Configuration sources (precedence: flags > KALUA.INI > env > defaults):
@@ -126,6 +127,7 @@ func setAIFlags(fs *flag.FlagSet, f *aiFlags) {
 	fs.StringVar(&f.APIKeyEnv, "api-key-env", "KALUA_AI_API_KEY", "Env var for API key")
 	fs.StringVar(&f.Ini, "ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
 	fs.BoolVar(&f.FullDoc, "full-doc", false, "Include full API doc in prompt")
+	fs.StringVar(&f.Mode, "mode", "", "App shape to generate: run or serve (default run)")
 }
 
 type aiFlags struct {
@@ -136,6 +138,16 @@ type aiFlags struct {
 	Output     string
 	ScriptPath string
 	Ini        string
+	Mode       string
+}
+
+// aiMode normalizes f.Mode to an ai.GenerateRequest Mode value, defaulting to
+// ai.ModeRun. Unknown values fall back to run (the CLI help documents this).
+func aiMode(f *aiFlags) string {
+	if f.Mode == "serve" {
+		return ai.ModeServe
+	}
+	return ai.ModeRun
 }
 
 // aiProviderFor loads the KALUA.INI config for a parsed ai subcommand and
@@ -179,7 +191,7 @@ func aiGenerate(args []string) int {
 		return int(host.ExitIOError)
 	}
 	fmt.Fprintf(os.Stderr, "KALUA AI: generating from \"%s\" (endpoint: %s, model: %s)\n", request, cfg.BaseURL, cfg.Model)
-	req := ai.GenerateRequest{Request: request, FullDoc: f.FullDoc}
+	req := ai.GenerateRequest{Request: request, FullDoc: f.FullDoc, Mode: aiMode(f)}
 	ctx, cancel := aiCtx()
 	defer cancel()
 	result, err := ai.Generate(ctx, cfg, req)
@@ -235,7 +247,7 @@ func aiFix(args []string) int {
 		}
 		return int(host.ExitError)
 	}
-	req := ai.GenerateRequest{Request: "Fix the validation errors in this KALUA script", Script: string(src), FullDoc: f.FullDoc}
+	req := ai.GenerateRequest{Request: "Fix the validation errors in this KALUA script", Script: string(src), FullDoc: f.FullDoc, Mode: aiMode(f)}
 	fmt.Fprintf(os.Stderr, "KALUA AI: fixing %s...\n", scriptPath)
 	ctx, cancel := aiCtx()
 	defer cancel()

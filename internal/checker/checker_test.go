@@ -69,3 +69,42 @@ func TestIssuePositions(t *testing.T) {
 		t.Fatalf("syntax issue has wrong position: %+v", s.Issues)
 	}
 }
+
+func TestEntryMode(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"run", "function main() end", "run"},
+		{"serve-http", "function handle_http(req) return \"ok\" end", "serve"},
+		{"serve-ws", "function handle_ws(msg) end", "serve"},
+		{"serve-tcp", "function handle_tcp(msg) end", "serve"},
+		{"serve-priority", "function main() end\nfunction handle_http(req) return \"ok\" end", "serve"},
+		{"both-empty", "local x = 1", ""},
+		{"syntax-error", "function ", ""},
+		{"nested-do", "do\n  function main() end\nend", "run"},
+		{"nested-if", "if true then\n  function handle_http(req) return \"ok\" end\nend", "serve"},
+		{"method-only", "function t.handle_http() end", ""},
+	}
+	for _, c := range cases {
+		if got := EntryMode(c.src, c.name+".lua"); got != c.want {
+			t.Errorf("%s: EntryMode = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestServeMode(t *testing.T) {
+	if !ServeMode("function handle_ws(msg) end", "a.lua") {
+		t.Error("handle_ws should report serve mode")
+	}
+	if ServeMode("function main() end", "a.lua") {
+		t.Error("main should NOT report serve mode")
+	}
+	if ServeMode("function handle_wsx(msg) end", "a.lua") {
+		t.Error("handle_wsx must not match handle_ws")
+	}
+	if ServeMode("function alib.handle_tcp(msg) end", "a.lua") {
+		t.Error("method handle_tcp must not count as serve mode")
+	}
+}

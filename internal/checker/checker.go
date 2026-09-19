@@ -30,6 +30,79 @@ type Result struct {
 	Issues []Issue
 }
 
+// EntryMode describes the app's entry-point profile for the `test`
+// aggregator: "serve" when an HTTP/WS/TCP handler is defined, "run" when
+// main() is, "" when neither (Check reports that as an error).
+func EntryMode(src, name string) string {
+	hasHandlers, hasMain := entryPoints(src, name)
+	switch {
+	case hasHandlers:
+		return "serve"
+	case hasMain:
+		return "run"
+	}
+	return ""
+}
+
+// ServeMode reports whether the script declares any serve-mode handler
+// (handle_http/handle_ws/handle_tcp).
+func ServeMode(src, name string) bool {
+	hasHandlers, _ := entryPoints(src, name)
+	return hasHandlers
+}
+
+// scanBody recurses into the sub-statements an AST statement may contain so
+// nested function definitions (do/if/function bodies) are found too.
+func scanBody(s ast.Stmt, scan func([]ast.Stmt)) {
+	switch n := s.(type) {
+	case *ast.FuncDefStmt:
+		scan(n.Func.Stmts)
+	case *ast.DoBlockStmt:
+		scan(n.Stmts)
+	case *ast.WhileStmt:
+		scan(n.Stmts)
+	case *ast.RepeatStmt:
+		scan(n.Stmts)
+	case *ast.IfStmt:
+		scan(n.Then)
+		scan(n.Else)
+	case *ast.GenericForStmt:
+		scan(n.Stmts)
+	case *ast.NumberForStmt:
+		scan(n.Stmts)
+	case *ast.LocalAssignStmt:
+		for _, e := range n.Exprs {
+			if fn, ok := e.(*ast.FunctionExpr); ok {
+				scan(fn.Stmts)
+			}
+		}
+	}
+}
+
+// entryPoints parses the script once and reports which entry points exist.
+func entryPoints(src, name string) (hasHandlers, hasMain bool) {
+	stmts, err := parse.Parse(strings.NewReader(src), name)
+	if err != nil {
+		return false, false
+	}
+	var scan func(stmts []ast.Stmt)
+	scan = func(stmts []ast.Stmt) {
+		for _, s := range stmts {
+			if fd, ok := s.(*ast.FuncDefStmt); ok {
+				switch funcName(fd.Name) {
+				case "handle_http", "handle_ws", "handle_tcp":
+					hasHandlers = true
+				case "main":
+					hasMain = true
+				}
+			}
+			scanBody(s, scan)
+		}
+	}
+	scan(stmts)
+	return hasHandlers, hasMain
+}
+
 func Check(src, name string) Result {
 	chunk, err := parse.Parse(strings.NewReader(src), name)
 	if err != nil {

@@ -84,16 +84,66 @@ sb.WriteString("\nWhen generating a form app, structure the script as:\n")
 	return sb.String()
 }
 
+// KaluaServePrompt returns the serve-mode contract/template appendix for the
+// AI system prompt. Run-mode apps append KaluaComponentPrompt (a UI component
+// library); serve-mode apps append this instead, teaching the headless entry
+// points, the response contract, and the safe API surface. The host preloads
+// req.Mode so the model stays on the right shape from the first token.
+func KaluaServePrompt() string {
+	var sb strings.Builder
+	sb.WriteString("\n## Serve Entry Points (headless API workers)\n")
+	sb.WriteString("The app runs as a worker pool. `k.shared.*` is the only shared memory across workers; every other global is per-worker. Define any of these top-level functions:\n\n")
+	sb.WriteString(`### handle_http(req) — HTTP request handler (required for HTTP mode)
+- req fields: path, method, headers (table), query (string or list), query_raw, body, remote_addr, tls
+- Return one of:
+  - nil → 200 with empty body
+  - "plain text" → 200 text/plain
+  - {json = value} → 200 application/json with value JSON-encoded
+  - {status = 404} → status code with empty body
+  - {status = n, headers = {...}, body = "..."} → full response (headers values may be strings or lists)
+- Any thrown error → 500 with the error text.
+
+### handle_ws(msg) — WebSocket message handler
+- msg = {type = "open"|"text"|"binary"|"close", data =, client_id =}
+- Return a string to echo it back to that client; use k.ws.broadcast/send/close for targeted sends.
+
+### handle_tcp(msg) — raw TCP handler
+- msg = {type = "open"|"text"|"binary"|"close", data =, client_id =}
+- Return a string to echo back; use k.tcp.send/close with the client_id.
+
+### init(config) — optional, runs once at startup on the first worker (config = {workers=N, mode="..."})
+### shutdown() — optional, runs once on SIGTERM/SIGINT
+`)
+	sb.WriteString(`\n## Serve-Safe k.* API (subset)
+- Shared: k.shared.set/get/del/keys/incr — JSON-encoded cross-worker values
+- WebSocket: k.ws.broadcast(msg), k.ws.send(client_id, msg), k.ws.close(client_id, code, reason)
+- TCP: k.tcp.accept() → {id}, k.tcp.send(id, data), k.tcp.close(id)
+- HTTP client: k.http_request{method="GET"|"POST", url=, headers={}, body=, timeout=} → {status, headers, body}
+- Database: k.connect_db(dsn), k.db_select{db=, table=, ...}, k.sql(db, query), k.db_insert/update/delete, tx_begin/commit/rollback, k.connect_sqlite
+- Formats: k.json_parse/string, k.csv_parse/string, k.yaml_parse/string, k.xml_load/save, k.ini_read/write
+- Files: k.file_load/save/read/write/exists, k.zip_add/extract/list
+Ctrl-C (ng) friendly: never block in a handler beyond the request.
+`)
+	return sb.String()
+}
+
 // buildMessages assembles the system+user messages for a generation request,
-// always including the component library so the model stays on-surface.
+// always appending the mode-appropriate appendix so the model stays on-surface.
 // req.History (if any) is interleaved between the system message and the
 // current user request (oldest first). The system prompt honors req.FullDoc:
-// the compact run-mode subset is the default (it fits local-model context);
-// the full API reference is opt-in via --full-doc / the FullDoc flag.
+// the compact mode subset is the default (it fits local-model context); the
+// full API reference is opt-in via --full-doc / the FullDoc flag. req.Mode
+// selects run vs serve shape (empty = run).
 func buildMessages(req GenerateRequest) []ChatMessage {
 	full := req.FullDoc
+	system := BuildSystemPrompt(full)
+	if req.Mode == ModeServe {
+		system = BuildSystemPromptFor(ModeServe, full) + KaluaServePrompt()
+	} else {
+		system = system + KaluaComponentPrompt()
+	}
 	messages := []ChatMessage{
-		{Role: "system", Content: BuildSystemPrompt(full) + KaluaComponentPrompt()},
+		{Role: "system", Content: system},
 	}
 	for _, h := range req.History {
 		messages = append(messages, h)

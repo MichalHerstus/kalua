@@ -47,6 +47,20 @@ verbose = 1
 ; l      = 1            ; list files whose formatting differs (exit 1 if any)
 ; d      = 1            ; print a 0-context unified diff (exit 1 if any)
 
+[TEST]
+verbose = 1
+; HTTP/WS/TCP probe flags for serve-mode apps (the mode is auto-detected).
+; http = GET /api/status
+; http = POST /api/run
+; expect-status     = 200
+; expect-body-json  = {"ok":true}
+; expect-contains   = hello
+; ws-echo           = ping
+; tcp-echo          = ping
+; db                = main=sqlite://app.db
+; arg               = env=test
+; allow-fs          = ./data
+
 [AI]
 ; LLM connection settings for KALUA ai and the builder's AI panel.
 ; These keys mirror the KALUA_AI_* env vars and override them; explicit
