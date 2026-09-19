@@ -38,11 +38,22 @@ myapp.lua ──► KALUA run myapp.lua
         │   inbox = typed events (WS, timers)   │
         │   outbox = UI commands → templ → WS  │
         └──────────────────────────────────────┘
+              │
+              ▼
+        ┌─────────────────────────────┐
+        │ KALUA mcp (stdio, JSON-RPC) │  ← Model Context Protocol server
+        │   tools: check, format,     │
+        │   run_test, serve_test,     │
+        │   describe, query_db,       │
+        │   lsp_complete, lsp_hover,  │
+        │   run_scenario              │
+        └─────────────────────────────┘
 ```
 
 - The Lua script must define a `function main()` — the entry point.
 - In `run` mode every browser tab owns a single Lua state. UI events arrive on the session inbox; UI commands go out over WebSocket.
 - In `serve` mode a pool of Lua workers shares thread-safe state through `k.shared.*`.
+- `KALUA mcp` runs a stdio MCP server (protocol 2025-06-18) exposing 9 tools for AI agents: static validation, formatting, headless tests, structural overview, DB queries, LSP completions/hover, and scenario testing.
 
 ## 1.3 Sandbox
 
@@ -54,7 +65,7 @@ Scripts run in a locked-down VM: only a whitelist of standard Lua libraries is o
 - **Serve mode**: HTTP/WS/TCP servers, worker pool, hot reload (SIGHUP), lifecycle hooks (`init`/`shutdown`).
 - **Expression functions**: ~100 Kalipso-style globals (string, numeric, date/time, conditional).
 - **Data & integration**: JSON, XML, CSV, INI, YAML, result-set conversions, SQLite/MySQL/Postgres/SQL Server, FTP, SMTP, POP3, SOAP, sockets, AES/RSA crypto, ZIP.
-- **Tooling**: `KALUA check` static validation, `KALUA builder` multi-form visual editor (with an AI chat panel), `KALUA ai` natural-language app generation, `KALUA lsp` Language Server (+ VSCode extension). CLI flags can be persisted in a `KALUA.INI` file (see §3.7).
+- **Tooling**: `KALUA check` static validation, `KALUA builder` multi-form visual editor (with an AI chat panel), `KALUA ai` natural-language app generation, `KALUA lsp` Language Server (+ VSCode extension), `KALUA mcp` Model Context Protocol server. CLI flags can be persisted in a `KALUA.INI` file (see §3.7).
 
 ---
 
@@ -119,13 +130,14 @@ end
 
 Opens the [KALUA Builder](#7-kalua-builder) at `http://127.0.0.1:9001`. The builder edits **every form** in a multi-form `.lua` file with source-preserving saves and includes an AI chat panel that generates/edits forms from natural language (see §7.6).
 
-## 2.7 Editor support (LSP / VSCode)
+## 2.7 Editor support (LSP / VSCode / MCP)
 
 ```bash
 ./KALUA lsp                    # Language Server over stdio
+./KALUA mcp                    # Model Context Protocol server over stdio (protocol 2025-06-18)
 ```
 
-The bundled VSCode extension (`extensions/vscode-kalua`) wires completion, hover and diagnostics into the editor.
+The bundled VSCode extension (`extensions/vscode-kalua`) wires completion, hover and diagnostics into the editor. The MCP server exposes KALUA's static checks, test runners, and LSP features as tools to any MCP-capable agent (OpenCode, Claude Code, Cursor, GitHub Copilot, etc.).
 
 ---
 
@@ -135,14 +147,15 @@ The bundled VSCode extension (`extensions/vscode-kalua`) wires completion, hover
 Usage: KALUA <command> [args...]
 
 Commands:
-  run     <app.lua> [flags]   Run app as web app (--watch hot-reloads on change)
-  serve   <app.lua> [flags]   Run app as headless API server
-  check   <app.lua>           Validate script (syntax, unknown k.*, main)
-  builder <app.lua|form.json> Visual form builder (opens browser)
-  ai      generate/fix/...    Natural language → Lua (see §7.6)
-  new     <name>              Scaffold a minimal app.lua
-  lsp                         Language server over stdio
-  version                     Print version
+  run       <app.lua> [flags]   Run app as web app (--watch hot-reloads on change)
+  serve     <app.lua> [flags]   Run app as headless API server
+  check     <app.lua>           Validate script (syntax, unknown k.*, main)
+  builder   <app.lua|form.json> Visual form builder (opens browser)
+  ai        generate/fix/...    Natural language → Lua (see §7.6)
+  new       <name>              Scaffold a minimal app.lua
+  lsp       Language server over stdio
+  mcp       Model Context Protocol server (stdio, protocol 2025-06-18)
+  version   Print version
 ```
 
 Flags may be placed before or after the script argument. Every command also
@@ -234,11 +247,12 @@ The `[CHECK]` section of `KALUA.INI` accepts the matching keys (`format`, `w`,
 `l`, `d`, `verbose`) so e.g. a project can default `check` to format-in-place
 with `w = 1`.
 
-## 3.4 `new`, `lsp`, `version`
+## 3.4 `new`, `lsp`, `mcp`, `version`
 
 ```bash
-KALUA new <name>     # write a minimal runnable <name>.lua
-KALUA lsp            # Language Server over stdio (LSP frames), UTF-8 positions
+KALUA new <name>         # write a minimal runnable <name>.lua
+KALUA lsp                # Language Server over stdio (LSP frames), UTF-8 positions
+KALUA mcp                # Model Context Protocol server over stdio (protocol 2025-06-18)
 KALUA version
 ```
 
@@ -263,6 +277,7 @@ KALUA version
 ./KALUA check -w myapp.lua             # canonicalize the file in place
 ./KALUA builder forms/app.lua --no-browser --model local-model
 ./KALUA run myapp.lua --ini ./myapp.ini        # persistent flags from a KALUA.INI (or just ./KALUA.INI)
+./KALUA mcp                            # Model Context Protocol server over stdio
 ```
 
 ## 3.7 `KALUA.INI` — persistent configuration file
