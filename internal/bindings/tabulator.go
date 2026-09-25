@@ -434,8 +434,14 @@ func remotePayloadJSON(r remotePage) string {
 	return string(out)
 }
 
-// isTabulator reports whether a table control has tabulator=true enabled.
+// isTabulator reports whether a control renders as a Tabulator instance.
+// Tables opt in via tabulator=true; grid controls are always Tabulator-backed
+// (kforms_enhancements.md §7), so the shared read pager and client lifecycle
+// treat both identically.
 func isTabulator(ctrl *lua.LTable) bool {
+	if ctrl.RawGetString("type").String() == "grid" {
+		return true
+	}
 	t := ctrl.RawGetString("tabulator")
 	return t != lua.LNil && t.String() == "true"
 }
@@ -484,41 +490,7 @@ func renderTable(ctrl *lua.LTable, formName, name, id, label, value, visible, en
 // renderTabulatorTable renders the container div. The client reads the
 // data-k-tabulator-* attributes and initializes a Tabulator instance.
 func renderTabulatorTable(ctrl *lua.LTable, formName, name, id, label, visible, enabled string) string {
-	optionsJSON := `{"layout":"fitColumns","selectable":true,"selectableRangeMode":"click"}`
-	if to := ctrl.RawGetString("tabulatorOptions"); to != lua.LNil {
-		if toTbl, ok := to.(*lua.LTable); ok {
-			optionsJSON = luaTableToJSON(toTbl)
-		} else if to.String() != "" {
-			optionsJSON = to.String()
-		}
-	}
-	// DB-linked tables must page through the Go host; force remote pagination
-	// (and size) so the client installs the dataLoader that drives it.
-	if isDBLinked(ctrl) {
-		optionsJSON = forceRemotePaging(optionsJSON, ctrl)
-	}
-
-	columnsJSON := "[]"
-	if cols := ctrl.RawGetString("columns"); cols != lua.LNil {
-		if colsTbl, ok := cols.(*lua.LTable); ok {
-			var colStrs []string
-			colsTbl.ForEach(func(_ lua.LValue, v lua.LValue) {
-				if colTbl, ok := v.(*lua.LTable); ok {
-					colStrs = append(colStrs, luaTableToJSON(colTbl))
-				} else if v.String() != "" {
-					colStrs = append(colStrs, `"`+jsonEscape(v.String())+`"`)
-				}
-			})
-			columnsJSON = "[" + strings.Join(colStrs, ",") + "]"
-		}
-	}
-
-	dataJSON := "[]"
-	if data := ctrl.RawGetString("data"); data != lua.LNil {
-		if dataTbl, ok := data.(*lua.LTable); ok {
-			dataJSON = luaTableToJSON(dataTbl)
-		}
-	}
+	optionsJSON, columnsJSON, dataJSON := tabulatorWidgetJSON(ctrl)
 
 	return `<div class="kalua-control"` + visible + `>
 		<div class="kalua-tabulator-wrapper"` + enabled + `>
@@ -529,6 +501,68 @@ func renderTabulatorTable(ctrl *lua.LTable, formName, name, id, label, visible, 
 			     data-k-tabulator-data="` + escAttr(dataJSON) + `"></div>
 		</div>
 	</div>`
+}
+
+// tabulatorWidgetJSON computes the JSON for the data-k-tabulator-* attributes
+// shared by the table and grid renderers: options (with remote pagination
+// forced for DB-linked sources), columns and row data.
+func tabulatorWidgetJSON(ctrl *lua.LTable) (optionsJSON, columnsJSON, dataJSON string) {
+	optionsJSON = `{"layout":"fitColumns","selectable":true,"selectableRangeMode":"click"}`
+	if to := ctrl.RawGetString("tabulatorOptions"); to != lua.LNil {
+		if toTbl, ok := to.(*lua.LTable); ok {
+			optionsJSON = luaTableToJSON(toTbl)
+		} else if to.String() != "" {
+			optionsJSON = to.String()
+		}
+	}
+	// DB-linked sources must page through the Go host; force remote pagination
+	// (and size) so the client installs the dataLoader that drives it.
+	if isDBLinked(ctrl) {
+		optionsJSON = forceRemotePaging(optionsJSON, ctrl)
+	}
+
+	columnsJSON = "[]"
+	defaultVisible := make(map[string]bool)
+	if v := ctrl.RawGetString("default_visible"); v != lua.LNil {
+		if vTbl, ok := v.(*lua.LTable); ok {
+			vTbl.ForEach(func(_, val lua.LValue) {
+				if s := val.String(); s != "" {
+					defaultVisible[s] = true
+				}
+			})
+		}
+	}
+	if cols := ctrl.RawGetString("columns"); cols != lua.LNil {
+		if colsTbl, ok := cols.(*lua.LTable); ok {
+			var colStrs []string
+			colsTbl.ForEach(func(_ lua.LValue, v lua.LValue) {
+				if colTbl, ok := v.(*lua.LTable); ok {
+					// Apply default_visible if specified
+					if field := colTbl.RawGetString("field"); field != lua.LNil {
+						if defaultVisible[field.String()] {
+							// Create a copy to avoid mutating original
+							colCopy := colTbl
+							colCopy.RawSetString("visible", lua.LTrue)
+						}
+					}
+				}
+				if colTbl, ok := v.(*lua.LTable); ok {
+					colStrs = append(colStrs, luaTableToJSON(colTbl))
+				} else if v.String() != "" {
+					colStrs = append(colStrs, `"`+jsonEscape(v.String())+`"`)
+				}
+			})
+			columnsJSON = "[" + strings.Join(colStrs, ",") + "]"
+		}
+	}
+
+	dataJSON = "[]"
+	if data := ctrl.RawGetString("data"); data != lua.LNil {
+		if dataTbl, ok := data.(*lua.LTable); ok {
+			dataJSON = luaTableToJSON(dataTbl)
+		}
+	}
+	return
 }
 
 // renderTraditionalTable renders the classic <table> control.

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,23 @@ const (
 	inboxExec                                // k.exec async function execution
 	inboxSelectionResp                       // browser answered k.ctrl.get_selection
 	inboxFilePickerSaveResp                  // browser answered k.pick_file save/download
+	inboxGridFormOpen                        // grid detail/edit/new modal requested
+	inboxGridFormSave                        // grid modal Save clicked
+	inboxGridFormCancel                      // grid modal Cancel/Close clicked
+	inboxGridRowDelete                       // grid row delete requested
+	inboxGridBatchDelete                     // grid selected-rows delete requested
+	inboxGridGetSelected                     // k.grid.get_selected request
+	inboxGridGetSelectedResp                 // k.grid.get_selected response
+	inboxGridGetRow                          // k.grid.get_row request
+	inboxGridGetRowResp                      // k.grid.get_row response
+	inboxGridDeleteRow                       // k.grid.delete_row request
+	inboxGridDeleteRowResp                   // k.grid.delete_row response
+	inboxGridBatchDeleteReq                  // k.grid.batch_delete request
+	inboxGridBatchDeleteResp                 // k.grid.batch_delete response
+	inboxGridInsertRow                       // k.grid.insert_row request
+	inboxGridInsertRowResp                   // k.grid.insert_row response
+	inboxGridUpdateRow                       // k.grid.update_row request
+	inboxGridUpdateRowResp                   // k.grid.update_row response
 )
 
 // asyncOp represents a suspended coroutine waiting for an async operation
@@ -53,6 +71,12 @@ type asyncOp struct {
 	conv   func(*lua.LState, interface{}) lua.LValue // result converter (nil = default)
 	// For file picker: "open" | "save" | "download"
 	pickMode string
+}
+
+// gridAsyncOp represents a suspended coroutine waiting for a grid async operation
+type gridAsyncOp struct {
+	co     *lua.LState
+	cancel func()
 }
 
 // inboxMsg is a typed message delivered to the session actor's inbox.
@@ -107,8 +131,10 @@ type Session struct {
 	idleTimers map[string]*time.Timer
 
 	// Async operations - suspended coroutines waiting for completion
-	asyncOps map[string]*asyncOp
-	asyncMu  sync.Mutex
+	asyncOps     map[string]*asyncOp
+	asyncMu      sync.Mutex
+	gridAsyncOps map[string]*gridAsyncOp
+	gridAsyncMu  sync.Mutex
 
 	// Sleep operations - suspended coroutines waiting for k.sleep
 	sleepOps map[string]*lua.LState
@@ -167,7 +193,8 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 		// Form show coroutines
 		formCoros: make(map[string]*lua.LState),
 		// Async operations - suspended coroutines waiting for completion
-		asyncOps: make(map[string]*asyncOp),
+		asyncOps:      make(map[string]*asyncOp),
+		gridAsyncOps:  make(map[string]*gridAsyncOp),
 		// Sleep operations - suspended coroutines waiting for k.sleep
 		sleepOps: make(map[string]*lua.LState),
 	}
@@ -274,6 +301,40 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.handleExec(msg, logger)
 	case inboxSelectionResp:
 		s.handleSelectionResp(msg.respID, msg.raw, logger)
+	case inboxGridFormOpen:
+		s.handleGridFormOpen(msg, logger)
+	case inboxGridFormSave:
+		s.handleGridFormSave(msg, logger)
+	case inboxGridFormCancel:
+		s.handleGridFormCancel(msg, logger)
+	case inboxGridRowDelete:
+		s.handleGridRowDelete(msg, logger)
+	case inboxGridBatchDelete:
+		s.handleGridBatchDelete(msg, logger)
+	case inboxGridGetSelected:
+		s.handleGridGetSelected(msg, logger)
+	case inboxGridGetSelectedResp:
+		s.handleGridGetSelectedResp(msg, logger)
+	case inboxGridGetRow:
+		s.handleGridGetRow(msg, logger)
+	case inboxGridGetRowResp:
+		s.handleGridGetRowResp(msg, logger)
+	case inboxGridDeleteRow:
+		s.handleGridDeleteRow(msg, logger)
+	case inboxGridDeleteRowResp:
+		s.handleGridDeleteRowResp(msg, logger)
+	case inboxGridBatchDeleteReq:
+		s.handleGridBatchDeleteReq(msg, logger)
+	case inboxGridBatchDeleteResp:
+		s.handleGridBatchDeleteResp(msg, logger)
+	case inboxGridInsertRow:
+		s.handleGridInsertRow(msg, logger)
+	case inboxGridInsertRowResp:
+		s.handleGridInsertRowResp(msg, logger)
+	case inboxGridUpdateRow:
+		s.handleGridUpdateRow(msg, logger)
+	case inboxGridUpdateRowResp:
+		s.handleGridUpdateRowResp(msg, logger)
 	}
 }
 
@@ -407,6 +468,65 @@ func (s *Session) runFormHandler(formName, ctrlKey, event string, resumeArgs []l
 	// Flush outbox after handler
 	s.flushOutbox()
 	return true
+}
+
+// runFormHandlerSync calls a form handler synchronously and returns its return values.
+// Used for validation hooks where we need the handler's result (e.g., {ok=true} or {ok=false, error="msg"}).
+func (s *Session) runFormHandlerSync(logger Logger, formName, ctrlKey, event string, args []lua.LValue) ([]lua.LValue, bool) {
+	formTbl := s.L.GetGlobal(formName)
+	if formTbl == lua.LNil {
+		return nil, false
+	}
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return nil, false
+	}
+
+	handlers := tbl.RawGetString("handlers")
+	if handlers == lua.LNil {
+		return nil, false
+	}
+	handlersTbl, ok := handlers.(*lua.LTable)
+	if !ok {
+		return nil, false
+	}
+
+	ctrlHandlers := handlersTbl.RawGetString(ctrlKey)
+	if ctrlHandlers == lua.LNil {
+		return nil, false
+	}
+	ctrlTbl, ok := ctrlHandlers.(*lua.LTable)
+	if !ok {
+		return nil, false
+	}
+
+	handler := ctrlTbl.RawGetString(event)
+	if handler == lua.LNil {
+		return nil, false
+	}
+	fn, ok := handler.(*lua.LFunction)
+	if !ok {
+		return nil, false
+	}
+
+	// Synchronous protected call using stack manipulation
+	s.L.Push(fn)
+	for _, arg := range args {
+		s.L.Push(arg)
+	}
+	err := s.L.PCall(len(args), lua.MultRet, nil)
+	if err != nil {
+		return nil, false
+	}
+
+	// Pop return values from stack
+	n := s.L.GetTop()
+	rets := make([]lua.LValue, n)
+	for i := 1; i <= n; i++ {
+		rets[i-1] = s.L.Get(i)
+	}
+	s.L.SetTop(0) // Clear stack
+	return rets, true
 }
 
 // handleFormEvent processes form lifecycle events (open_form, after_open_form, close_form, on_idle)
@@ -569,6 +689,176 @@ func (s *Session) RequestSelection(co *lua.LState, cancel func(), form, ctrl str
 func (s *Session) PostSelectionResp(reqID string, value map[string]interface{}) {
 	select {
 	case s.inbox <- inboxMsg{typ: inboxSelectionResp, respID: reqID, raw: value}:
+	case <-s.done:
+	}
+}
+
+// Grid operation request/response handlers
+
+func (s *Session) RequestGridGetSelected(co *lua.LState, cancel func(), form, ctrl string) string {
+	reqID := fmt.Sprintf("grid_sel_%d", time.Now().UnixNano())
+	s.gridAsyncMu.Lock()
+	s.gridAsyncOps[reqID] = &gridAsyncOp{co: co, cancel: cancel}
+	s.gridAsyncMu.Unlock()
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridGetSelected, form: form, ctrl: ctrl, respID: reqID}:
+	case <-s.done:
+	}
+	return reqID
+}
+
+func (s *Session) PostGridGetSelectedResp(reqID string, rows []map[string]interface{}) {
+	s.gridAsyncMu.Lock()
+	_, ok := s.gridAsyncOps[reqID]
+	if ok {
+		delete(s.gridAsyncOps, reqID)
+	}
+	s.gridAsyncMu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridGetSelectedResp, respID: reqID, raw: rows}:
+	case <-s.done:
+	}
+}
+
+func (s *Session) RequestGridGetRow(co *lua.LState, cancel func(), form, ctrl string, pk interface{}) string {
+	reqID := fmt.Sprintf("grid_row_%d", time.Now().UnixNano())
+	s.gridAsyncMu.Lock()
+	s.gridAsyncOps[reqID] = &gridAsyncOp{co: co, cancel: cancel}
+	s.gridAsyncMu.Unlock()
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridGetRow, form: form, ctrl: ctrl, respID: reqID, raw: pk}:
+	case <-s.done:
+	}
+	return reqID
+}
+
+func (s *Session) PostGridGetRowResp(reqID string, row map[string]interface{}) {
+	s.gridAsyncMu.Lock()
+	_, ok := s.gridAsyncOps[reqID]
+	if ok {
+		delete(s.gridAsyncOps, reqID)
+	}
+	s.gridAsyncMu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridGetRowResp, respID: reqID, raw: row}:
+	case <-s.done:
+	}
+}
+
+func (s *Session) RequestGridDeleteRow(co *lua.LState, cancel func(), form, ctrl string, pk interface{}) string {
+	reqID := fmt.Sprintf("grid_del_%d", time.Now().UnixNano())
+	s.gridAsyncMu.Lock()
+	s.gridAsyncOps[reqID] = &gridAsyncOp{co: co, cancel: cancel}
+	s.gridAsyncMu.Unlock()
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridDeleteRow, form: form, ctrl: ctrl, respID: reqID, raw: pk}:
+	case <-s.done:
+	}
+	return reqID
+}
+
+func (s *Session) PostGridDeleteRowResp(reqID string, ok bool, err string) {
+	s.gridAsyncMu.Lock()
+	_, ok2 := s.gridAsyncOps[reqID]
+	if ok2 {
+		delete(s.gridAsyncOps, reqID)
+	}
+	s.gridAsyncMu.Unlock()
+	if !ok2 {
+		return
+	}
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridDeleteRowResp, respID: reqID, raw: map[string]interface{}{"ok": ok, "error": err}}:
+	case <-s.done:
+	}
+}
+
+func (s *Session) RequestGridBatchDelete(co *lua.LState, cancel func(), form, ctrl string, pks []interface{}) string {
+	reqID := fmt.Sprintf("grid_bdel_%d", time.Now().UnixNano())
+	s.gridAsyncMu.Lock()
+	s.gridAsyncOps[reqID] = &gridAsyncOp{co: co, cancel: cancel}
+	s.gridAsyncMu.Unlock()
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridBatchDeleteReq, form: form, ctrl: ctrl, respID: reqID, raw: pks}:
+	case <-s.done:
+	}
+	return reqID
+}
+
+func (s *Session) PostGridBatchDeleteResp(reqID string, ok bool, err string) {
+	s.gridAsyncMu.Lock()
+	_, ok2 := s.gridAsyncOps[reqID]
+	if ok2 {
+		delete(s.gridAsyncOps, reqID)
+	}
+	s.gridAsyncMu.Unlock()
+	if !ok2 {
+		return
+	}
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridBatchDeleteResp, respID: reqID, raw: map[string]interface{}{"ok": ok, "error": err}}:
+	case <-s.done:
+	}
+}
+
+func (s *Session) RequestGridInsertRow(co *lua.LState, cancel func(), form, ctrl string, data map[string]interface{}) string {
+	reqID := fmt.Sprintf("grid_ins_%d", time.Now().UnixNano())
+	s.gridAsyncMu.Lock()
+	s.gridAsyncOps[reqID] = &gridAsyncOp{co: co, cancel: cancel}
+	s.gridAsyncMu.Unlock()
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridInsertRow, form: form, ctrl: ctrl, respID: reqID, raw: data}:
+	case <-s.done:
+	}
+	return reqID
+}
+
+func (s *Session) PostGridInsertRowResp(reqID string, pk interface{}, err string) {
+	s.gridAsyncMu.Lock()
+	_, ok := s.gridAsyncOps[reqID]
+	if ok {
+		delete(s.gridAsyncOps, reqID)
+	}
+	s.gridAsyncMu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridInsertRowResp, respID: reqID, raw: map[string]interface{}{"pk": pk, "error": err}}:
+	case <-s.done:
+	}
+}
+
+func (s *Session) RequestGridUpdateRow(co *lua.LState, cancel func(), form, ctrl string, pk interface{}, data map[string]interface{}) string {
+	reqID := fmt.Sprintf("grid_upd_%d", time.Now().UnixNano())
+	s.gridAsyncMu.Lock()
+	s.gridAsyncOps[reqID] = &gridAsyncOp{co: co, cancel: cancel}
+	s.gridAsyncMu.Unlock()
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridUpdateRow, form: form, ctrl: ctrl, respID: reqID, raw: map[string]interface{}{"pk": pk, "data": data}}:
+	case <-s.done:
+	}
+	return reqID
+}
+
+func (s *Session) PostGridUpdateRowResp(reqID string, ok bool, err string) {
+	s.gridAsyncMu.Lock()
+	_, ok2 := s.gridAsyncOps[reqID]
+	if ok2 {
+		delete(s.gridAsyncOps, reqID)
+	}
+	s.gridAsyncMu.Unlock()
+	if !ok2 {
+		return
+	}
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridUpdateRowResp, respID: reqID, raw: map[string]interface{}{"ok": ok, "error": err}}:
 	case <-s.done:
 	}
 }
@@ -791,6 +1081,560 @@ func (s *Session) dispatchDBTablePage(link *bindings.TableLink, msg inboxMsg, lo
 	s.sendRemoteData(payload, msg)
 	s.flushOutbox()
 	return true
+}
+
+// gridMeta resolves the write-related plumbing for a grid control: its control
+// table, DB link, derived pk column, write table and modal form name.
+type gridMeta struct {
+	ctrl    *lua.LTable
+	link    *bindings.TableLink
+	handle  string
+	pkField string
+	table   string
+}
+
+func (s *Session) gridMeta(form, ctrl string) (*gridMeta, string) {
+	ct := s.controlTable(form, ctrl)
+	if ct == nil {
+		return nil, "grid control not found"
+	}
+	if ct.RawGetString("type").String() != "grid" {
+		return nil, "not a grid control"
+	}
+	link, ok := bindings.TableLinkFromControl(s.L, ct)
+	if !ok {
+		return nil, "grid is not DB-linked (db = handle, query = SELECT required)"
+	}
+	table, err := bindings.GridTableFromQuery(link.Query)
+	if err != nil {
+		return nil, err.Error()
+	}
+	return &gridMeta{
+		ctrl:    ct,
+		link:    link,
+		handle:  link.HandleID,
+		pkField: bindings.GridPKFromControl(ct),
+		table:   table,
+	}, ""
+}
+
+func (s *Session) gridSendStatus(text string) {
+	s.SendOutbox(common.OutboxMsg{Type: "status", Text: text})
+	s.flushOutbox()
+}
+
+func (s *Session) gridSendError(logger Logger, phase string, err error) {
+	logger.Errorf("grid %s error: %v", phase, err)
+	s.notifyError(err)
+	s.SendOutbox(common.OutboxMsg{Type: "error", Msg: "grid " + phase + " error: " + err.Error()})
+	s.flushOutbox()
+}
+
+func (s *Session) gridRefresh(form, ctrl string) {
+	s.SendOutbox(common.OutboxMsg{
+		Type:     "tabulator_refresh",
+		Form:     form,
+		Ctrl:     ctrl,
+		Selector: "#c:" + form + ":" + ctrl,
+	})
+}
+
+func (s *Session) gridCloseModal(modal string) {
+	s.SendOutbox(common.OutboxMsg{Type: "close_form", Form: modal, Modal: true})
+}
+
+// fireGridEvent fires a grid-level event on the main form via k.form.on handlers.
+// Event names: on_row_view, on_row_edit, on_row_delete, on_batch_delete, on_new_record
+// Returns true if handler was found and executed, false otherwise.
+// Handler can return {ok=false, error="msg"} to abort the action.
+func (s *Session) fireGridEvent(form, ctrl, event string, args []lua.LValue, logger Logger) bool {
+	// Grid-level events are registered on the main form with the grid control name as key
+	if rets, ok := s.runFormHandlerSync(logger, form, ctrl, event, args); ok && len(rets) > 0 {
+		if result, ok := rets[0].(*lua.LTable); ok {
+			if okVal := result.RawGetString("ok"); okVal != lua.LNil {
+				if okStr := okVal.String(); okStr == "false" {
+					errMsg := "grid event aborted"
+					if errVal := result.RawGetString("error"); errVal != lua.LNil {
+						errMsg = errVal.String()
+					}
+					s.SendOutbox(common.OutboxMsg{Type: "error", Msg: errMsg})
+					s.flushOutbox()
+					return false // aborted
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func gridMsgMap(raw interface{}) map[string]interface{} {
+	m, _ := raw.(map[string]interface{})
+	return m
+}
+
+func gridMsgVal(m map[string]interface{}, key string) interface{} {
+	if m == nil {
+		return nil
+	}
+	v, _ := m[key]
+	return v
+}
+
+func gridMsgSub(m map[string]interface{}, key string) map[string]interface{} {
+	v := gridMsgVal(m, key)
+	sub, _ := v.(map[string]interface{})
+	return sub
+}
+
+// sqlValue normalizes a JSON-decoded value for SQL: integral floats become int64
+// so INTEGER primary keys match and display cleanly.
+func sqlValue(v interface{}) interface{} {
+	if f, ok := v.(float64); ok && f == math.Trunc(f) {
+		return int64(f)
+	}
+	return v
+}
+
+func scalarJSON(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// gridModalFooter renders the Save/Close footer living inside the grid modal
+// form. Buttons carry the form/ctrl/mode/pk the client needs to echo back.
+func gridModalFooter(form, ctrl, mode string, pk interface{}, formWidth string) string {
+	common := ` data-k-grid-form="` + html.EscapeString(form) + `" data-k-grid-ctrl="` + html.EscapeString(ctrl) + `" data-k-grid-mode="` + html.EscapeString(mode) + `" data-k-grid-pk="` + html.EscapeString(scalarJSON(pk)) + `"`
+	if formWidth != "" {
+		common += ` data-k-grid-width="` + html.EscapeString(formWidth) + `"`
+	}
+	btns := `<button type="button" class="kalua-btn kalua-grid-btn kalua-grid-btn-save" data-k-grid-save="1"` + common + `>Save</button>`
+	btns += `<button type="button" class="kalua-btn kalua-grid-btn" data-k-grid-cancel="1"` + common + `>Close</button>`
+	return `<div class="kalua-grid-form-footer">` + btns + `</div>`
+}
+
+func (s *Session) handleGridFormOpen(msg inboxMsg, logger Logger) {
+	meta, reason := s.gridMeta(msg.form, msg.ctrl)
+	if meta == nil {
+		s.gridSendStatus("grid form: " + reason)
+		return
+	}
+	modalName, mHTML, err := bindings.BuildGridForm(s.L, msg.form, msg.ctrl, meta.ctrl)
+	if err != nil {
+		s.gridSendStatus("grid form: " + err.Error())
+		return
+	}
+	raw := gridMsgMap(msg.raw)
+	mode := "edit"
+	if m := gridMsgVal(raw, "mode"); m != nil {
+		mode = fmt.Sprintf("%v", m)
+	}
+	pk := gridMsgVal(raw, "pk")
+
+	// Fire grid-level event based on mode
+	switch mode {
+	case "view":
+		if row := gridMsgVal(raw, "row"); row != nil {
+			s.fireGridEvent(msg.form, msg.ctrl, "on_row_view", []lua.LValue{s.toLuaValue(row)}, logger)
+		}
+	case "edit":
+		if row := gridMsgVal(raw, "row"); row != nil {
+			s.fireGridEvent(msg.form, msg.ctrl, "on_row_edit", []lua.LValue{s.toLuaValue(row)}, logger)
+		}
+	case "new":
+		s.fireGridEvent(msg.form, msg.ctrl, "on_new_record", []lua.LValue{}, logger)
+	}
+
+	rowJSON := "{}"
+	if row := gridMsgVal(raw, "row"); row != nil {
+		rowJSON = scalarJSON(row)
+	}
+	formWidth := ""
+	if v := meta.ctrl.RawGetString("form_width"); v != lua.LNil && v.String() != "" {
+		formWidth = v.String()
+	}
+	gapX, gapY := bindings.GridFormGap(meta.ctrl)
+	s.SendOutbox(common.OutboxMsg{
+		Type:     "render_form",
+		Form:     modalName,
+		HTML:     mHTML + gridModalFooter(msg.form, msg.ctrl, mode, pk, formWidth),
+		Modal:    true,
+		GapX:     gapX,
+		GapY:     gapY,
+		Grid:     true,
+		GridMode: mode,
+		GridPK:   scalarJSON(pk),
+		GridRow:  rowJSON,
+	})
+	s.flushOutbox()
+}
+
+func (s *Session) handleGridFormSave(msg inboxMsg, logger Logger) {
+	meta, reason := s.gridMeta(msg.form, msg.ctrl)
+	if meta == nil {
+		s.gridSendStatus("grid save: " + reason)
+		return
+	}
+	raw := gridMsgMap(msg.raw)
+	mode := fmt.Sprintf("%v", gridMsgVal(raw, "mode"))
+	pk := gridMsgVal(raw, "pk")
+	values := gridMsgSub(raw, "values")
+	if values == nil {
+		s.gridSendStatus("grid save: no values received")
+		return
+	}
+
+	// Fire on_save validation hook on the internal grid form
+	modalName := bindings.GridFormModalName(meta.ctrl, msg.form, msg.ctrl)
+
+	saveData := s.L.NewTable()
+	saveData.RawSetString("mode", lua.LString(mode))
+	if pk != nil {
+		saveData.RawSetString("pk", s.toLuaValue(pk))
+	} else {
+		saveData.RawSetString("pk", lua.LNil)
+	}
+	valsTbl := s.L.NewTable()
+	for k, v := range values {
+		valsTbl.RawSetString(k, s.toLuaValue(v))
+	}
+	saveData.RawSetString("values", valsTbl)
+
+	if rets, ok := s.runFormHandlerSync(logger, modalName, "@form", "on_save", []lua.LValue{saveData}); ok && len(rets) > 0 {
+		if result, ok := rets[0].(*lua.LTable); ok {
+			if okVal := result.RawGetString("ok"); okVal != lua.LNil {
+				if okStr := okVal.String(); okStr == "false" {
+					errMsg := "validation failed"
+					if errVal := result.RawGetString("error"); errVal != lua.LNil {
+						errMsg = errVal.String()
+					}
+					s.gridSendError(logger, "save", fmt.Errorf("%s", errMsg))
+					return
+				}
+			}
+		}
+	}
+
+	vals := make(map[string]interface{}, len(values))
+	for k, v := range values {
+		vals[k] = sqlValue(v)
+	}
+
+	var err error
+	if mode == "new" || pk == nil {
+		err = bindings.GridInsert(meta.handle, meta.table, meta.pkField, vals)
+	} else {
+		err = bindings.GridUpdate(meta.handle, meta.table, meta.pkField, sqlValue(pk), vals)
+	}
+	if err != nil {
+		s.gridSendError(logger, "save", err)
+		return
+	}
+	s.gridCloseModal(modalName)
+	s.gridRefresh(msg.form, msg.ctrl)
+	s.flushOutbox()
+}
+
+func (s *Session) handleGridFormCancel(msg inboxMsg, logger Logger) {
+	meta, reason := s.gridMeta(msg.form, msg.ctrl)
+	if reason != "" {
+		logger.Warnf("grid cancel skipped: %s", reason)
+		return
+	}
+	modalName := bindings.GridFormModalName(meta.ctrl, msg.form, msg.ctrl)
+	raw := gridMsgMap(msg.raw)
+	mode := fmt.Sprintf("%v", gridMsgVal(raw, "mode"))
+	pk := gridMsgVal(raw, "pk")
+
+	cancelData := s.L.NewTable()
+	cancelData.RawSetString("mode", lua.LString(mode))
+	if pk != nil {
+		cancelData.RawSetString("pk", s.toLuaValue(pk))
+	} else {
+		cancelData.RawSetString("pk", lua.LNil)
+	}
+
+	// Fire on_cancel hook on the internal grid form (fire-and-forget)
+	s.runFormHandler(modalName, "@form", "on_cancel", []lua.LValue{cancelData}, logger)
+
+	s.gridCloseModal(modalName)
+	s.flushOutbox()
+}
+
+func (s *Session) handleGridRowDelete(msg inboxMsg, logger Logger) {
+	// Fire on_row_delete grid-level event on main form
+	raw := gridMsgMap(msg.raw)
+	pk := gridMsgVal(raw, "pk")
+	if pk != nil {
+		s.fireGridEvent(msg.form, msg.ctrl, "on_row_delete", []lua.LValue{s.toLuaValue(pk)}, logger)
+	}
+	s.gridDeleteRows(msg, logger, false)
+}
+
+func (s *Session) handleGridBatchDelete(msg inboxMsg, logger Logger) {
+	// Fire on_batch_delete grid-level event on main form
+	raw := gridMsgMap(msg.raw)
+	if arr, ok := gridMsgVal(raw, "pks").([]interface{}); ok && len(arr) > 0 {
+		pksTbl := s.L.NewTable()
+		for i, p := range arr {
+			pksTbl.RawSetInt(i+1, s.toLuaValue(p))
+		}
+		s.fireGridEvent(msg.form, msg.ctrl, "on_batch_delete", []lua.LValue{pksTbl}, logger)
+	}
+	s.gridDeleteRows(msg, logger, true)
+}
+
+func (s *Session) gridDeleteRows(msg inboxMsg, logger Logger, batch bool) {
+	meta, reason := s.gridMeta(msg.form, msg.ctrl)
+	if meta == nil {
+		s.gridSendStatus("grid delete: " + reason)
+		return
+	}
+	raw := gridMsgMap(msg.raw)
+	var pks []interface{}
+	if batch {
+		if arr, ok := gridMsgVal(raw, "pks").([]interface{}); ok {
+			pks = arr
+		}
+	} else {
+		pks = []interface{}{gridMsgVal(raw, "pk")}
+	}
+	if len(pks) == 0 {
+		s.gridSendStatus("grid delete: no rows selected")
+		return
+	}
+	clean := make([]interface{}, 0, len(pks))
+	for _, p := range pks {
+		clean = append(clean, sqlValue(p))
+	}
+	if err := bindings.GridDeleteMany(meta.handle, meta.table, meta.pkField, clean); err != nil {
+		s.gridSendError(logger, "delete", err)
+		return
+	}
+	s.gridRefresh(msg.form, msg.ctrl)
+	s.flushOutbox()
+}
+
+// handleGridGetSelected handles k.grid.get_selected - requests selected rows from browser
+func (s *Session) handleGridGetSelected(msg inboxMsg, logger Logger) {
+	meta, _ := s.gridMeta(msg.form, msg.ctrl)
+	if meta == nil {
+		s.PostGridGetSelectedResp(msg.respID, nil)
+		return
+	}
+	// Request selected rows from browser
+	s.SendOutbox(common.OutboxMsg{
+		Type:     "tabulator_get_selection",
+		Form:     msg.form,
+		Ctrl:     msg.ctrl,
+		Selector: "#c:" + msg.form + ":" + msg.ctrl,
+	})
+	s.flushOutbox()
+}
+
+// handleGridGetSelectedResp handles the browser's selection response
+func (s *Session) handleGridGetSelectedResp(msg inboxMsg, logger Logger) {
+	rows, ok := msg.raw.([]map[string]interface{})
+	if !ok {
+		rows = nil
+	}
+	s.PostGridGetSelectedResp(msg.respID, rows)
+}
+
+// handleGridGetRow handles k.grid.get_row - fetches a single row by PK from DB
+func (s *Session) handleGridGetRow(msg inboxMsg, logger Logger) {
+	meta, _ := s.gridMeta(msg.form, msg.ctrl)
+	if meta == nil {
+		s.PostGridGetRowResp(msg.respID, nil)
+		return
+	}
+	pk := msg.raw
+	if pk == nil {
+		s.PostGridGetRowResp(msg.respID, nil)
+		return
+	}
+	// Query the DB for the row
+	h := bindings.GetDBHandle(s.L, meta.handle)
+	if h == nil {
+		s.PostGridGetRowResp(msg.respID, nil)
+		return
+	}
+	query := "SELECT * FROM " + meta.table + " WHERE " + meta.pkField + " = " + h.Placeholder(1)
+	rows, err := h.Query(query, pk)
+	if err != nil || len(rows) == 0 {
+		s.PostGridGetRowResp(msg.respID, nil)
+		return
+	}
+	s.PostGridGetRowResp(msg.respID, rows[0])
+}
+
+// handleGridGetRowResp handles the response
+func (s *Session) handleGridGetRowResp(msg inboxMsg, logger Logger) {
+	row, _ := msg.raw.(map[string]interface{})
+	s.PostGridGetRowResp(msg.respID, row)
+}
+
+// handleGridDeleteRow handles k.grid.delete_row - deletes a single row
+func (s *Session) handleGridDeleteRow(msg inboxMsg, logger Logger) {
+	meta, reason := s.gridMeta(msg.form, msg.ctrl)
+	if meta == nil {
+		s.PostGridDeleteRowResp(msg.respID, false, reason)
+		return
+	}
+	pk := msg.raw
+	if pk == nil {
+		s.PostGridDeleteRowResp(msg.respID, false, "no pk provided")
+		return
+	}
+	err := bindings.GridDeleteMany(meta.handle, meta.table, meta.pkField, []interface{}{sqlValue(pk)})
+	if err != nil {
+		s.PostGridDeleteRowResp(msg.respID, false, err.Error())
+		return
+	}
+	s.gridRefresh(msg.form, msg.ctrl)
+	s.PostGridDeleteRowResp(msg.respID, true, "")
+}
+
+// handleGridDeleteRowResp handles the response
+func (s *Session) handleGridDeleteRowResp(msg inboxMsg, logger Logger) {
+	data, _ := msg.raw.(map[string]interface{})
+	ok := false
+	errStr := ""
+	if v, ok := data["ok"].(bool); ok {
+		ok = v
+	}
+	if v, ok := data["error"].(string); ok {
+		errStr = v
+	}
+	s.PostGridDeleteRowResp(msg.respID, ok, errStr)
+}
+
+// handleGridBatchDeleteReq handles k.grid.batch_delete - deletes multiple rows
+func (s *Session) handleGridBatchDeleteReq(msg inboxMsg, logger Logger) {
+	meta, reason := s.gridMeta(msg.form, msg.ctrl)
+	if meta == nil {
+		s.PostGridBatchDeleteResp(msg.respID, false, reason)
+		return
+	}
+	pks, ok := msg.raw.([]interface{})
+	if !ok || len(pks) == 0 {
+		s.PostGridBatchDeleteResp(msg.respID, false, "no pks provided")
+		return
+	}
+	clean := make([]interface{}, 0, len(pks))
+	for _, p := range pks {
+		clean = append(clean, sqlValue(p))
+	}
+	err := bindings.GridDeleteMany(meta.handle, meta.table, meta.pkField, clean)
+	if err != nil {
+		s.PostGridBatchDeleteResp(msg.respID, false, err.Error())
+		return
+	}
+	s.gridRefresh(msg.form, msg.ctrl)
+	s.PostGridBatchDeleteResp(msg.respID, true, "")
+}
+
+// handleGridBatchDeleteResp handles the response
+func (s *Session) handleGridBatchDeleteResp(msg inboxMsg, logger Logger) {
+	data, _ := msg.raw.(map[string]interface{})
+	ok := false
+	errStr := ""
+	if v, ok := data["ok"].(bool); ok {
+		ok = v
+	}
+	if v, ok := data["error"].(string); ok {
+		errStr = v
+	}
+	s.PostGridBatchDeleteResp(msg.respID, ok, errStr)
+}
+
+// handleGridInsertRow handles k.grid.insert_row - inserts a new row
+func (s *Session) handleGridInsertRow(msg inboxMsg, logger Logger) {
+	meta, reason := s.gridMeta(msg.form, msg.ctrl)
+	if meta == nil {
+		s.PostGridInsertRowResp(msg.respID, nil, reason)
+		return
+	}
+	data, ok := msg.raw.(map[string]interface{})
+	if !ok {
+		s.PostGridInsertRowResp(msg.respID, nil, "invalid data")
+		return
+	}
+	vals := make(map[string]interface{}, len(data))
+	for k, v := range data {
+		vals[k] = sqlValue(v)
+	}
+	err := bindings.GridInsert(meta.handle, meta.table, meta.pkField, vals)
+	if err != nil {
+		s.PostGridInsertRowResp(msg.respID, nil, err.Error())
+		return
+	}
+	// For auto-increment PK, we can't easily get the inserted PK without another query
+	// The GridInsert doesn't return the PK, so we return a generic success
+	s.gridRefresh(msg.form, msg.ctrl)
+	s.PostGridInsertRowResp(msg.respID, true, "")
+}
+
+// handleGridInsertRowResp handles the response
+func (s *Session) handleGridInsertRowResp(msg inboxMsg, logger Logger) {
+	data, _ := msg.raw.(map[string]interface{})
+	pk := data["pk"]
+	errStr := ""
+	if v, ok := data["error"].(string); ok {
+		errStr = v
+	}
+	s.PostGridInsertRowResp(msg.respID, pk, errStr)
+}
+
+// handleGridUpdateRow handles k.grid.update_row - updates a row by PK
+func (s *Session) handleGridUpdateRow(msg inboxMsg, logger Logger) {
+	meta, reason := s.gridMeta(msg.form, msg.ctrl)
+	if meta == nil {
+		s.PostGridUpdateRowResp(msg.respID, false, reason)
+		return
+	}
+	raw, ok := msg.raw.(map[string]interface{})
+	if !ok {
+		s.PostGridUpdateRowResp(msg.respID, false, "invalid data")
+		return
+	}
+	pk := raw["pk"]
+	data, ok := raw["data"].(map[string]interface{})
+	if !ok || pk == nil {
+		s.PostGridUpdateRowResp(msg.respID, false, "invalid pk or data")
+		return
+	}
+	vals := make(map[string]interface{}, len(data))
+	for k, v := range data {
+		vals[k] = sqlValue(v)
+	}
+	err := bindings.GridUpdate(meta.handle, meta.table, meta.pkField, sqlValue(pk), vals)
+	if err != nil {
+		s.PostGridUpdateRowResp(msg.respID, false, err.Error())
+		return
+	}
+	s.gridRefresh(msg.form, msg.ctrl)
+	s.PostGridUpdateRowResp(msg.respID, true, "")
+}
+
+// handleGridUpdateRowResp handles the response
+func (s *Session) handleGridUpdateRowResp(msg inboxMsg, logger Logger) {
+	data, _ := msg.raw.(map[string]interface{})
+	ok := false
+	errStr := ""
+	if v, ok := data["ok"].(bool); ok {
+		ok = v
+	}
+	if v, ok := data["error"].(string); ok {
+		errStr = v
+	}
+	s.PostGridUpdateRowResp(msg.respID, ok, errStr)
 }
 
 // sendRemoteData pushes a tabulator_remote_data message for a page reply.
@@ -1624,6 +2468,48 @@ func (s *Session) PostLooperRefreshRequest(form, ctrl string) {
 	}
 }
 
+// PostGridFormOpen forwards a grid detail/edit/new modal request. The value is
+// a JSON-decoded object {mode, pk, row}.
+func (s *Session) PostGridFormOpen(form, ctrl string, value interface{}) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridFormOpen, form: form, ctrl: ctrl, raw: value}:
+	case <-s.done:
+	}
+}
+
+// PostGridFormSave forwards a grid modal Save. The value is a JSON-decoded
+// object {mode, pk, values}.
+func (s *Session) PostGridFormSave(form, ctrl string, value interface{}) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridFormSave, form: form, ctrl: ctrl, raw: value}:
+	case <-s.done:
+	}
+}
+
+// PostGridFormCancel forwards a grid modal Cancel/Close.
+func (s *Session) PostGridFormCancel(form, ctrl string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridFormCancel, form: form, ctrl: ctrl}:
+	case <-s.done:
+	}
+}
+
+// PostGridRowDelete forwards a single-row delete request ({pk}).
+func (s *Session) PostGridRowDelete(form, ctrl string, value interface{}) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridRowDelete, form: form, ctrl: ctrl, raw: value}:
+	case <-s.done:
+	}
+}
+
+// PostGridBatchDelete forwards a selected-rows delete request ({pks:[...]}).
+func (s *Session) PostGridBatchDelete(form, ctrl string, value interface{}) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxGridBatchDelete, form: form, ctrl: ctrl, raw: value}:
+	case <-s.done:
+	}
+}
+
 // RequestChartGetImage asks the browser to render the chart canvas to a base64
 // PNG data URL and suspends the coroutine until it is delivered
 // (chart_image_resp). The resolved Lua value is the PNG data URL string.
@@ -2149,6 +3035,8 @@ func (s *Session) toLuaValue(v interface{}) lua.LValue {
 	switch val := v.(type) {
 	case string:
 		return lua.LString(val)
+	case int:
+		return lua.LNumber(val)
 	case float64:
 		return lua.LNumber(val)
 	case bool:

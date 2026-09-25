@@ -451,6 +451,30 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		form := getString(msg, "form")
 		ctrl := getString(msg, "ctrl")
 		sess.PostLooperRefreshRequest(form, ctrl)
+	case "grid_form_open":
+		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
+		value := msg["value"]
+		sess.PostGridFormOpen(form, ctrl, value)
+	case "grid_form_save":
+		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
+		value := msg["value"]
+		sess.PostGridFormSave(form, ctrl, value)
+	case "grid_form_cancel":
+		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
+		sess.PostGridFormCancel(form, ctrl)
+	case "grid_row_delete":
+		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
+		value := msg["value"]
+		sess.PostGridRowDelete(form, ctrl, value)
+	case "grid_batch_delete":
+		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
+		value := msg["value"]
+		sess.PostGridBatchDelete(form, ctrl, value)
 	case "chart_image_resp":
 		id := getString(msg, "id")
 		value := getString(msg, "value")

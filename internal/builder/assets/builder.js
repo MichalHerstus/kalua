@@ -1774,8 +1774,10 @@ function cmShowTab(tab) {
     b.classList.toggle('sel', b.dataset.cmTab === tab));
   $('#cm-datasource').classList.toggle('hidden', tab !== 'datasource');
   $('#cm-setup').classList.toggle('hidden', tab !== 'setup');
+  $('#cm-crud').classList.toggle('hidden', tab !== 'crud');
   $('#cm-preview').classList.toggle('hidden', tab !== 'preview');
   if (tab === 'setup') cmRenderSetup();
+  if (tab === 'crud') cmRenderCrud();
   if (tab === 'preview') cmRenderPreview();
 }
 
@@ -1838,8 +1840,79 @@ function cmColDefsFor(columns) {
   return (columns || []).map((c, i) => ({ name: c, field: c, idx: i }));
 }
 
-/* ---------- Setup / Row Template ---------- */
-function cmRenderSetup() {
+/* ---------- CRUD Grid ---------- */
+function cmRenderCrud() {
+  // PK Field
+  $('#cm-pk-field').value = CM.pkField || '';
+
+  // Selection Mode
+  $('#cm-selection-mode').value = CM.selectionMode || 'multi';
+
+  // Column Visibility
+  $('#cm-column-visibility').checked = !!CM.columnVisibility;
+
+  // Row Click Action (mutually exclusive)
+  $('#cm-row-click-select').checked = CM.rowClickAction === 'select';
+  $('#cm-row-click-view').checked = CM.rowClickAction === 'view';
+  $('#cm-row-click-edit').checked = CM.rowClickAction === 'edit';
+
+  // Default Visible Columns
+  const dv = Array.isArray(CM.defaultVisible) ? CM.defaultVisible.join(',') : '';
+  $('#cm-default-visible').checked = !!CM.defaultVisible && CM.defaultVisible.length > 0;
+  $('#cm-default-visible-row').classList.toggle('hidden', !$('#cm-default-visible').checked);
+  $('#cm-default-visible-input').hidden = !$('#cm-default-visible').checked;
+  $('#cm-default-visible-cols').value = dv;
+
+  // Row Actions
+  $('#cm-row-view').checked = !!(CM.rowActions && CM.rowActions.view);
+  $('#cm-row-edit').checked = !!(CM.rowActions && CM.rowActions.edit);
+  $('#cm-row-delete').checked = !!(CM.rowActions && CM.rowActions.delete);
+
+  // Global Actions
+  $('#cm-global-new').checked = !!(CM.globalActions && CM.globalActions.new_record);
+  $('#cm-global-batch-del').checked = !!(CM.globalActions && CM.globalActions.batch_delete);
+
+  // Form
+  $('#cm-form-ref').value = CM.formRef || '';
+  $('#cm-form-width').value = CM.formWidth || '80%';
+  const inline = !!CM.inlineForm;
+  $('#cm-inline-form').checked = inline;
+  $('#cm-inline-form-editor').hidden = !inline;
+  if (inline) {
+    $('#cm-inline-title').value = CM.inlineTitle || '';
+    $('#cm-inline-gap').value = CM.inlineGap || 10;
+    renderInlineFormControls();
+  }
+}
+
+function renderInlineFormControls() {
+  const box = $('#cm-inline-controls');
+  const ctrls = CM.inlineControls || [];
+  box.innerHTML = (ctrls.length ? '' : '<div class="hint">No controls yet — Add a control below.</div>') +
+    ctrls.map((ctrl, i) => `
+      <div class="cm-colrow" data-i="${i}" data-ctype="${escapeAttr(ctrl.type)}">
+        <button class="mv up" data-cmcol="up" title="Move up">▲</button>
+        <button class="mv dn" data-cmcol="down" title="Move down">▼</button>
+        <button class="del" data-cmcol="del" title="Delete control">×</button>
+        <select data-cminlinef="type">
+          ${CM_CTRL_TYPES.map(t => `<option value="${t}" ${t === ctrl.type ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <input data-cminlinef="name" value="${escapeAttr(ctrl.name)}" placeholder="name">
+        <input data-cminlinef="label" value="${escapeAttr(ctrl.label || '')}" placeholder="label">
+        <button class="opt" data-cminlinef="opts" data-i="${i}" title="Options">⚙</button>
+      </div>`).join('') +
+    `<div class="cm-add-row">
+      <label>Add control: </label>
+      <select id="cm-inline-add-type">
+        ${CM_CTRL_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
+      </select>
+      <button id="cm-inline-add-ctrl" data-cm-inline-add="1">Add</button>
+    </div>`;
+}
+
+const CM_CTRL_TYPES = [
+  'label', 'textbox', 'button', 'combo', 'list', 'table', 'checkbox', 'radio', 'image', 'chart'
+];
   if (CM.mode === 'looper') return renderRowTemplate();
   $('#cm-col-hint').textContent = 'Tabulator → columns array; basic table → {field: title} map.';
   const box = $('#cm-columns');
@@ -2054,6 +2127,91 @@ function onCMSetupInput(e) {
   if (k === 'sortable' || k === 'frozen') c[k] = t.checked;
   else if (k === 'width') c[k] = t.value === '' ? undefined : +t.value;
   else c[k] = t.value;
+if (CM.mode === 'table') CM.columns.push({ field: '', title: '', sortable: true, headerFilter: 'none', editor: '', width: undefined, align: '', frozen: false });
+    else if (CM.mode === 'looper') { CM.row.push(getDefaultCell('label')); CM.rowOpts = -1; }
+    cmRenderSetup();
+  });
+}
+
+/* ---------- CRUD Grid wiring ---------- */
+function wireCMCrud() {
+  // PK Field
+  $('#cm-pk-field').addEventListener('input', e => { CM.pkField = e.target.value; });
+  // Selection Mode
+  $('#cm-selection-mode').addEventListener('change', e => { CM.selectionMode = e.target.value; });
+  // Column Visibility
+  $('#cm-column-visibility').addEventListener('change', e => { CM.columnVisibility = e.target.checked; });
+  // Row Click Action (mutually exclusive)
+  $('#cm-row-click-select').addEventListener('change', e => { if (e.target.checked) CM.rowClickAction = 'select'; });
+  $('#cm-row-click-view').addEventListener('change', e => { if (e.target.checked) CM.rowClickAction = 'view'; });
+  $('#cm-row-click-edit').addEventListener('change', e => { if (e.target.checked) CM.rowClickAction = 'edit'; });
+  // Default Visible Columns
+  $('#cm-default-visible').addEventListener('change', e => {
+    const checked = e.target.checked;
+    $('#cm-default-visible-row').classList.toggle('hidden', !checked);
+    $('#cm-default-visible-input').hidden = !checked;
+    if (!checked) CM.defaultVisible = null;
+    else if (!CM.defaultVisible) CM.defaultVisible = [];
+  });
+  $('#cm-default-visible-cols').addEventListener('input', e => {
+    CM.defaultVisible = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+  });
+  // Row Actions
+  $('#cm-row-view').addEventListener('change', e => { CM.rowActions = CM.rowActions || {}; CM.rowActions.view = e.target.checked; });
+  $('#cm-row-edit').addEventListener('change', e => { CM.rowActions = CM.rowActions || {}; CM.rowActions.edit = e.target.checked; });
+  $('#cm-row-delete').addEventListener('change', e => { CM.rowActions = CM.rowActions || {}; CM.rowActions.delete = e.target.checked; });
+  // Global Actions
+  $('#cm-global-new').addEventListener('change', e => { CM.globalActions = CM.globalActions || {}; CM.globalActions.new_record = e.target.checked; });
+  $('#cm-global-batch-del').addEventListener('change', e => { CM.globalActions = CM.globalActions || {}; CM.globalActions.batch_delete = e.target.checked; });
+  // Form
+  $('#cm-form-ref').addEventListener('input', e => { CM.formRef = e.target.value; });
+  $('#cm-form-width').addEventListener('input', e => { CM.formWidth = e.target.value; });
+  $('#cm-inline-form').addEventListener('change', e => {
+    const checked = e.target.checked;
+    CM.inlineForm = checked;
+    $('#cm-inline-form-editor').hidden = !checked;
+    if (checked) renderInlineFormControls();
+  });
+  // Inline Form
+  $('#cm-inline-title').addEventListener('input', e => { CM.inlineTitle = e.target.value; });
+  $('#cm-inline-gap').addEventListener('input', e => { CM.inlineGap = e.target.value === '' ? undefined : +e.target.value; });
+  // Inline Form Controls
+  $('#cm-inline-controls').addEventListener('click', e => {
+    const delBtn = e.target.closest('[data-cmcol="del"]');
+    if (delBtn) {
+      const row = delBtn.closest('.cm-colrow');
+      if (!row) return;
+      const i = +row.dataset.i;
+      CM.inlineControls.splice(i, 1);
+      renderInlineFormControls();
+      return;
+    }
+    const optBtn = e.target.closest('[data-cminlinef="opts"]');
+    if (optBtn) {
+      // TODO: inline control options
+      return;
+    }
+  });
+  $('#cm-inline-controls').addEventListener('input', e => {
+    const row = e.target.closest('.cm-colrow');
+    if (!row) return;
+    const i = +row.dataset.i;
+    const ctrl = CM.inlineControls[i];
+    if (!ctrl) return;
+    const k = e.target.dataset.cminlinef;
+    if (k === 'type') {
+      ctrl.type = e.target.value;
+      ctrl.opts = ctrl.opts || {};
+    } else {
+      ctrl[k] = e.target.value;
+    }
+  });
+  $('#cm-inline-add-ctrl').addEventListener('click', () => {
+    const type = $('#cm-inline-add-type').value;
+    CM.inlineControls = CM.inlineControls || [];
+    CM.inlineControls.push({ type, name: '', label: '', opts: {} });
+    renderInlineFormControls();
+  });
 }
 
 /* ---------- Preview ---------- */
@@ -2232,6 +2390,7 @@ function wireControlModal() {
     catch (err) { e.target.classList.add('baderr'); }
   });
   wireCMSetup();
+  wireCMCrud();
   $('#cm-apply').addEventListener('click', cmApply);
 }
 

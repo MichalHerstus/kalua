@@ -1563,16 +1563,323 @@ k.ctrl.set_property("dashboard", "search", "align", "right")  -- override cell d
 | 4 | Extended Controls (Textbox/Label/Image) | 5.5 days |
 | 5 | Enhanced Form Layout System | 7.5 days |
 | 6 | Form Builder | 20 days |
-| **Total** | | **~63 days** |
+| 7 | CRUD Grid Control (Tabulator + Forms) | 30 days |
+| **Total** | | **~93 days** |
 
 ---
 
-## Next Steps
+# 7. CRUD Grid Control (Integrated Table + Form)
 
-1. **Confirm architecture**: VS Code webview vs standalone? -> __Standalone__
-2. **Prioritize controls**: All 8 basic controls + image, or subset first? -> __all__
-3. **Layout system**: Vertical-only MVP sufficient? -> __no, even in MVP I want more options of layout__
-4. **Event handler strategy**: Placeholder comments acceptable? -> __Yes__
-5. **File format**: `.kalua-form.json` as primary, Lua as export-only? -> __yes__
+## Overview
 
-Please confirm decisions on open questions, and I'll create detailed technical specs for Phase 1.
+Introduce a new `k.ctrl.grid(form, name, opts)` control that combines:
+- **Tabular view** over a database table (Tabulator-powered, DB-linked)
+- **Row actions**: View / Edit / Delete per row
+- **Global actions**: New Record, Batch Delete
+- **Column management**: visibility, filtering, sorting, custom renderers
+- **Detail/Edit form**: modal form for view/edit operations (reuses `k.form.show` modal)
+
+This is a higher-level "CRUD Grid" widget that subsumes the DB-linked table pattern (`k.ctrl.table` with `tabulator=true` + `db` + `query`) and adds integrated form-based editing.
+
+## API Surface
+
+### Control Creation
+
+```lua
+k.ctrl.grid("main", "users", {
+    -- Data source (DB-linked, like table/looper)
+    db = "main",                    -- named DB handle from --db
+    query = "SELECT * FROM users",  -- base SELECT
+    count_query = "SELECT COUNT(*) FROM users",
+    page_size = 25,
+    where = "",                     -- additional WHERE clause
+    order_by = "id DESC",
+    pk_field = "id",                -- explicit PK (or inferred from query)
+
+    -- Columns (Tabulator column definitions)
+    columns = {
+        {field="id", title="ID", sortable=true, headerFilter="number", visible=true},
+        {field="name", title="Name", sortable=true, headerFilter="text", visible=true},
+        {field="email", title="Email", sortable=true, headerFilter="text", visible=true},
+        {field="status", title="Status", sortable=true, headerFilter="text", visible=true},
+        {field="created_at", title="Created", sortable=true, headerFilter="none", visible=true},
+    },
+
+    -- Row actions (displayed as action buttons in a dedicated column)
+    row_actions = {
+        view = true,      -- show "View" button → opens modal with read-only form
+        edit = true,      -- show "Edit" button → opens modal with editable form
+        delete = true,    -- show "Delete" button → confirms then deletes row
+        -- Custom actions: {label="Archive", icon="archive", onclick=function(row) ... end}
+    },
+
+    -- Global actions (toolbar above table)
+    global_actions = {
+        new_record = true,           -- "New" button → opens empty edit form
+        batch_delete = true,         -- "Delete Selected" button (enabled when rows selected)
+        -- Custom actions: {label="Export CSV", onclick=function(selected_rows) ... end}
+    },
+
+    -- Detail/Edit form definition (inline or referenced)
+    form = "user_form",              -- option A: reference existing form by name
+    -- OR inline form definition:
+    form = {
+        title = "User Details",
+        controls = {
+            {type="textbox", name="id", label="ID", opts={enabled=false}},
+            {type="textbox", name="name", label="Name"},
+            {type="textbox", name="email", label="Email", opts={datetime={mode="email"}}},
+            {type="combo", name="status", label="Status", opts={items={{"active","Active"},{"inactive","Inactive"}}}},
+        }
+    },
+
+    -- Form behavior
+    form_modal = true,               -- show form as modal (default true)
+    form_gap = 10,                   -- modal gap percentage
+    form_width = "80%",              -- modal width (optional)
+
+    -- Column visibility control
+    column_visibility = true,        -- show column visibility toggle in toolbar
+    default_visible = {"id","name","email","status"}, -- default visible columns
+
+    -- Advanced
+    selection_mode = "multi",        -- "none" | "single" | "multi"
+    row_click_action = "view",       -- action when clicking row: "view" | "edit" | "select" | "none"
+})
+```
+
+### Grid Operations (`k.grid.*`)
+
+| Function | Description |
+|----------|-------------|
+| `k.grid.set_db_source(form, name, {db, query, ...})` | Change data source |
+| `k.grid.refresh(form, name)` | Reload page 1 |
+| `k.grid.get_selected(form, name)` | Get selected rows (async) |
+| `k.grid.get_row(form, name, pk)` | Get single row by PK (async) |
+| `k.grid.delete_row(form, name, pk)` | Delete row by PK |
+| `k.grid.batch_delete(form, name, {pks})` | Delete multiple rows |
+| `k.grid.insert_row(form, name, data)` | Insert new row, returns PK |
+| `k.grid.update_row(form, name, pk, data)` | Update row by PK |
+
+### Form Events (via `k.form.on`)
+
+```lua
+-- Grid form events (fired on the grid's internal form)
+k.form.on("users_grid", "__grid_form", "on_save", function(data)
+    -- data = {mode="new|edit", pk=..., values={...}}
+end)
+k.form.on("users_grid", "__grid_form", "on_cancel", function(data)
+    -- data = {mode="new|edit", pk=...}
+end)
+
+-- Row actions can also be handled via grid-level events
+k.form.on("main", "users_grid", "on_row_view", function(row) ... end)
+k.form.on("main", "users_grid", "on_row_edit", function(row) ... end)
+k.form.on("main", "users_grid", "on_row_delete", function(pk) ... end)
+k.form.on("main", "users_grid", "on_batch_delete", function(pks) ... end)
+k.form.on("main", "users_grid", "on_new_record", function() ... end)
+```
+
+## Architecture
+
+### 1. Go Runtime (`internal/bindings/grid.go` - new file)
+
+- Control registration (`ctrl.grid`)
+- Rendering (`renderGrid` in forms.go switch)
+- Grid operations (`k.grid.*`) via `registerGridOps`
+- PK inference from query / explicit `pk_field`
+
+### 2. Client-Side (`internal/web/assets/app.js`)
+
+- Grid instance management (`initGrids`, `createGrid`)
+- Action column rendering (view/edit/delete buttons)
+- Global action toolbar (new/batch delete/custom)
+- Column visibility dropdown
+- Form modal integration via `k.form.show` with `modal=true`
+- Selection mode handling
+
+### 3. Session Event Handling (`internal/session/session.go`)
+
+New inbox message types:
+- `grid_delete_row` — single row delete by PK
+- `grid_batch_delete` — multiple row delete by PK array
+- `grid_form_save` — form submission (mode: new/edit, pk, data)
+- `grid_form_cancel` — form cancelled
+
+Dispatcher routes to CRUD execution using existing DB bindings.
+
+### 4. Form Definition for Grid
+
+Two approaches supported:
+
+**A. Reference Existing Form**
+```lua
+k.form.new("user_form", {title = "User"})
+k.ctrl.textbox("user_form", "id", {label="ID", enabled=false})
+k.ctrl.textbox("user_form", "name", {label="Name"})
+k.ctrl.combo("user_form", "status", {label="Status", items={active="Active", inactive="Inactive"}})
+
+k.ctrl.grid("main", "users", {
+    db = "main",
+    query = "SELECT * FROM users",
+    form = "user_form",
+    row_actions = {view=true, edit=true, delete=true},
+    global_actions = {new_record=true, batch_delete=true},
+})
+```
+
+**B. Inline Form Definition**
+```lua
+k.ctrl.grid("main", "users", {
+    db = "main",
+    query = "SELECT * FROM users",
+    form = {
+        title = "User Details",
+        controls = {
+            {type="textbox", name="id", label="ID", opts={enabled=false}},
+            {type="textbox", name="name", label="Name"},
+            {type="combo", name="status", label="Status", opts={items={{"active","Active"},{"inactive","Inactive"}}}},
+        }
+    },
+    row_actions = {view=true, edit=true, delete=true},
+    global_actions = {new_record=true, batch_delete=true},
+})
+```
+
+**Auto-Generation**: If `form` omitted but row actions enabled, auto-generate form from query columns.
+
+### 5. Builder Integration
+
+- New "CRUD" tab in control-modal (extends table/looper editor)
+- Form reference dropdown + inline form editor
+- Live preview with sample data via `/api/grid/preview`
+- Export/import grid config preserving inline form
+
+### 6. CSS (`internal/web/assets/kalua.css`)
+
+- Grid container, toolbar, action column styling
+- Column visibility dropdown
+- Form modal integration (reuses `.form-modal`)
+
+## Implementation Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | Core Grid Control (`grid.go`, rendering, basic Tabulator output) | ✅ Done |
+| 2 | Client Interactions (action handlers, column visibility, toolbar, form modal) | ✅ Done |
+| 3 | Server CRUD (DELETE/INSERT/UPDATE execution, PK handling) | ✅ Done |
+| 4 | Form Integration (validation hooks, grid-level events, `k.grid.*` ops, form options) | ✅ Done |
+| 5 | Builder Integration (CRUD editor tab, live preview, export/import) | ✅ Done |
+| 6 | Documentation & Polish (API docs, USER_GUIDE, example app, tests) | ✅ Done |
+| **Total** | | **30** |
+
+## Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **New control type** (not extending table) | Clean separation; different semantics (CRUD vs read-only) |
+| **Both inline + referenced forms** | Flexibility for simple vs complex cases |
+| **Reuses `k.form.show` modal** | Consistent UX, leverages existing modal stack |
+| **Explicit PK with inference** | Auto-detects single PK from query; composite PKs not supported |
+| **Dedicated action column + row click** | Explicit + power-user shortcut; both coexist |
+| **Validation hook returns `{ok,error}` table** | Non-throwing, explicit contract for `on_save`/`on_cancel` |
+| **Default row/global actions** | `row_actions={view,edit,delete}`, `global_actions={new,batch_delete}` |
+| **Row-level security (WHERE injection)** | **Cancelled** — not implementing |
+
+## Migration Path
+
+Existing `k.ctrl.table` with `tabulator=true` + DB link:
+```lua
+-- Before
+k.ctrl.table("main", "users", {
+    tabulator=true,
+    db="main",
+    query="SELECT * FROM users",
+    columns={{field="id",title="ID"},{field="name",title="Name"}}
+})
+
+-- After (minimal)
+k.ctrl.grid("main", "users", {
+    db="main",
+    query="SELECT * FROM users",
+    columns={{field="id",title="ID"},{field="name",title="Name"}}
+})
+```
+- `tabulator=true` implicit for grid
+- `row_actions` defaults to `{view=true, edit=true, delete=true}`
+- `global_actions` defaults to `{new_record=true, batch_delete=true}`
+
+## Resolved Design Questions
+
+| Question | Decision |
+|----------|----------|
+| **Composite PKs** | No — single-column PK only (auto-inferred or explicit `pk_field`) |
+| **Soft deletes** | No — hard deletes only |
+| **Custom row actions** | No — fixed View/Edit/Delete buttons only |
+| **Inline cell editing** | No — modal form only |
+| **Server-side validation** | Yes — `on_save`/`on_cancel` hooks on internal form; grid-level `on_row_*` events |
+| **Row-level security (WHERE injection)** | Cancelled — not implementing |
+
+## Completed Work Summary
+
+### Phase 1: Core Grid Control (✅ Done)
+- New `k.ctrl.grid` control with Tabulator integration
+- DB-linked data source with server-side paging
+- Column definitions, PK inference, selection modes
+
+### Phase 2: Client Interactions (✅ Done)
+- Action column (View/Edit/Delete buttons per row)
+- Global toolbar (New Record, Batch Delete, Column Visibility)
+- Row click actions (select/view/edit)
+- Selection modes (multi/single/none)
+- Modal form integration for view/edit/new
+
+### Phase 3: Server CRUD (✅ Done)
+- `GridInsert`, `GridUpdate`, `GridDeleteMany` in `internal/bindings/grid.go`
+- PK inference from query or explicit `pk_field`
+- Query parsing for table name extraction
+- Async operations via session actor
+
+### Phase 4: Form Integration (✅ Done)
+- **Validation hooks**: `on_save`/`on_cancel` on internal grid form (`__kgrid_<form>_<ctrl>`)
+- **Grid-level events**: `on_row_view`, `on_row_edit`, `on_row_delete`, `on_batch_delete`, `on_new_record` on main form
+- **`k.grid.*` Lua bindings**: `get_selected`, `get_row`, `delete_row`, `batch_delete`, `insert_row`, `update_row`
+- **Form options**: `form_width`, `default_visible`, default `row_actions`/`global_actions`
+- Fixed `int` type handling in `toLuaValue` for proper numeric values
+
+### Phase 5: Builder Integration (✅ Done)
+- **CRUD tab** in builder modal (alongside Datasource/Table Setup/Row Template)
+- Fields: DB selector, query, PK field, columns editor, row/global actions checkboxes, column visibility, form picker, selection mode, row click action, form width/gap, inline form editor
+- Export/import of grid config in multi-form JSON
+
+### Phase 6: Documentation & Polish (✅ Done)
+- **API Documentation**: Added `CtrlFunc` entries for all `k.grid.*` ops in `api_doc.go`
+- **USER_GUIDE.md**: Complete CRUD Grid Control section with examples, migration guide, options reference
+- **E2E Tests** (`internal/session/grid_e2e_test.go`):
+  - `TestGridFormOpenEditSaveCancel`: Full modal cycle (new/edit/view/cancel)
+  - `TestGridRowDeleteBatchDelete`: Row and batch delete with refresh
+  - `TestGridValidationRejection`: Server-side validation rejection
+  - `TestGridDefaultActions`: Default actions when not specified
+- **Validation**: All checks pass (`go test`, `go vet`, `node --check`, `make check-assets`, `KALUA check`)
+
+## Example App
+- `testdata/apps/grid_crud_demo.lua`: Complete CRUD grid demo with SQLite backend
+
+### Phase 6: Documentation & Polish (Pending)
+
+**6.1 API Documentation** (`internal/bindings/api_doc.go`)
+- Add `CtrlFunc` entries for `grid`, `grid.set_db_source`, `grid.refresh`, `grid.get_selected`, `grid.get_row`, `grid.delete_row`, `grid.batch_delete`, `grid.insert_row`, `grid.update_row`
+- Run `make gen-api && make check-api`
+
+**6.2 User Guide** (`USER_GUIDE.md`)
+- New section "CRUD Grid Control" with migration guide, complete examples, event hooks reference, `k.grid.*` operations
+
+**6.3 Tests** (`internal/session/grid_e2e_test.go`)
+- Full CRUD cycle: form open → save → `tabulator_refresh`
+- View/edit/delete/batch delete flows
+- Server-side validation rejection
+- `k.grid.*` operations from Lua
+- Default actions when not specified
+
+**6.4 Code Quality**
+- `go test ./...`, `go vet ./...`, `node --check`, `make check-assets` all pass

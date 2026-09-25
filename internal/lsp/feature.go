@@ -203,7 +203,7 @@ func completeKapi(text, after string, start, cursor int) []protocol.CompletionIt
 
 	var items []protocol.CompletionItem
 	// namespace roots
-	for _, ns := range []string{"form", "ctrl", "table"} {
+	for _, ns := range []string{"form", "ctrl", "table", "looper", "chart", "grid"} {
 		if !strings.HasPrefix(ns, after) {
 			continue
 		}

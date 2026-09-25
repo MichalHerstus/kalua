@@ -690,6 +690,12 @@ func getDBHandle(L *lua.LState, id string) *DBHandle {
 	return dbHandles[id]
 }
 
+// GetDBHandle retrieves a database handle by ID (opaque runtime id or a
+// preregistered --db name). Exported for use by session.
+func GetDBHandle(L *lua.LState, id string) *DBHandle {
+	return getDBHandle(L, id)
+}
+
 // RegisterNamedDB preregisters a database connection under the given name,
 // making db="NAME" usable by k.ctrl.table/k.ctrl.looper (and any DB binding)
 // without a Lua-side k.connect_db(). Re-registering a name replaces and closes
@@ -907,4 +913,48 @@ func (h *DBHandle) Close() error {
 		return h.db.Close()
 	}
 	return nil
+}
+
+// Query executes a query and returns rows as []map[string]interface{}
+func (h *DBHandle) Query(query string, args ...interface{}) ([]map[string]interface{}, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.db == nil {
+		return nil, fmt.Errorf("database not connected")
+	}
+
+	rows, err := h.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var result []map[string]interface{}
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		valPtrs := make([]interface{}, len(cols))
+		for i := range vals {
+			valPtrs[i] = &vals[i]
+		}
+		if err := rows.Scan(valPtrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]interface{}, len(cols))
+		for i, col := range cols {
+			v := vals[i]
+			if b, ok := v.([]byte); ok {
+				row[col] = string(b)
+			} else {
+				row[col] = v
+			}
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }

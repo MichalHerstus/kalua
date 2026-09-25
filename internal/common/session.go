@@ -87,6 +87,20 @@ type SessionInterface interface {
 	// k.ctrl.get_selection - browser round-trip for selection
 	RequestSelection(co *lua.LState, cancel func(), form, ctrl string) string
 	PostSelectionResp(reqID string, value map[string]interface{})
+
+	// k.grid.* operations
+	RequestGridGetSelected(co *lua.LState, cancel func(), form, ctrl string) string
+	PostGridGetSelectedResp(reqID string, rows []map[string]interface{})
+	RequestGridGetRow(co *lua.LState, cancel func(), form, ctrl string, pk interface{}) string
+	PostGridGetRowResp(reqID string, row map[string]interface{})
+	RequestGridDeleteRow(co *lua.LState, cancel func(), form, ctrl string, pk interface{}) string
+	PostGridDeleteRowResp(reqID string, ok bool, err string)
+	RequestGridBatchDelete(co *lua.LState, cancel func(), form, ctrl string, pks []interface{}) string
+	PostGridBatchDeleteResp(reqID string, ok bool, err string)
+	RequestGridInsertRow(co *lua.LState, cancel func(), form, ctrl string, data map[string]interface{}) string
+	PostGridInsertRowResp(reqID string, pk interface{}, err string)
+	RequestGridUpdateRow(co *lua.LState, cancel func(), form, ctrl string, pk interface{}, data map[string]interface{}) string
+	PostGridUpdateRowResp(reqID string, ok bool, err string)
 }
 
 // DefaultConv converts an async result to a Lua value on the caller's state,

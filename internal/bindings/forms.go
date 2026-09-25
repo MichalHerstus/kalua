@@ -435,6 +435,17 @@ func registerControls(e *Env) {
 		return 0
 	})
 
+	// k.ctrl.grid(form, name, options)
+	// CRUD grid widget (kforms_enhancements.md §7): DB-linked Tabulator table
+	// with row/global actions, selection, and an optional detail/edit form.
+	e.register("ctrl.grid", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "grid", opts)
+		return 0
+	})
+
 	// k.ctrl.chart(form, name, options)
 	e.register("ctrl.chart", "controls", func(L *lua.LState) int {
 		formName := L.CheckString(1)
@@ -944,6 +955,9 @@ func registerControls(e *Env) {
 
 	// Chart data operations (Chart.js)
 	registerChartOps(e)
+
+	// CRUD grid data operations (Tabulator + forms)
+	registerGridOps(e)
 }
 
 // addControl adds a control to a form definition.
@@ -959,9 +973,10 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 	}
 
 	controls := tbl.RawGetString("controls")
-	if controls == lua.LNil {
+	if controls == lua.LNil || controls == nil {
 		controls = L.NewTable()
 		tbl.RawSetString("controls", controls)
+		controls = tbl.RawGetString("controls")
 	}
 	controlsTbl, ok := controls.(*lua.LTable)
 	if !ok {
@@ -970,9 +985,10 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 
 	// Track control order
 	order := tbl.RawGetString("order")
-	if order == lua.LNil {
+	if order == lua.LNil || order == nil {
 		order = L.NewTable()
 		tbl.RawSetString("order", order)
+		order = tbl.RawGetString("order")
 	}
 	orderTbl, ok := order.(*lua.LTable)
 	if !ok {
@@ -1072,6 +1088,28 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("db_order_by", opts.RawGetString("order_by"))
 		ctrlTbl.RawSetString("columns", opts.RawGetString("columns"))
 		ctrlTbl.RawSetString("row", opts.RawGetString("row"))
+	}
+
+	// CRUD grid options (kforms_enhancements.md §7). Tabulator output is implicit;
+	// the control adds pk_field, action config, selection mode and the optional
+	// detail/edit form (referenced by name or declared inline).
+	if ctrlType == "grid" {
+		ctrlTbl.RawSetString("db", opts.RawGetString("db"))
+		ctrlTbl.RawSetString("query", opts.RawGetString("query"))
+		ctrlTbl.RawSetString("columns", opts.RawGetString("columns"))
+		ctrlTbl.RawSetString("data", opts.RawGetString("data"))
+		ctrlTbl.RawSetString("tabulatorOptions", opts.RawGetString("tabulatorOptions"))
+		ctrlTbl.RawSetString("page_size", opts.RawGetString("page_size"))
+		ctrlTbl.RawSetString("count_query", opts.RawGetString("count_query"))
+		ctrlTbl.RawSetString("db_where", opts.RawGetString("where"))
+		ctrlTbl.RawSetString("db_order_by", opts.RawGetString("order_by"))
+		ctrlTbl.RawSetString("pk_field", opts.RawGetString("pk_field"))
+		ctrlTbl.RawSetString("row_actions", opts.RawGetString("row_actions"))
+		ctrlTbl.RawSetString("global_actions", opts.RawGetString("global_actions"))
+		ctrlTbl.RawSetString("selection_mode", opts.RawGetString("selection_mode"))
+		ctrlTbl.RawSetString("row_click_action", opts.RawGetString("row_click_action"))
+		ctrlTbl.RawSetString("column_visibility", opts.RawGetString("column_visibility"))
+		ctrlTbl.RawSetString("form", opts.RawGetString("form"))
 	}
 
 	// Chart options (Chart.js)
@@ -1704,6 +1742,8 @@ func renderControl(ctrl *lua.LTable) string {
 		return renderTable(ctrl, formName, name, id, label, value, visible, enabled, attrs)
 	case "looper":
 		return renderLooper(ctrl, formName, name, id, visible)
+	case "grid":
+		return renderGrid(ctrl, formName, name, id, visible)
 	case "chart":
 		return renderChart(ctrl, formName, name, id, visible)
 	case "image":

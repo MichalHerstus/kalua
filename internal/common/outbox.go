@@ -19,4 +19,8 @@ type OutboxMsg struct {
 	Modal    bool    `json:"modal,omitempty"`
 	GapX     float64 `json:"gap_x,omitempty"`
 	GapY     float64 `json:"gap_y,omitempty"`
+	Grid     bool    `json:"grid,omitempty"`
+	GridMode string  `json:"grid_mode,omitempty"`
+	GridPK   string  `json:"grid_pk,omitempty"`
+	GridRow  string  `json:"grid_row,omitempty"`
 }

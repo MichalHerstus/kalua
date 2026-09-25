@@ -3558,6 +3558,181 @@ function shutdown() k.print("bye") end     -- on SIGTERM/SIGINT
 
 `handle_http` supports the response forms: `nil` (empty 200), a plain string (text/plain), `{json=...}`, `{status=n}`, or `{status, headers, body}`. `req` carries `method`, `path`, `query`, `query_raw`, `remote_addr`, `tls`. `SIGHUP` hot-reloads the script without dropping in-flight work.
 
+## 6.7 CRUD Grid Control — `grid_crud_demo.lua`
+
+The **CRUD Grid** (`k.ctrl.grid`) is a high-level widget that combines a database-linked Tabulator table with integrated form-based editing. It subsumes the DB-linked table pattern (`k.ctrl.table` with `tabulator=true` + `db` + `query`) and adds:
+
+- **Row actions**: View / Edit / Delete buttons per row
+- **Global actions**: New Record / Batch Delete toolbar
+- **Column visibility** dropdown
+- **Selection modes**: multi / single / none
+- **Row click action**: select / view / edit / none
+- **Detail/Edit form**: modal form for view/edit (referenced or inline)
+- **Server-side validation** via `on_save` / `on_cancel` hooks
+- **Grid operations**: `k.grid.get_selected`, `get_row`, `delete_row`, `batch_delete`, `insert_row`, `update_row`
+
+```lua
+function main()
+  local db = k.connect_sqlite("sqlite://grid_demo.db")
+  k.sql(db, "CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT, price REAL, category TEXT, active INTEGER)")
+
+  -- Seed some data
+  local count = k.db_select(db, "SELECT COUNT(*) as c FROM products")
+  if count and count[1] and count[1].c == 0 then
+    local items = {
+      {name = "Laptop", price = 999.99, category = "Electronics", active = 1},
+      {name = "Mouse", price = 29.99, category = "Electronics", active = 1},
+      {name = "Keyboard", price = 79.99, category = "Electronics", active = 1},
+      {name = "Monitor", price = 299.50, category = "Electronics", active = 1},
+      {name = "Desk", price = 449.00, category = "Furniture", active = 1},
+      {name = "Chair", price = 199.99, category = "Furniture", active = 1},
+    }
+    for _, item in ipairs(items) do
+      k.sql(db, "INSERT INTO products (name, price, category, active) VALUES (?, ?, ?, ?)",
+        item.name, item.price, item.category, item.active)
+    end
+  end
+
+  local form = k.form.new("grid_demo", {
+    title = "Product Grid CRUD Demo",
+    layout = "vertical",
+    align = "center",
+    gap = 16,
+    controls = {
+      {type = "label", name = "title", label = "Product Inventory (CRUD Grid)", align = "center"},
+      {type = "grid", name = "products", db = "db",
+        query = "SELECT id, name, price, category, active FROM products",
+        pk_field = "id",
+        selection_mode = "multi",
+        row_click_action = "edit",
+        row_actions = {view = true, edit = true, delete = true},
+        global_actions = {new_record = true, batch_delete = true},
+        column_visibility = true,
+        tabulator = true,
+        page_size = 10,
+      },
+    },
+  })
+
+  k.form.show("grid_demo")
+end
+```
+
+### Key Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `db` | required | Named DB handle (from `--db NAME=DSN` or `k.connect_db`) |
+| `query` | required | Base `SELECT` statement |
+| `pk_field` | auto | Primary key column (defaults to `id` or first column) |
+| `columns` | auto | Tabulator column defs; auto-generated from query if omitted |
+| `row_actions` | `{view,edit,delete}` | Row action buttons |
+| `global_actions` | `{new,batch_delete}` | Toolbar actions |
+| `selection_mode` | `multi` | `multi`, `single`, or `none` |
+| `row_click_action` | `edit` | `view`, `edit`, `select`, or `none` |
+| `column_visibility` | `false` | Show column visibility dropdown |
+| `form` | auto | Referenced form name or inline `{title, controls}`; auto-generates if omitted |
+| `form_width` | `80%` | Modal width |
+| `form_gap` | `10` | Modal gap in px |
+
+### Referenced Form (reusable)
+
+```lua
+k.form.new("product_form", {title = "Product Details", gap = 12})
+k.ctrl.textbox("product_form", "id", {label = "ID", opts = {enabled = false}})
+k.ctrl.textbox("product_form", "name", {label = "Name"})
+k.ctrl.textbox("product_form", "price", {label = "Price", opts = {number = true}})
+k.ctrl.combo("product_form", "category", {label = "Category", items = {Electronics="Electronics", Furniture="Furniture"}})
+k.ctrl.checkbox("product_form", "active", {label = "Active"})
+
+k.ctrl.grid("main", "products", {
+  db = "db", query = "SELECT ...", form = "product_form", ...
+})
+```
+
+### Inline Form (self-contained)
+
+```lua
+k.ctrl.grid("main", "products", {
+  db = "db", query = "SELECT ...",
+  form = {
+    title = "Product Details",
+    gap = 12,
+    controls = {
+      {type="textbox", name="id", label="ID", opts={enabled=false}},
+      {type="textbox", name="name", label="Name"},
+      {type="textbox", name="price", label="Price", opts={number=true}},
+    }
+  },
+  ...
+})
+```
+
+### Grid Operations (`k.grid.*`)
+
+All operations are **async** (yield until browser/DB responds):
+
+| Function | Returns |
+|----------|---------|
+| `k.grid.get_selected(form, name)` | Array of selected row objects |
+| `k.grid.get_row(form, name, pk)` | Single row object by PK |
+| `k.grid.delete_row(form, name, pk)` | `true` on success |
+| `k.grid.batch_delete(form, name, {pks})` | `true` on success |
+| `k.grid.insert_row(form, name, {col=val, ...})` | Inserted PK |
+| `k.grid.update_row(form, name, pk, {col=val, ...})` | `true` on success |
+
+### Server-Side Validation
+
+```lua
+-- Fired on the internal grid form before INSERT/UPDATE
+k.form.on("grid_demo", "__kgrid_grid_demo_products", "on_save", function(data)
+  -- data = {mode="new|edit", pk=..., values={...}}
+  if data.values.price and data.values.price < 0 then
+    return {ok = false, error = "Price cannot be negative"}
+  end
+  return {ok = true}
+end)
+
+-- Fired on Cancel
+k.form.on("grid_demo", "__kgrid_grid_demo_products", "on_cancel", function(data)
+  -- data = {mode, pk}
+end)
+```
+
+### Grid-Level Events (on main form)
+
+```lua
+k.form.on("grid_demo", "products", "on_row_view", function(row) ... end)
+k.form.on("grid_demo", "products", "on_row_edit", function(row) ... end)
+k.form.on("grid_demo", "products", "on_row_delete", function(pk) ... end)
+k.form.on("grid_demo", "products", "on_batch_delete", function(pks) ... end)
+k.form.on("grid_demo", "products", "on_new_record", function() ... end)
+```
+
+Return `{ok=false, error="msg"}` to abort the action.
+
+### Migration from `k.ctrl.table` + `tabulator=true`
+
+```lua
+-- Before
+k.ctrl.table("main", "users", {
+  tabulator=true, db="main",
+  query="SELECT * FROM users",
+  columns={{field="id",title="ID"},{field="name",title="Name"}}
+})
+
+-- After (minimal)
+k.ctrl.grid("main", "users", {
+  db="main", query="SELECT * FROM users",
+  columns={{field="id",title="ID"},{field="name",title="Name"}}
+})
+```
+- `tabulator=true` is implicit for grid
+- `row_actions` defaults to `{view=true, edit=true, delete=true}`
+- `global_actions` defaults to `{new_record=true, batch_delete=true}`
+
+---
+
 ## 6.7 Data round-trips in one breath
 
 ```lua

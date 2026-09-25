@@ -262,11 +262,17 @@
     // createTabulator reads the data-k-tabulator-* attributes on a container
     // and instantiates Tabulator. Columns are taken from data-k-tabulator-columns
     // (JSON array of {field,title,...}) or inferred from the first row of data.
-function createTabulator(el) {
+    // An optional seed object supplies call-backs and overrides the grid layers
+    // need (functions cannot travel as data attributes): seed = {
+    //   columns, selectable, selectableRows, rowClick, rowSelectionChanged }.
+    function createTabulator(el, seed) {
+        seed = seed || {};
         var opts = {};
         try { opts = JSON.parse(el.dataset.kTabulatorOptions || '{}'); } catch (e) {}
-        var cols = [];
-        try { cols = JSON.parse(el.dataset.kTabulatorColumns || '[]'); } catch (e) {}
+        var cols = seed.columns || [];
+        if (!cols || cols.length === 0) {
+            try { cols = JSON.parse(el.dataset.kTabulatorColumns || '[]'); } catch (e) {}
+        }
         var data = [];
         try { data = JSON.parse(el.dataset.kTabulatorData || '[]'); } catch (e) {}
 
@@ -285,7 +291,14 @@ function createTabulator(el) {
             opts.autoColumns = true;
         }
         opts.layout = opts.layout || 'fitColumns';
-        opts.selectable = opts.selectable !== false;
+        if (seed.selectable !== undefined) {
+            opts.selectable = seed.selectable;
+        } else {
+            opts.selectable = opts.selectable !== false;
+        }
+        if (seed.selectableRows !== undefined) {
+            opts.selectableRows = seed.selectableRows;
+        }
         opts.selectableRangeMode = opts.selectableRangeMode || 'click';
 
         var form = el.dataset.kForm;
@@ -299,17 +312,19 @@ function createTabulator(el) {
         }
 
         // Bridge selection changes to the host as tabulator_selection_change.
-        if (typeof opts.rowSelectionChanged !== 'function') {
-            opts.rowSelectionChanged = function(selectedData, selectedRows) {
-                var rows = [];
-                if (selectedRows) {
-                    selectedRows.forEach(function(r) {
-                        var idx = r ? r.getPosition(true) : 0;
-                        rows.push(idx + 1); // 1-based
-                    });
-                }
-                sendEvent(form, ctrl, 'tabulator_selection_change', { rows: rows, data: selectedData || [] });
-            };
+        opts.rowSelectionChanged = seed.rowSelectionChanged || function(selectedData, selectedRows) {
+            var rows = [];
+            if (selectedRows) {
+                selectedRows.forEach(function(r) {
+                    var idx = r ? r.getPosition(true) : 0;
+                    rows.push(idx + 1); // 1-based
+                });
+            }
+            sendEvent(form, ctrl, 'tabulator_selection_change', { rows: rows, data: selectedData || [] });
+        };
+
+        if (seed.rowClick) {
+            opts.rowClick = seed.rowClick;
         }
 
         // Remote pagination: route every data request (initial load, page change,
@@ -445,11 +460,316 @@ function createTabulator(el) {
                 tabulatorInstances.delete(key);
             }
             el.removeAttribute('data-k-tabulator-ready');
+            gridInstances.delete(key);
         });
     }
 
     function tabulatorBySelector(selector) {
         return tabulatorInstances.get(selector);
+    }
+
+    // ---- CRUD Grid support (k.ctrl.grid, §7) ----
+    // Config lives on the outer .kalua-grid wrapper (data-k-grid-*); the inner
+    // .kalua-tabulator-table is a standard Tabulator container keyed the same
+    // way as plain tables. gridInstances is keyed by the inner table's selector
+    // and holds {wrapper, tableEl, inst, pkField, rowActions, globalActions,
+    // rowClick, columnVisibility, selectionMode}.
+    const gridInstances = new Map();
+
+    // initGrids scans a DOM scope for grid wrappers and builds each one that is
+    // not already managed. Must run BEFORE initTabulators so the inner table is
+    // seeded (action column, selection, row click) and marked ready.
+    function initGrids(scope) {
+        scope.querySelectorAll('.kalua-grid:not([data-k-grid-ready])').forEach(function(wrapper) {
+            createGrid(wrapper);
+            wrapper.setAttribute('data-k-grid-ready', 'true');
+        });
+    }
+
+    function gridCfgOf(wrapper) {
+        const tableEl = wrapper.querySelector('.kalua-tabulator-table');
+        if (!tableEl) return null;
+        return gridInstances.get('#' + tableEl.id) || null;
+    }
+
+    function createGrid(wrapper) {
+        const tableEl = wrapper.querySelector('.kalua-tabulator-table');
+        if (!tableEl) return;
+
+        let rowActions = {};
+        try { rowActions = JSON.parse(wrapper.dataset.kGridRowActions || '{}'); } catch (e) {}
+        let globalActions = {};
+        try { globalActions = JSON.parse(wrapper.dataset.kGridGlobalActions || '{}'); } catch (e) {}
+
+        const cfg = {
+            wrapper: wrapper,
+            tableEl: tableEl,
+            pkField: wrapper.dataset.kGridPk || '',
+            rowActions: rowActions,
+            globalActions: globalActions,
+            rowClick: wrapper.dataset.kGridRowClick || '',
+            columnVisibility: wrapper.dataset.kGridColumnVisibility === 'true',
+            selectionMode: wrapper.dataset.kGridSelection || 'multi',
+            inst: null
+        };
+
+        var cols = [];
+        try { cols = JSON.parse(tableEl.dataset.kTabulatorColumns || '[]'); } catch (e) {}
+        var data = [];
+        try { data = JSON.parse(tableEl.dataset.kTabulatorData || '[]'); } catch (e) {}
+        if (!cols || cols.length === 0) {
+            cols = inferColumns(data);
+        }
+
+        const hasActions = !!(rowActions && (rowActions.view || rowActions.edit || rowActions.delete));
+        if (hasActions && cfg.pkField && cols.length > 0) {
+            cols = cols.slice();
+            cols.push(gridActionsColumn(cfg));
+        }
+
+        const selection = cfg.selectionMode || 'multi';
+        const seed = { columns: cols };
+        if (selection === 'none') {
+            seed.selectable = false;
+        } else if (selection === 'single') {
+            seed.selectable = true;
+            seed.selectableRows = 1;
+        } else if (selection !== 'multi' && Number(selection) > 0) {
+            seed.selectable = true;
+            seed.selectableRows = Number(selection);
+        }
+
+        if (cfg.rowClick === 'select') {
+            seed.rowClick = function(e, row) {
+                if (e && e.target && e.target.closest && e.target.closest('button')) return;
+                if (row && typeof row.select === 'function') {
+                    if (row.isSelected()) {
+                        row.deselect();
+                    } else {
+                        row.select();
+                    }
+                }
+            };
+        } else if (cfg.rowClick === 'view' || cfg.rowClick === 'edit') {
+            seed.rowClick = function(e, row) {
+                if (e && e.target && e.target.closest && e.target.closest('button')) return;
+                if (!cfg.pkField || !row) return;
+                const d = row.getData();
+                if (!d || d[cfg.pkField] === undefined) return;
+                gridOpenForm(cfg, cfg.rowClick, d[cfg.pkField], d);
+            };
+        }
+
+        if (hasActions || cfg.columnVisibility) {
+            seed.rowSelectionChanged = function() {
+                updateGridToolbar(cfg);
+            };
+        }
+
+        const inst = createTabulator(tableEl, seed);
+        cfg.inst = inst;
+        gridInstances.set('#' + tableEl.id, cfg);
+        renderGridToolbar(cfg);
+        return cfg;
+    }
+
+    function gridActionsColumn(cfg) {
+        return {
+            field: '_actions',
+            title: '',
+            width: 120,
+            hozAlign: 'center',
+            headerSort: false,
+            resizable: false,
+            frozen: true,
+            formatter: function(cell) {
+                const d = cell.getData() || {};
+                const pkv = d[cfg.pkField] === undefined || d[cfg.pkField] === null
+                    ? '' : JSON.stringify(d[cfg.pkField]);
+                const rowv = escapeHtml(JSON.stringify(d));
+                let html = '<div class="kalua-grid-row-actions">';
+                if (cfg.rowActions.view) {
+                    html += gridActionButton('view', 'View', pkv, rowv);
+                }
+                if (cfg.rowActions.edit) {
+                    html += gridActionButton('edit', 'Edit', pkv, rowv);
+                }
+                if (cfg.rowActions.delete) {
+                    html += gridActionButton('delete', 'Delete', pkv, rowv);
+                }
+                html += '</div>';
+                return html;
+            }
+        };
+    }
+
+    function gridActionButton(action, label, pkv, rowv) {
+        return '<button type="button" class="kalua-grid-btn kalua-grid-btn-' + action + '"'
+            + ' data-k-grid-action="' + action + '"'
+            + ' data-k-grid-pk="' + escapeHtml(pkv) + '"'
+            + ' data-k-grid-row="' + escapeHtml(rowv) + '">' + label + '</button>';
+    }
+
+    function renderGridToolbar(cfg) {
+        if (cfg.wrapper.querySelector('.kalua-grid-toolbar')) return;
+        const tb = document.createElement('div');
+        tb.className = 'kalua-grid-toolbar';
+        tb.setAttribute('data-k-grid-form', cfg.wrapper.dataset.kForm);
+        tb.setAttribute('data-k-grid-ctrl', cfg.wrapper.dataset.kCtrl);
+        const ga = cfg.globalActions || {};
+        if (ga.new_record) {
+            tb.appendChild(gridToolbarButton('new_record', 'New'));
+        }
+        if (ga.batch_delete) {
+            const delBtn = gridToolbarButton('batch_delete', 'Delete Selected');
+            delBtn.disabled = true;
+            delBtn.classList.add('disabled');
+            tb.appendChild(delBtn);
+        }
+        if (cfg.columnVisibility) {
+            const wrap = document.createElement('div');
+            wrap.className = 'kalua-grid-columns';
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'kalua-grid-btn kalua-grid-btn-columns';
+            toggle.setAttribute('data-k-grid-columns', '1');
+            toggle.textContent = 'Columns';
+            wrap.appendChild(toggle);
+            const list = document.createElement('div');
+            list.className = 'kalua-grid-columns-list hidden';
+            wrap.appendChild(list);
+            tb.appendChild(wrap);
+        }
+        cfg.wrapper.insertBefore(tb, cfg.wrapper.firstChild);
+    }
+
+    function gridToolbarButton(action, label) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'kalua-grid-btn kalua-grid-btn-' + action;
+        b.setAttribute('data-k-grid-toolbar', action);
+        b.textContent = label;
+        return b;
+    }
+
+    function updateGridToolbar(cfg) {
+        const btn = cfg.wrapper.querySelector('[data-k-grid-toolbar="batch_delete"]');
+        if (!btn) return;
+        const inst = cfg.inst;
+        const n = inst && typeof inst.getSelectedRows === 'function' ? inst.getSelectedRows().length : 0;
+        btn.disabled = n === 0;
+        btn.classList.toggle('disabled', n === 0);
+    }
+
+    function collectSelectedGridPks(cfg) {
+        const inst = cfg.inst;
+        if (!inst || typeof inst.getSelectedRows !== 'function' || !cfg.pkField) return [];
+        return inst.getSelectedRows().map(function(row) {
+            const d = row.getData();
+            return d ? d[cfg.pkField] : undefined;
+        }).filter(function(v) {
+            return v !== undefined && v !== null;
+        });
+    }
+
+    function rebuildGridColumnsMenu(cfg) {
+        const list = cfg.wrapper.querySelector('.kalua-grid-columns-list');
+        if (!list) return;
+        list.innerHTML = '';
+        const inst = cfg.inst;
+        if (!inst || typeof inst.getColumns !== 'function') return;
+        const cols = inst.getColumns();
+        cols.forEach(function(col) {
+            const field = col.getField();
+            if (field === '_actions') return;
+            const def = col.getDefinition();
+            const label = def.title !== undefined && def.title !== '' ? def.title : field;
+            const item = document.createElement('label');
+            item.className = 'kalua-grid-column-item';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = col.isVisible();
+            cb.setAttribute('data-k-grid-column-toggle', field);
+            cb.addEventListener('change', function() {
+                if (cb.checked) {
+                    inst.showColumn(field);
+                } else {
+                    inst.hideColumn(field);
+                }
+            });
+            const span = document.createElement('span');
+            span.textContent = label;
+            item.appendChild(cb);
+            item.appendChild(span);
+            list.appendChild(item);
+        });
+    }
+
+    // gridOpenForm asks the host to render the grid's detail/edit/new modal.
+    function gridOpenForm(cfg, mode, pk, row) {
+        send({
+            type: 'grid_form_open',
+            form: cfg.wrapper.dataset.kForm,
+            ctrl: cfg.wrapper.dataset.kCtrl,
+            value: { mode: mode, pk: pk, row: row || {} }
+        });
+    }
+
+    // setupGridModal populates a grid's modal form from the server-sent row and
+    // makes it read-only in view mode (the Save button is removed).
+    function setupGridModal(msg) {
+        const overlay = modalForms.get(msg.form);
+        if (!overlay) return;
+        const formEl = overlay.querySelector('#f:' + msg.form);
+        let row = {};
+        try { row = JSON.parse(msg.grid_row || '{}'); } catch (e) {}
+        const mode = msg.grid_mode || 'edit';
+
+        const controls = formEl ? formEl.querySelectorAll('[data-k-form][data-k-ctrl]') : [];
+        controls.forEach(function(el) {
+            if (el.tagName === 'IMG') {
+                if (row[el.dataset.kCtrl]) {
+                    el.setAttribute('src', String(row[el.dataset.kCtrl]));
+                }
+                return;
+            }
+            let value = row[el.dataset.kCtrl];
+            if (el.tagName === 'INPUT' && el.type === 'checkbox') {
+                el.checked = !!value;
+            } else if (el.tagName === 'INPUT' && el.type === 'radio') {
+                el.checked = String(value) === el.value;
+            } else {
+                el.value = value === null || value === undefined ? '' : String(value);
+            }
+        });
+
+        if (mode === 'view') {
+            controls.forEach(function(el) {
+                if (el.disabled !== undefined) el.disabled = true;
+                if (el.readOnly !== undefined) el.readOnly = true;
+            });
+            const saveBtn = overlay.querySelector('[data-k-grid-save]');
+            if (saveBtn) saveBtn.remove();
+        }
+
+        // Apply form_width if specified
+        const footer = overlay.querySelector('[data-k-grid-width]');
+        if (footer) {
+            const width = footer.dataset.kGridWidth;
+            const modal = overlay.querySelector('.form-modal');
+            if (modal) {
+                modal.style.maxWidth = width;
+            }
+        }
+    }
+
+    function gridFormValues(formEl) {
+        const values = {};
+        if (!formEl) return values;
+        formEl.querySelectorAll('[data-k-form][data-k-ctrl]').forEach(function(el) {
+            values[el.dataset.kCtrl] = getControlValue(el);
+        });
+        return values;
     }
 
     // ---- Chart.js control support ----
@@ -651,6 +971,9 @@ function createTabulator(el) {
             case 'render_form':
                 if (msg.modal) {
                     renderModalForm(msg.form, msg.html, msg.gap_x, msg.gap_y);
+                    if (msg.grid) {
+                        setupGridModal(msg);
+                    }
                 } else {
                     renderForm(msg.html);
                 }
@@ -660,7 +983,7 @@ function createTabulator(el) {
                 break;
             case 'close_form':
                 if (msg.modal) {
-                    closeModalForm(msg.name);
+                    closeModalForm(msg.name || msg.form);
                 } else {
                     closeForm(msg.name, msg.top);
                 }
@@ -1069,6 +1392,7 @@ function createTabulator(el) {
     // Form rendering
     function renderForm(html) {
         stage.innerHTML = html;
+        initGrids(stage);
         initTabulators(stage);
         initLoopers(stage);
         initCharts(stage);
@@ -1090,6 +1414,7 @@ function createTabulator(el) {
             destroyDatePickers(el);
             el.outerHTML = html;
             const fresh = document.querySelector(selector);
+            if (fresh) initGrids(fresh.parentElement || stage);
             if (fresh) initTabulators(fresh.parentElement || stage);
             if (fresh) initLoopers(fresh.parentElement || stage);
             if (fresh) initCharts(fresh.parentElement || stage);
@@ -1136,6 +1461,7 @@ function createTabulator(el) {
         }
 
         // Initialize components inside the modal
+        initGrids(overlay);
         initTabulators(overlay);
         initLoopers(overlay);
         initCharts(overlay);
@@ -1349,6 +1675,113 @@ function createTabulator(el) {
         const loopEl = e.target.closest('.kalua-looper');
         if (loopEl) {
             selectLooperRow(loopEl, e.target.closest('.kalua-looper-row'), e.target);
+            return;
+        }
+
+        // Grid row action buttons (view/edit/delete).
+        const gridAction = e.target.closest('[data-k-grid-action]');
+        if (gridAction) {
+            e.preventDefault();
+            const action = gridAction.dataset.kGridAction;
+            let pk = null;
+            if (gridAction.dataset.kGridPk !== '') {
+                try { pk = JSON.parse(gridAction.dataset.kGridPk); } catch (err) { pk = gridAction.dataset.kGridPk; }
+            }
+            let row = {};
+            try { row = JSON.parse(gridAction.dataset.kGridRow || '{}'); } catch (err) {}
+            const wrapper = gridAction.closest('.kalua-grid');
+            if (!wrapper) return;
+            const cfg = gridCfgOf(wrapper);
+            if (action === 'delete') {
+                if (!window.confirm('Delete this row?')) return;
+                send({
+                    type: 'grid_row_delete',
+                    form: wrapper.dataset.kForm,
+                    ctrl: wrapper.dataset.kCtrl,
+                    value: { pk: pk }
+                });
+            } else if (action === 'view' || action === 'edit') {
+                gridOpenForm(cfg, action, pk, row);
+            }
+            return;
+        }
+
+        // Grid toolbar buttons (New, Delete Selected, Columns).
+        const gridTool = e.target.closest('[data-k-grid-toolbar]');
+        if (gridTool) {
+            e.preventDefault();
+            const wrapper = gridTool.closest('.kalua-grid');
+            if (!wrapper) return;
+            const cfg = gridCfgOf(wrapper);
+            const action = gridTool.dataset.kGridToolbar;
+            if (action === 'new_record') {
+                gridOpenForm(cfg, 'new', null, {});
+            } else if (action === 'batch_delete') {
+                const pks = collectSelectedGridPks(cfg);
+                if (!pks.length) return;
+                if (!window.confirm('Delete ' + pks.length + ' selected row(s)?')) return;
+                send({
+                    type: 'grid_batch_delete',
+                    form: wrapper.dataset.kForm,
+                    ctrl: wrapper.dataset.kCtrl,
+                    value: { pks: pks }
+                });
+            }
+            return;
+        }
+
+        // Grid column-visibility dropdown toggle.
+        const gridCols = e.target.closest('[data-k-grid-columns]');
+        if (gridCols) {
+            e.preventDefault();
+            const wrapper = gridCols.closest('.kalua-grid');
+            if (!wrapper) return;
+            const cfg = gridCfgOf(wrapper);
+            if (!cfg) return;
+            const list = wrapper.querySelector('.kalua-grid-columns-list');
+            if (list.classList.contains('hidden')) {
+                rebuildGridColumnsMenu(cfg);
+                list.classList.remove('hidden');
+            } else {
+                list.classList.add('hidden');
+            }
+            return;
+        }
+
+        // Grid modal Save/Cancel buttons.
+        const gridSave = e.target.closest('[data-k-grid-save]');
+        if (gridSave) {
+            e.preventDefault();
+            const overlay = gridSave.closest('.form-modal-overlay');
+            let pk = null;
+            if (gridSave.dataset.kGridPk !== '') {
+                try { pk = JSON.parse(gridSave.dataset.kGridPk); } catch (err) { pk = gridSave.dataset.kGridPk; }
+            }
+            send({
+                type: 'grid_form_save',
+                form: gridSave.dataset.kGridForm,
+                ctrl: gridSave.dataset.kGridCtrl,
+                value: {
+                    mode: gridSave.dataset.kGridMode || 'edit',
+                    pk: pk,
+                    values: overlay ? gridFormValues(overlay) : {}
+                }
+            });
+            return;
+        }
+
+        const gridCancel = e.target.closest('[data-k-grid-cancel]');
+        if (gridCancel) {
+            e.preventDefault();
+            send({
+                type: 'grid_form_cancel',
+                form: gridCancel.dataset.kGridForm,
+                ctrl: gridCancel.dataset.kGridCtrl
+            });
+            const overlay = gridCancel.closest('.form-modal-overlay');
+            if (overlay) overlay.remove();
+            const modalName = overlay && overlay.id.indexOf('mf:') === 0 ? overlay.id.substring(3) : null;
+            if (modalName) modalForms.delete(modalName);
             return;
         }
 

@@ -305,6 +305,28 @@ k.set_property("main", "title", "Welcome")`},
 		Docs:    "Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}; db is a k.connect_db handle or a --db NAME prereregistered at startup. With opts.row (array of {type,name,property?,field?|column?,opts?} row-template control defs) rows are rendered server-side as real controls (label/textbox/image/checkbox, read-only); links can be omitted — they are derived from row.",
 		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Unique control name."), P("optsTable.db", "string", "DB handle (k.connect_db result) or a --db NAME."), P("optsTable.query", "string", "SQL query for a DB-linked looper."), P("optsTable.links", "list", "Maps result columns to template controls (optional when row is set)."), P("optsTable.row", "list", "Row-template control defs {type, name, property, field or column, opts} — server-rendered read-only rows."), P("optsTable.page_size", "number", "Rows per page for pagination.")},
 		Example: `k.ctrl.looper("main", "rows", { db = h, query = "SELECT * FROM items", row = { {type="label", name="lb_name", field="name"}, {type="textbox", name="tx_qty", field="qty"} } })`},
+	"ctrl.grid": {Name: "ctrl.grid", Group: "controls", Signature: "k.ctrl.grid(form, name, optsTable)",
+		Docs: "Adds a CRUD grid control (kforms_enhancements.md §7): a DB-linked Tabulator table with row/global actions, selection and an optional detail/edit form. opts: {db, query, count_query?, page_size?, where?, order_by?, pk_field?, columns, row_actions?, global_actions?, selection_mode? (default multi), row_click_action?, column_visibility?, form (\"name\" or inline {title, controls})}. Reads page/sort/filter through the Go host like tabulator=true tables; writes are wired via later phases.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Unique control name."),
+			P("optsTable.db", "string", "DB handle (k.connect_db result) or a --db NAME."),
+			P("optsTable.query", "string", "Base SELECT for the grid data."),
+			P("optsTable.columns", "list", "Tabulator column definitions {field, title, sortable, headerFilter, visible}."),
+			P("optsTable.pk_field", "string", "Primary-key column (used by row actions/CRUD)."),
+			P("optsTable.page_size", "number", "Rows per page (default 25)."),
+			P("optsTable.row_actions", "table", "Row action toggles: {view=true, edit=true, delete=true, ...}."),
+			P("optsTable.global_actions", "table", "Toolbar actions: {new_record=true, batch_delete=true, ...}."),
+			P("optsTable.selection_mode", "string", "\"none\", \"single\" or \"multi\" (default \"multi\")."),
+			P("optsTable.row_click_action", "string", "Action on row click: \"view\" | \"edit\" | \"select\" | \"none\"."),
+			P("optsTable.form", "any", "Detail/edit form: a referenced form name or an inline {title, controls} table."),
+		},
+		Example: `k.ctrl.grid("main", "users", {
+  db = "main", query = "SELECT * FROM users", pk_field = "id",
+  columns = { {field="id", title="ID"}, {field="name", title="Name"} },
+  row_actions = { view = true, edit = true, delete = true },
+  global_actions = { new_record = true, batch_delete = true },
+})`},
 	"ctrl.chart": {Name: "ctrl.chart", Group: "controls", Signature: "k.ctrl.chart(form, name, optsTable)",
 		Docs: "Adds a Chart.js control. opts: {type=line|bar|hbar|pie|doughnut|scatter|radar|area, title, width=400, height=300, labels, datasets, options, responsive=true, maintainAspectRatio=false, legend=true, legendPosition=top, animation=true, stacked=false}. Events chart_click/chart_hover/chart_legend_click via k.form.on.",
 		Params: []Param{
@@ -437,6 +459,43 @@ k.set_property("main", "title", "Welcome")`},
 		Docs:    "Resizes the chart canvas to the given pixel dimensions.",
 		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Chart control name."), P("width", "number", "New width in px."), P("height", "number", "New height in px.")},
 		Example: `k.chart.resize("dash", "trend", 800, 400)`},
+
+	// grid operations (kforms_enhancements.md §7)
+	"grid": {Name: "grid", Group: "controls", Signature: "k.grid", Docs: "Grid control operations: k.grid.refresh/set_db_source/..."},
+	"grid.refresh": {Name: "grid.refresh", Group: "controls", Signature: "k.grid.refresh(form, name)",
+		Docs:    "Re-runs a grid's data query and shows page 1.",
+		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Grid control name.")},
+		Example: `k.grid.refresh("main", "users")`},
+	"grid.set_db_source": {Name: "grid.set_db_source", Group: "controls", Signature: "k.grid.set_db_source(form, name, opts)",
+		Docs:    "Swaps a grid's data source {db,query,columns?,page_size?,count_query?,where?,order_by?,pk_field?,selection_mode?} and refreshes.",
+		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Grid control name."), P("opts", "table", "New source: {db, query, columns, page_size, count_query, where, order_by, pk_field, selection_mode}.")},
+		Example: `k.grid.set_db_source("main", "users", { db = "main", query = "SELECT * FROM users" })`},
+
+	// CRUD Grid operations (kforms_enhancements.md §7)
+	"grid.get_selected": {Name: "grid.get_selected", Group: "controls", Signature: "k.grid.get_selected(form, name)",
+		Docs:    "Returns the selected rows (async). Yields until the browser responds with the selected row data. Returns a list of row objects (each a map of column→value) or nil if none selected.",
+		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Grid control name.")},
+		Example: `local selected = k.grid.get_selected("main", "users"); if selected then for _, row in ipairs(selected) do print(row.id) end end`},
+	"grid.get_row": {Name: "grid.get_row", Group: "controls", Signature: "k.grid.get_row(form, name, pk)",
+		Docs:    "Fetches a single row by primary key (async). Yields until the DB query completes. Returns a row object (map of column→value) or nil if not found.",
+		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Grid control name."), P("pk", "any", "Primary key value.")},
+		Example: `local row = k.grid.get_row("main", "users", 42); if row then print(row.name) end`},
+	"grid.delete_row": {Name: "grid.delete_row", Group: "controls", Signature: "k.grid.delete_row(form, name, pk)",
+		Docs:    "Deletes a single row by primary key (async). Triggers tabulator_refresh on success. Returns boolean success or nil + error message.",
+		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Grid control name."), P("pk", "any", "Primary key value.")},
+		Example: `local ok = k.grid.delete_row("main", "users", 42); if ok then print("deleted") end`},
+	"grid.batch_delete": {Name: "grid.batch_delete", Group: "controls", Signature: "k.grid.batch_delete(form, name, pksTable)",
+		Docs:    "Deletes multiple rows by primary keys (async). Triggers tabulator_refresh on success. Returns boolean success or nil + error message.",
+		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Grid control name."), P("pksTable", "list", "Array of primary key values.")},
+		Example: `local ok = k.grid.batch_delete("main", "users", {42, 43, 44})`},
+	"grid.insert_row": {Name: "grid.insert_row", Group: "controls", Signature: "k.grid.insert_row(form, name, dataTable)",
+		Docs:    "Inserts a new row (async). Returns the inserted row's primary key (if available) or true on success, or nil + error message.",
+		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Grid control name."), P("dataTable", "table", "Column→value map for the new row.")},
+		Example: `local pk = k.grid.insert_row("main", "users", {name="Alice", email="alice@example.com"})`},
+	"grid.update_row": {Name: "grid.update_row", Group: "controls", Signature: "k.grid.update_row(form, name, pk, dataTable)",
+		Docs:    "Updates a row by primary key (async). Triggers tabulator_refresh on success. Returns boolean success or nil + error message.",
+		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Grid control name."), P("pk", "any", "Primary key value."), P("dataTable", "table", "Column→value map for the updated columns (PK column is ignored).")},
+		Example: `local ok = k.grid.update_row("main", "users", 42, {email="new@example.com"})`},
 
 	// table operations
 	"table": {Name: "table", Group: "controls", Signature: "k.table", Docs: "Table control operations: k.table.add_line/delete_line/..."},
@@ -943,7 +1002,7 @@ var Globals = []string{"ARGS", "CTRL", "ERRORCODE", "ERRORMSG", "main"}
 
 // namespaceNames are registry entries that are pure namespaces with no
 // implementation of their own; the sync test exempts them from Info.
-var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true, "looper": true, "chart": true, "shared": true, "ws": true, "tcp": true, "xml": true}
+var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true, "looper": true, "chart": true, "grid": true, "shared": true, "ws": true, "tcp": true, "xml": true}
 
 // Docs returns a copy of the k.* documentation map (name → Info).
 func Docs() map[string]Info {

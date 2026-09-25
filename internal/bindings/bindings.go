@@ -159,6 +159,16 @@ var registerKnown = map[string]string{
 	"looper.delete_line":        "controls",
 	"ctrl.chart":                "controls",
 	"chart":                     "controls", // namespace
+	"ctrl.grid":                 "controls",
+	"grid":                      "controls", // namespace
+	"grid.refresh":              "controls",
+	"grid.set_db_source":        "controls",
+	"grid.get_selected":         "controls",
+	"grid.get_row":              "controls",
+	"grid.delete_row":           "controls",
+	"grid.batch_delete":         "controls",
+	"grid.insert_row":           "controls",
+	"grid.update_row":           "controls",
 	"ctrl.image":                "controls",
 	"ctrl.select_text":          "controls",
 	"ctrl.set_selection":        "controls",

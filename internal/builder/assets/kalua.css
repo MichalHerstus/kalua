@@ -747,3 +747,113 @@ body {
 .kalua-image[data-k-form][data-k-ctrl] {
     cursor: pointer;
 }
+
+/* Grid control (§7) */
+.kalua-grid {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+}
+
+.kalua-grid-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid #e0e0e0;
+    background: #fafafa;
+}
+
+.kalua-grid-btn {
+    padding: 5px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: white;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.kalua-grid-btn:hover:not(:disabled):not(.disabled) {
+    background: #f0f0f0;
+}
+
+.kalua-grid-btn:disabled,
+.kalua-grid-btn.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.kalua-grid-btn-new_record,
+.kalua-grid-btn-view {
+    color: #1976d2;
+}
+
+.kalua-grid-btn-edit {
+    color: #f57c00;
+}
+
+.kalua-grid-btn-delete {
+    color: #d32f2f;
+}
+
+.kalua-grid-row-actions {
+    display: flex;
+    gap: 4px;
+    justify-content: center;
+}
+
+.kalua-grid-row-actions .kalua-grid-btn {
+    padding: 2px 8px;
+    font-size: 12px;
+}
+
+.kalua-grid-columns {
+    position: relative;
+    margin-left: auto;
+}
+
+.kalua-grid-columns-list {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    z-index: 20;
+    min-width: 160px;
+    background: white;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    padding: 6px;
+    margin-top: 4px;
+}
+
+.kalua-grid-columns-list.hidden {
+    display: none;
+}
+
+.kalua-grid-column-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.kalua-grid-column-item:hover {
+    background: #f5f5f5;
+}
+
+.kalua-grid-form-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid #e0e0e0;
+    background: #fafafa;
+}
+
+/* Grid modal form width support */
+.kalua-grid-form-footer[data-k-grid-width] .form-modal {
+    max-width: attr(data-k-grid-width);
+}

@@ -206,6 +206,7 @@
   <div class="cm-tabs">
     <button id="cm-tab-datasource" class="sel" data-cm-tab="datasource">Datasource</button>
     <button id="cm-tab-setup" data-cm-tab="setup">Table Setup</button>
+    <button id="cm-tab-crud" data-cm-tab="crud">CRUD</button>
     <button id="cm-tab-preview" data-cm-tab="preview">Preview</button>
   </div>
   <div class="cm-body">
@@ -242,6 +243,65 @@
       <div class="cm-actions-row">
         <button id="cm-add-col">+ Column</button>
         <span class="hint" id="cm-col-hint"></span>
+      </div>
+    </section>
+    <section id="cm-crud" class="cm-tabpane hidden">
+      <div class="cm-grid">
+        <label>PK Field <input id="cm-pk-field" type="text" placeholder="id" spellcheck="false"></label>
+        <label>Selection Mode
+          <select id="cm-selection-mode">
+            <option value="multi">Multi</option>
+            <option value="single">Single</option>
+            <option value="none">None</option>
+          </select>
+        </label>
+      </div>
+      <label class="row">
+        <input type="checkbox" id="cm-column-visibility"><span>Column Visibility</span>
+      </label>
+      <label class="row">
+        <input type="checkbox" id="cm-row-click-select"><span>Row Click = Select</span>
+      </label>
+      <label class="row">
+        <input type="checkbox" id="cm-row-click-view"><span>Row Click = View</span>
+      </label>
+      <label class="row">
+        <input type="checkbox" id="cm-row-click-edit"><span>Row Click = Edit</span>
+      </label>
+      <label class="row" id="cm-default-visible-row">
+        <input type="checkbox" id="cm-default-visible"><span>Default Visible Columns (comma-separated)</span>
+      </label>
+      <label class="wide" id="cm-default-visible-input" hidden>
+        <input id="cm-default-visible-cols" type="text" placeholder="id,name,email" spellcheck="false">
+      </label>
+      <hr>
+      <h4>Row Actions</h4>
+      <div class="cm-grid">
+        <label class="row"><input type="checkbox" id="cm-row-view"><span>View</span></label>
+        <label class="row"><input type="checkbox" id="cm-row-edit"><span>Edit</span></label>
+        <label class="row"><input type="checkbox" id="cm-row-delete"><span>Delete</span></label>
+      </div>
+      <hr>
+      <h4>Global Actions</h4>
+      <div class="cm-grid">
+        <label class="row"><input type="checkbox" id="cm-global-new"><span>New Record</span></label>
+        <label class="row"><input type="checkbox" id="cm-global-batch-del"><span>Batch Delete</span></label>
+      </hr>
+      <h4>Form</h4>
+      <div class="cm-grid">
+        <label>Form Reference <input id="cm-form-ref" type="text" placeholder="form_name" spellcheck="false"></label>
+        <label>Form Width <input id="cm-form-width" type="text" placeholder="80%" spellcheck="false"></label>
+      </div>
+      <label class="row">
+        <input type="checkbox" id="cm-inline-form"><span>Inline Form (configure below)</span>
+      </label>
+      <div id="cm-inline-form-editor" hidden>
+        <hr>
+        <h4>Inline Form Definition</h4>
+        <label>Title <input id="cm-inline-title" type="text" placeholder="Record Details" spellcheck="false"></label>
+        <label>Gap (px) <input id="cm-inline-gap" type="number" min="0" step="1" value="10"></label>
+        <div id="cm-inline-controls"></div>
+        <button id="cm-inline-add-ctrl" class="primary">+ Add Control</button>
       </div>
     </section>
     <section id="cm-preview" class="cm-tabpane hidden">

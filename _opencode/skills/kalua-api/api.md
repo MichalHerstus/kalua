@@ -347,12 +347,12 @@ k.form.return_to("main")
 ```
 
 **`k.form.show(name, [options])`**  
-Shows a form and suspends the script until it closes. By default the form fills the stage (normal). With `options.modal=true` the form is shown as a centered modal overlay with configurable gap from screen edges.
+Shows a form and suspends the script until it closes. By default the form fills the stage (normal). With options.modal=true the form is shown as a centered modal overlay with configurable gap from screen edges.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | string | Form name declared with k.form.new. |
-| `options` | table | Optional: `{modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)}` |
+| `options` | table | Optional: {modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)} |
 
 **Example:**
 
@@ -674,6 +674,35 @@ Returns a control's current value.
 local age = k.ctrl.get_value("main", "age")
 ```
 
+**`k.ctrl.grid(form, name, optsTable)`**  
+Adds a CRUD grid control (kforms_enhancements.md §7): a DB-linked Tabulator table with row/global actions, selection and an optional detail/edit form. opts: {db, query, count_query?, page_size?, where?, order_by?, pk_field?, columns, row_actions?, global_actions?, selection_mode? (default multi), row_click_action?, column_visibility?, form ("name" or inline {title, controls})}. Reads page/sort/filter through the Go host like tabulator=true tables; writes are wired via later phases.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.db` | string | DB handle (k.connect_db result) or a --db NAME. |
+| `optsTable.query` | string | Base SELECT for the grid data. |
+| `optsTable.columns` | list | Tabulator column definitions {field, title, sortable, headerFilter, visible}. |
+| `optsTable.pk_field` | string | Primary-key column (used by row actions/CRUD). |
+| `optsTable.page_size` | number | Rows per page (default 25). |
+| `optsTable.row_actions` | table | Row action toggles: {view=true, edit=true, delete=true, ...}. |
+| `optsTable.global_actions` | table | Toolbar actions: {new_record=true, batch_delete=true, ...}. |
+| `optsTable.selection_mode` | string | "none", "single" or "multi" (default "multi"). |
+| `optsTable.row_click_action` | string | Action on row click: "view" | "edit" | "select" | "none". |
+| `optsTable.form` | any | Detail/edit form: a referenced form name or an inline {title, controls} table. |
+
+**Example:**
+
+```lua
+k.ctrl.grid("main", "users", {
+  db = "main", query = "SELECT * FROM users", pk_field = "id",
+  columns = { {field="id", title="ID"}, {field="name", title="Name"} },
+  row_actions = { view = true, edit = true, delete = true },
+  global_actions = { new_record = true, batch_delete = true },
+})
+```
+
 **`k.ctrl.image(form, name, optsTable)`**  
 Adds an image control (<img>). opts: {src (required), alt, width, height (px or %), fit="cover|contain|fill|scale-down|none" (default contain), clickable?, onclick?}. k.ctrl.set_value(form, name, new_src) updates the image (kforms_enhancements.md §4.3).
 
@@ -892,6 +921,38 @@ Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolea
 
 ```lua
 k.ctrl.textbox("main", "age", { label = "Age", datetime = { mode = "date", format = "Y-m-d" } })
+```
+
+**`k.grid`**  
+Grid control operations: k.grid.refresh/set_db_source/...
+
+**`k.grid.refresh(form, name)`**  
+Re-runs a grid's data query and shows page 1.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+
+**Example:**
+
+```lua
+k.grid.refresh("main", "users")
+```
+
+**`k.grid.set_db_source(form, name, opts)`**  
+Swaps a grid's data source {db,query,columns?,page_size?,count_query?,where?,order_by?,pk_field?,selection_mode?} and refreshes.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `opts` | table | New source: {db, query, columns, page_size, count_query, where, order_by, pk_field, selection_mode}. |
+
+**Example:**
+
+```lua
+k.grid.set_db_source("main", "users", { db = "main", query = "SELECT * FROM users" })
 ```
 
 **`k.looper`**  
