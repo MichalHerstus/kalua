@@ -649,13 +649,21 @@ function createTabulator(el) {
                 sessionId = msg.form;
                 break;
             case 'render_form':
-                renderForm(msg.html);
+                if (msg.modal) {
+                    renderModalForm(msg.form, msg.html, msg.gap_x, msg.gap_y);
+                } else {
+                    renderForm(msg.html);
+                }
                 break;
             case 'update_control':
                 updateControl(msg.selector, msg.html);
                 break;
             case 'close_form':
-                closeForm(msg.name, msg.top);
+                if (msg.modal) {
+                    closeModalForm(msg.name);
+                } else {
+                    closeForm(msg.name, msg.top);
+                }
                 break;
             case 'msgbox':
                 showMsgbox(msg.id, msg.kind, msg.html);
@@ -1103,6 +1111,53 @@ function createTabulator(el) {
                 destroyDatePickers(formEl);
                 formEl.remove();
             }
+        }
+    }
+
+    // Modal form rendering (for k.form.show with modal=true)
+    const modalForms = new Map(); // form name -> overlay element
+
+    function renderModalForm(formName, html, gapX, gapY) {
+        const overlay = document.createElement('div');
+        overlay.id = 'mf:' + formName;
+        overlay.className = 'form-modal-overlay';
+        overlay.innerHTML = `
+            <div class="form-modal" role="dialog" aria-modal="true" style="--gap-x: ${gapX}%; --gap-y: ${gapY}%;">
+                ${html}
+            </div>
+        `;
+        modals.appendChild(overlay);
+        modalForms.set(formName, overlay);
+
+        // Focus first focusable element
+        const firstFocusable = overlay.querySelector('input, select, button, textarea');
+        if (firstFocusable) {
+            firstFocusable.focus();
+        }
+
+        // Initialize components inside the modal
+        initTabulators(overlay);
+        initLoopers(overlay);
+        initCharts(overlay);
+        initDatePickers(overlay);
+
+        // Trap focus within modal (same as msgbox)
+        overlay.addEventListener('keydown', function(e) {
+            if (e.key === 'Tab') {
+                trapFocus(e, overlay);
+            }
+        });
+    }
+
+    function closeModalForm(formName) {
+        const overlay = modalForms.get(formName);
+        if (overlay) {
+            // Destroy components inside before removing
+            destroyTabulators(overlay);
+            destroyCharts(overlay);
+            destroyDatePickers(overlay);
+            overlay.remove();
+            modalForms.delete(formName);
         }
     }
 

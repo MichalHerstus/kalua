@@ -15,7 +15,8 @@ func KaluaComponentPrompt() string {
 	sb.WriteString("You may only build the following KALUA UI elements. Every element lives inside a form created with `k.form.new` and shown with `k.form.show`.\n\n")
 	sb.WriteString(`### form
 - k.form.new(name, {title=, layout="vertical"|"grid", align="left"|"center"|"right", gap=px, cells={...}})
-- k.form.show(name)  — suspends until the form closes
+- k.form.show(name, [options])  — suspends until the form closes
+  options: {modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)}
 - k.form.on(form, event, fn) / k.form.on(form, ctrl, event, fn) — events: open_form, after_open_form, close_form, key_pressed
 
 ### label
@@ -80,7 +81,7 @@ func KaluaComponentPrompt() string {
 - Events via k.form.on(form, ctrl, "event", fn): click (button), whenever_modified/get_focus/lose_focus (textbox), selection_change (combo/list/radio), check/uncheck (checkbox), chart_click/chart_hover/chart_legend_click (chart)
 `)
 sb.WriteString("\nWhen generating a form app, structure the script as:\n")
-	sb.WriteString("1. `function main()`\n2. `k.form.new(\"<name>\", {...})` with the form title and layout\n3. one `k.ctrl.<type>(...)` call per control (with sensible default values)\n4. `k.form.on(...)` handlers for interactivity\n5. `k.form.show(\"<name>\")\n\nWhen editing an existing script that is provided in the request, keep every control and handler from it and change only what the request asks for — never drop or rename controls the request does not mention.\n")
+	sb.WriteString("1. `function main()`\n2. `k.form.new(\"<name>\", {...})` with the form title and layout\n3. one `k.ctrl.<type>(...)` call per control (with sensible default values)\n4. `k.form.on(...)` handlers for interactivity\n5. `k.form.show(\"<name>\", [options])`  -- options: {modal=true|false, gap=num|{x,y}}\n\nWhen editing an existing script that is provided in the request, keep every control and handler from it and change only what the request asks for — never drop or rename controls the request does not mention.\n")
 	return sb.String()
 }
 

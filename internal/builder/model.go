@@ -62,6 +62,11 @@ type Form struct {
 	HandlerBodies map[string]string   `json:"handlerBodies,omitempty"` // ctrl.event | @form.event → verbatim k.form.on statement (import-preserved)
 	Notes         []string            `json:"notes,omitempty"`         // import/export notices
 
+	// k.form.show options (from literal call)
+	Modal  bool    `json:"modal,omitempty"`
+	GapX   float64 `json:"gap_x,omitempty"`
+	GapY   float64 `json:"gap_y,omitempty"`
+
 	// Transient source bookkeeping (import-populated, re-derived on save):
 	Lines      [][]int  `json:"lines,omitempty"`      // owned statement [start,end] line ranges (1-based, inclusive)
 	Indent     string   `json:"indent,omitempty"`     // leading whitespace of the form's k.form.new line

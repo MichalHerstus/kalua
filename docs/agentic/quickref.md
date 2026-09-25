@@ -31,7 +31,7 @@
 ## k.* bindings (run + serve)
 
 - `k.form.new(name, opts)` — declare form + title/align/layout
-- `k.form.show(name) k.form.close([name])` — visibility
+- `k.form.show(name, [options]) k.form.close([name])` — visibility (options: `{modal=true|false, gap=num|{x,y}}`)
 - `k.form.on(form, ctrl, event, fn)` — control event handler (onclick, changed...)
 - `k.form.on(name, event, fn) | (name, on_idle, ms, fn)` — form-level / idle timer
 - `k.form.set_property(form, prop, v) / get_property` — form props

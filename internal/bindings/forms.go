@@ -104,9 +104,29 @@ func registerForms(e *Env) {
 		return 1
 	})
 
-	// k.form.show(name) - show form (modal, suspends caller)
+	// k.form.show(name, [options]) - show form (modal with gap, or normal; suspends caller)
+// options: {modal=true|false, gap=number|{x=num,y=num}}
 	e.register("form.show", "forms", func(L *lua.LState) int {
 		name := L.CheckString(1)
+		opts := L.OptTable(2, L.NewTable())
+
+		// Parse modal option
+		modalVal := opts.RawGetString("modal")
+		modal := modalVal != lua.LNil && lua.LVAsBool(modalVal)
+
+		// Parse gap option: number (applies to both) or table {x, y}
+		gapVal := opts.RawGetString("gap")
+		gapX, gapY := parseGap(gapVal)
+
+		// Store modal/gap on form table for later reference
+		formTbl := L.GetGlobal(name)
+		if formTbl != lua.LNil {
+			if ft, ok := formTbl.(*lua.LTable); ok {
+				ft.RawSetString("modal", lua.LBool(modal))
+				ft.RawSetString("gap_x", lua.LNumber(gapX))
+				ft.RawSetString("gap_y", lua.LNumber(gapY))
+			}
+		}
 
 		// Push form onto session stack
 		sess := e.App.Session()
@@ -124,9 +144,12 @@ func registerForms(e *Env) {
 		// Render form and send to browser
 		html := renderForm(L, name)
 		sendOutbox(e, common.OutboxMsg{
-			Type: "render_form",
-			Form: name,
-			HTML: html,
+			Type:  "render_form",
+			Form:  name,
+			HTML:  html,
+			Modal: modal,
+			GapX:  gapX,
+			GapY:  gapY,
 		})
 
 		// Fire after_open_form event after rendering
@@ -2037,4 +2060,45 @@ func getControl(L *lua.LState, formName, name string) *lua.LTable {
 		return nil
 	}
 	return ctrlTbl
+}
+
+// parseGap parses the gap option: number (applies to both x/y) or table {x, y}.
+// Returns gapX, gapY as float64. Default: 5% desktop, 3% mobile (CSS handles mobile).
+func parseGap(v lua.LValue) (float64, float64) {
+	const defaultGap = 5.0
+	if v == lua.LNil {
+		return defaultGap, defaultGap
+	}
+	if n, ok := v.(lua.LNumber); ok {
+		f := float64(n)
+		if f < 0 {
+			f = 0
+		}
+		if f > 50 {
+			f = 50
+		}
+		return f, f
+	}
+	if tbl, ok := v.(*lua.LTable); ok {
+		gapX := defaultGap
+		gapY := defaultGap
+		if xVal := tbl.RawGetString("x"); xVal != lua.LNil {
+			if n, ok := xVal.(lua.LNumber); ok {
+				f := float64(n)
+				if f >= 0 && f <= 50 {
+					gapX = f
+				}
+			}
+		}
+		if yVal := tbl.RawGetString("y"); yVal != lua.LNil {
+			if n, ok := yVal.(lua.LNumber); ok {
+				f := float64(n)
+				if f >= 0 && f <= 50 {
+					gapY = f
+				}
+			}
+		}
+		return gapX, gapY
+	}
+	return defaultGap, defaultGap
 }

@@ -346,17 +346,21 @@ Closes all forms above name (returns to it).
 k.form.return_to("main")
 ```
 
-**`k.form.show(name)`**  
-Shows a form (modal) and suspends the script until it closes.
+**`k.form.show(name, [options])`**  
+Shows a form and suspends the script until it closes. By default the form fills the stage (normal). With `options.modal=true` the form is shown as a centered modal overlay with configurable gap from screen edges.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | string | Form name declared with k.form.new. |
+| `options` | table | Optional: `{modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)}` |
 
 **Example:**
 
 ```lua
 k.form.show("main")
+k.form.show("dialog", {modal=true})
+k.form.show("settings", {modal=true, gap=10})
+k.form.show("custom", {modal=true, gap={x=15, y=5}})
 ```
 
 **`k.get_property(form, prop)`**  

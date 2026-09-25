@@ -167,10 +167,16 @@ k.print(res.status, res.body)`},
   layout = "vertical",            -- or "grid" with a cells table
   align  = "center",
 })`},
-	"form.show": {Name: "form.show", Group: "forms", Signature: "k.form.show(name)",
-		Docs:    "Shows a form (modal) and suspends the script until it closes.",
-		Params:  []Param{P("name", "string", "Form name declared with k.form.new.")},
-		Example: `k.form.show("main")`},
+	"form.show": {Name: "form.show", Group: "forms", Signature: "k.form.show(name, [options])",
+		Docs: "Shows a form and suspends the script until it closes. By default the form fills the stage (normal). With options.modal=true the form is shown as a centered modal overlay with configurable gap from screen edges.",
+		Params: []Param{
+			P("name", "string", "Form name declared with k.form.new."),
+			P("options", "table", "Optional: {modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)}"),
+		},
+		Example: `k.form.show("main")
+k.form.show("dialog", {modal=true})
+k.form.show("settings", {modal=true, gap=10})
+k.form.show("custom", {modal=true, gap={x=15, y=5}})`},
 	"form.close": {Name: "form.close", Group: "forms", Signature: "k.form.close([name])",
 		Docs:    "Closes the top form, or the named form.",
 		Params:  []Param{P("name", "string", "Optional form name; omitted closes the top form.")},

@@ -169,7 +169,8 @@ func BuildSystemPromptFor(mode string, includeFull bool) string {
 	sb.WriteString("## Hard Rules\n")
 	sb.WriteString("- " + entryRule + "\n")
 	if !serve {
-		sb.WriteString("- Use `k.form.new(name, opts)` then `k.form.show(name)` to display a form. `k.form.show` suspends until the form closes.\n")
+		sb.WriteString("- Use `k.form.new(name, opts)` then `k.form.show(name, [options])` to display a form. `k.form.show` suspends until the form closes.\n")
+		sb.WriteString("- `k.form.show` options: `{modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)}`. When modal=true, form is centered overlay.\n")
 		sb.WriteString("- Use `k.ctrl.*` to add controls to a form. Controls are placed after `k.form.new` and before `k.form.show`.\n")
 	} else {
 		sb.WriteString("- UI bindings (k.form.*, k.ctrl.*, k.msgbox, k.popup, k.status_*) raise runtime errors in serve mode — do NOT use them.\n")

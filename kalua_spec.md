@@ -150,9 +150,11 @@ session with one actor goroutine per browser tab:
      binding calls `coroutine.yield` on an internal control channel);
    - when the work finishes, post a completion message into the session inbox;
    - the actor resumes the coroutine with the results, then flushes the outbox.
-5. `k.form.show(name)` suspends the caller until the form closes (matches Kalipso's modal
-   Show Form). The form stack mirrors nested Show Form calls. `k.msgbox(...)` likewise
-   suspends until the browser posts a button choice (D16 protocol, §3.4).
+5. `k.form.show(name, [options])` suspends the caller until the form closes (matches Kalipso's modal
+   Show Form). The form stack mirrors nested Show Form calls.
+   Options: `{modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)}`.
+   When `modal=true`, the form is shown as a centered modal overlay with configurable gap from screen edges.
+   `k.msgbox(...)` likewise suspends until the browser posts a button choice (D16 protocol, §3.4).
 6. Timers (`k.timer_start`) are session-scoped: the actor owns the timer additions; fires
    post a message into the inbox. Timer handlers run inside the actor like everything else.
 7. Teardown: on WS close / reload / `k.quit`, the actor cancels the session context
@@ -264,9 +266,11 @@ bindings registry, and the coerce layer; they differ only in lifecycle + event d
 
 ### 3.1 Form model
 
-- `k.form.new(name, {title=…})`, `k.form.add_*` builders, `k.form.show(name)` (pushes onto
+- `k.form.new(name, {title=…})`, `k.form.add_*` builders, `k.form.show(name, [options])` (pushes onto
   the form stack and suspends caller), `k.form.close([name])`, `k.form.return_to(name)`
   (closes everything above `name`), `k.form.clear/refresh(name)`.
+- Options for `k.form.show`: `{modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)}`.
+  When `modal=true`, the form renders as a centered modal overlay with configurable gap from screen edges.
 - Single plane per form (D7). Layout: vertical stack of controls by default +
   `layout="grid"` option with row/col hints; rendered as CSS flex column / CSS grid.
 - Form events: `open_form`, `after_open_form`, `close_form`, `key_pressed`, `on_idle(ms)`,
@@ -498,7 +502,7 @@ Filesystem access is confined to the working directory unless `--allow-fs PATH` 
 
 | Kalipso action | KALUA | Tier |
 |---|---|---|
-| Show Form | `k.form.show(name)` (stacked/modal semantics, §2.2) | T1 |
+| Show Form | `k.form.show(name, [options])` (options: modal, gap) | T1 |
 | Close Form | `k.form.close([name])` | T1 |
 | Return to Form | `k.form.return_to(name)` | T2 |
 | Clear Form / Refresh | `k.form.clear(name)`, `k.form.refresh(name)` | T1 |

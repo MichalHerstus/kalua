@@ -384,6 +384,43 @@ body {
 .msgbox-error .msgbox-icon   { color: #d32f2f; }
 .msgbox-confirm .msgbox-icon { color: #1976d2; }
 
+/* Form modal overlay (k.form.show with modal=true) */
+.form-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 16px;
+    animation: fadeIn 0.2s ease;
+}
+
+.form-modal {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    width: calc(100% - var(--gap-x, 5%) * 2);
+    height: calc(100% - var(--gap-y, 5%) * 2);
+    max-width: calc(100vw - var(--gap-x, 5%) * 2);
+    max-height: calc(100vh - var(--gap-y, 5%) * 2);
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow: auto;
+    animation: slideUp 0.2s ease;
+}
+
+/* Mobile default gap: 3% */
+@media (max-width: 600px) {
+    .form-modal {
+        width: calc(100% - var(--gap-x, 3%) * 2);
+        height: calc(100% - var(--gap-y, 3%) * 2);
+        max-width: calc(100vw - var(--gap-x, 3%) * 2);
+        max-height: calc(100vh - var(--gap-y, 3%) * 2);
+    }
+}
+
 /* Popup: multilevel menu-style modal (k.popup) */
 .popup-overlay {
     position: fixed;

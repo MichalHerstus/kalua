@@ -53,6 +53,9 @@ func Import(src, fileName string) (*Document, error) {
 			Lines:         fd.lines,
 			Indent:        fd.indent,
 			HasShow:       fd.hasShow,
+			Modal:         fd.modal,
+			GapX:          fd.gapX,
+			GapY:          fd.gapY,
 		})
 	}
 	return &Document{
@@ -80,6 +83,9 @@ type formDef struct {
 	lines    [][]int
 	indent   string
 	hasShow  bool
+	modal    bool
+	gapX     float64
+	gapY     float64
 }
 
 type importer struct {
@@ -527,6 +533,49 @@ func (im *importer) importFormShow(n *ast.FuncCallExpr) {
 		return // only the first literal k.form.show is owned
 	}
 	fd.hasShow = true
+
+	// Extract modal/gap options from 2nd arg if present (table literal)
+	if len(n.Args) >= 2 {
+		if tbl, ok := n.Args[1].(*ast.TableExpr); ok {
+			for _, field := range tbl.Fields {
+				key := keyName(field.Key)
+				if key == "modal" {
+					switch field.Value.(type) {
+					case *ast.TrueExpr:
+						fd.modal = true
+					case *ast.FalseExpr:
+						fd.modal = false
+					}
+				} else if key == "gap" {
+					// gap can be a number or a table {x, y}
+					if num, ok := field.Value.(*ast.NumberExpr); ok {
+						if f, err := strconv.ParseFloat(num.Value, 64); err == nil {
+							fd.gapX = f
+							fd.gapY = f
+						}
+					} else if gapTbl, ok := field.Value.(*ast.TableExpr); ok {
+						for _, gf := range gapTbl.Fields {
+							gkey := keyName(gf.Key)
+							if gkey == "x" {
+								if num, ok := gf.Value.(*ast.NumberExpr); ok {
+									if f, err := strconv.ParseFloat(num.Value, 64); err == nil {
+										fd.gapX = f
+									}
+								}
+							} else if gkey == "y" {
+								if num, ok := gf.Value.(*ast.NumberExpr); ok {
+									if f, err := strconv.ParseFloat(num.Value, 64); err == nil {
+										fd.gapY = f
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	im.recordSpan(fd, "", im.spanEnd(n))
 }
 
