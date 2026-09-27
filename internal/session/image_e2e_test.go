@@ -94,28 +94,36 @@ end
 	time.Sleep(150 * time.Millisecond)
 
 	// The control table must not carry a click handler for a non-clickable image.
-	formTbl, ok := s.L.GetGlobal("f").(*glua.LTable)
-	if !ok {
-		t.Fatalf("form f not found")
-	}
-	controls, ok := formTbl.RawGetString("controls").(*glua.LTable)
-	if !ok {
-		t.Fatalf("no controls table")
-	}
-	pic, ok := controls.RawGetString("pic").(*glua.LTable)
-	if !ok {
-		t.Fatalf("no pic control")
-	}
-	handlers, ok := formTbl.RawGetString("handlers").(*glua.LTable)
-	if ok {
-		if h := handlers.RawGetString("pic"); h != glua.LNil {
-			t.Fatalf("non-clickable image registered a click handler: %v", h)
+	// Inspect on the actor goroutine (Query) and return a plain Go report: the
+	// LState and its tables are not safe to read from the test goroutine, and
+	// dereferencing them after Query returns would race the actor.
+	report := s.Query(func(L *glua.LState) glua.LValue {
+		formTbl, ok := L.GetGlobal("f").(*glua.LTable)
+		if !ok {
+			return glua.LString("form f not found")
 		}
-	}
-	if v := pic.RawGetString("clickable"); v != glua.LNil && v != glua.LFalse {
-		t.Fatalf("clickable should be unset/false, got %v", v)
-	}
-	if v := pic.RawGetString("src"); v.String() != "/img/static.png" {
-		t.Fatalf("src = %v, want /img/static.png", v)
+		controls, ok := formTbl.RawGetString("controls").(*glua.LTable)
+		if !ok {
+			return glua.LString("no controls table")
+		}
+		pic, ok := controls.RawGetString("pic").(*glua.LTable)
+		if !ok {
+			return glua.LString("no pic control")
+		}
+		if handlers, ok := formTbl.RawGetString("handlers").(*glua.LTable); ok {
+			if h := handlers.RawGetString("pic"); h != glua.LNil {
+				return glua.LString("non-clickable image registered a click handler: " + h.String())
+			}
+		}
+		if v := pic.RawGetString("clickable"); v != glua.LNil && v != glua.LFalse {
+			return glua.LString("clickable should be unset/false, got " + v.String())
+		}
+		if v := pic.RawGetString("src"); v.String() != "/img/static.png" {
+			return glua.LString("src = " + v.String() + ", want /img/static.png")
+		}
+		return glua.LString("")
+	})
+	if msg := report.String(); msg != "" {
+		t.Fatal(msg)
 	}
 }

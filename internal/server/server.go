@@ -43,11 +43,14 @@ type Server struct {
 	retired       []*Worker    // superseded by hot reload, drained on shutdown
 	workerCh      chan *Worker
 	nextWorkerIdx atomic.Uint64 // round-robin cursor
+	netMu         sync.RWMutex  // guards httpServer, httpListener, tcpListener, httpAddr, tcpAddr
 	httpServer    *http.Server
 	httpListener  net.Listener
 	tcpListener   net.Listener
-	httpAddr      string // actual bound HTTP/WS address (for Port 0)
-	tcpAddr       string // actual bound TCP address (for Port 0)
+	httpAddr      string        // actual bound HTTP/WS address (for Port 0)
+	tcpAddr       string        // actual bound TCP address (for Port 0)
+	readyCh       chan struct{} // closed once every listener of the mode is bound
+	readyOnce     sync.Once
 	shutdownRan   atomic.Bool
 	wg            sync.WaitGroup
 	stopCh        chan struct{}
@@ -77,6 +80,7 @@ func NewServer(cfg Config) *Server {
 		tcpHub:   tcpHub,
 		workerCh: workerCh,
 		stopCh:   make(chan struct{}),
+		readyCh:  make(chan struct{}),
 	}
 }
 
@@ -108,19 +112,23 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	httpPort := s.cfg.Port
-	if s.httpAddr != "" {
-		if _, p, err := net.SplitHostPort(s.httpAddr); err == nil {
+	if addr := s.HTTPAddr(); addr != "" {
+		if _, p, err := net.SplitHostPort(addr); err == nil {
 			fmt.Sscanf(p, "%d", &httpPort)
 		}
 	}
 	tcpPort := httpPort + 1
-	if s.tcpAddr != "" {
-		if _, p, err := net.SplitHostPort(s.tcpAddr); err == nil {
+	if addr := s.TCPAddr(); addr != "" {
+		if _, p, err := net.SplitHostPort(addr); err == nil {
 			fmt.Sscanf(p, "%d", &tcpPort)
 		}
 	}
 	s.cfg.Logger.Printf("KALUA serve mode listening on %s:%d (tcp=%d, workers=%d, mode=%s)",
 		s.cfg.Host, httpPort, tcpPort, s.cfg.Workers, s.cfg.Mode)
+
+	// Every listener the mode asks for is bound: publish readiness so callers
+	// can read the real (possibly ephemeral) addresses without polling.
+	s.signalReady()
 
 	// Wait for context cancellation
 	<-ctx.Done()
@@ -128,6 +136,29 @@ func (s *Server) Run(ctx context.Context) error {
 	s.shutdown()
 	return nil
 }
+
+// Ready returns a channel that is closed once every listener required by the
+// configured mode has been bound. After it fires, HTTPAddr()/TCPAddr() are safe
+// to read from another goroutine and hold the real bound addresses.
+//
+// A boot that fails before binding (init() error, bad script, port in use) never
+// fires it, so a caller watching only Ready() would block: select on Run's error
+// return too, as SmokeTest does.
+func (s *Server) Ready() <-chan struct{} { return s.readyCh }
+
+// WaitReady blocks until the server is ready or ctx is done. It returns ctx's
+// error if the wait was abandoned; a nil error means the listeners are bound.
+func (s *Server) WaitReady(ctx context.Context) error {
+	select {
+	case <-s.readyCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// signalReady publishes readiness exactly once.
+func (s *Server) signalReady() { s.readyOnce.Do(func() { close(s.readyCh) }) }
 
 // runShutdownHandlers invokes the optional shutdown() callback once, on the
 // first worker, before workers are torn down (spec §2.2 shutdown).
@@ -198,22 +229,25 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
-	s.httpListener = ln
-	s.httpAddr = ln.Addr().String()
-
-	s.httpServer = &http.Server{
-		Addr:              s.httpAddr,
+	bound := ln.Addr().String()
+	hs := &http.Server{
+		Addr:              bound,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	s.netMu.Lock()
+	s.httpListener = ln
+	s.httpAddr = bound
+	s.httpServer = hs
+	s.netMu.Unlock()
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := hs.Serve(ln); err != nil && err != http.ErrServerClosed {
 			s.cfg.Logger.Errorf("HTTP server error: %v", err)
 		}
 	}()
@@ -222,7 +256,7 @@ func (s *Server) startHTTP(ctx context.Context) error {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.httpServer.Shutdown(shutdownCtx)
+		hs.Shutdown(shutdownCtx)
 	}()
 
 	return nil
@@ -361,7 +395,7 @@ func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startWS(ctx context.Context) {
 	// WebSocket is handled via HTTP upgrade on same port
 	// This is just for logging
-	s.cfg.Logger.Printf("WebSocket endpoint available at ws://%s/ws", s.httpAddr)
+	s.cfg.Logger.Printf("WebSocket endpoint available at ws://%s/ws", s.HTTPAddr())
 }
 
 func (s *Server) startTCP(ctx context.Context) error {
@@ -375,10 +409,12 @@ func (s *Server) startTCP(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.netMu.Lock()
 	s.tcpListener = listener
 	s.tcpAddr = listener.Addr().String()
+	s.netMu.Unlock()
 
-	s.cfg.Logger.Printf("TCP server listening on %s", s.tcpAddr)
+	s.cfg.Logger.Printf("TCP server listening on %s", s.TCPAddr())
 
 	s.wg.Add(1)
 	go func() {
@@ -522,14 +558,17 @@ func (s *Server) buildWorkers(count int) ([]*Worker, error) {
 
 func (s *Server) shutdown() {
 	close(s.stopCh)
-	if s.httpServer != nil {
-		s.httpServer.Close()
+	s.netMu.RLock()
+	hs, hln, tln := s.httpServer, s.httpListener, s.tcpListener
+	s.netMu.RUnlock()
+	if hs != nil {
+		hs.Close()
 	}
-	if s.httpListener != nil {
-		s.httpListener.Close()
+	if hln != nil {
+		hln.Close()
 	}
-	if s.tcpListener != nil {
-		s.tcpListener.Close()
+	if tln != nil {
+		tln.Close()
 	}
 	// Close every current and retired worker. Retired workers may already
 	// have been closed by their last lease release; Close is idempotent.
@@ -547,12 +586,22 @@ func (s *Server) shutdown() {
 }
 
 // HTTPAddr returns the actual bound HTTP/WS address ("host:port"), useful
-// when Port 0 requested an ephemeral port.
-func (s *Server) HTTPAddr() string { return s.httpAddr }
+// when Port 0 requested an ephemeral port. Empty until the listener is bound;
+// wait on Ready() before reading it from another goroutine.
+func (s *Server) HTTPAddr() string {
+	s.netMu.RLock()
+	defer s.netMu.RUnlock()
+	return s.httpAddr
+}
 
 // TCPAddr returns the actual bound TCP address ("host:port"), useful when
-// Port 0 requested an ephemeral port.
-func (s *Server) TCPAddr() string { return s.tcpAddr }
+// Port 0 requested an ephemeral port. Empty until the listener is bound;
+// wait on Ready() before reading it from another goroutine.
+func (s *Server) TCPAddr() string {
+	s.netMu.RLock()
+	defer s.netMu.RUnlock()
+	return s.tcpAddr
+}
 
 // TLSConfig holds TLS configuration for HTTPS/WSS.
 type TLSConfig struct {
@@ -566,6 +615,8 @@ func (s *Server) WithTLS(cfg TLSConfig) error {
 	if err != nil {
 		return err
 	}
+	s.netMu.Lock()
+	defer s.netMu.Unlock()
 	if s.httpServer != nil {
 		s.httpServer.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 	}

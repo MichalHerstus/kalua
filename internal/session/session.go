@@ -2934,19 +2934,28 @@ func (s *Session) PostEventAny(form, ctrl, event string, value interface{}) {
 	}
 }
 
-// GetGlobal reads a Lua global on the actor goroutine and returns its value.
-// Safe to call from any goroutine (tests, web bridge); the read is serialized
-// through the inbox so it cannot race the actor's Lua state access.
-func (s *Session) GetGlobal(name string) lua.LValue {
+// Query runs fn on the actor goroutine and returns its result. It is safe to
+// call from any goroutine: fn is serialized through the inbox with all other
+// Lua access, so it cannot race the actor's use of the LState.
+//
+// The returned LValue is only valid while the actor stays idle, so callers must
+// extract plain Go values (strings, numbers, bools) inside fn rather than
+// dereferencing LState-backed tables after Query returns.
+func (s *Session) Query(fn func(*lua.LState) lua.LValue) lua.LValue {
 	reply := make(chan lua.LValue, 1)
 	select {
-	case s.inbox <- inboxMsg{typ: inboxQuery, query: func(L *lua.LState) lua.LValue {
-		return L.GetGlobal(name)
-	}, reply: reply}:
+	case s.inbox <- inboxMsg{typ: inboxQuery, query: fn, reply: reply}:
 	case <-s.done:
 		return lua.LNil
 	}
 	return <-reply
+}
+
+// GetGlobal reads a Lua global on the actor goroutine and returns its value.
+// Safe to call from any goroutine (tests, web bridge); the read is serialized
+// through the inbox so it cannot race the actor's Lua state access.
+func (s *Session) GetGlobal(name string) lua.LValue {
+	return s.Query(func(L *lua.LState) lua.LValue { return L.GetGlobal(name) })
 }
 
 // PostTimer posts a timer event to the session inbox.
@@ -3219,8 +3228,12 @@ func (s *Session) Close() error {
 	}
 	s.cancel()
 	close(s.done)
-	close(s.inbox)
+	// Wait for the actor goroutine to exit *before* closing the inbox: closing
+	// a channel performs a receive that races the actor's own select on it while
+	// the actor is still inside App.Run. cancel/close(done) above are what make
+	// the actor return; by the time Wait returns nobody touches the inbox.
 	s.wg.Wait()
+	close(s.inbox)
 	s.L.Close()
 	return nil
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -86,23 +87,26 @@ func SmokeTest(cfg Config, opts SmokeOptions) SmokeResult {
 	runDone := make(chan error, 1)
 	go func() { runDone <- s.Run(ctx) }()
 
-	waiter := waiter{deadline: time.Now().Add(8 * time.Second)}
-
-	// Wait for the listeners to be bound.
-	if httpRunning(cfg.Mode) {
-		waiter.wait(func() bool { return s.HTTPAddr() != "" })
-	}
-	if modeHas(cfg.Mode, "tcp") {
-		waiter.wait(func() bool { return s.TCPAddr() != "" })
-	}
-
-	// Boot failure (init() error, bind error, bad script) surfaces via Run.
+	// Wait for the listeners to be bound. Run publishes readiness (Ready),
+	// which orders the bound addresses before we read them — polling the
+	// address fields directly raced with Run's writes.
+	readyCtx, readyCancel := context.WithTimeout(ctx, 8*time.Second)
+	defer readyCancel()
 	select {
+	case <-s.Ready():
+		// Listeners bound; fall through to the probes.
 	case err := <-runDone:
+		// Boot failure (init() error, bind error, bad script) surfaces via Run.
+		if err == nil {
+			err = errors.New("server stopped before becoming ready")
+		}
 		res.Errors = append(res.Errors, err.Error())
 		res.OK = false
 		return res
-	default:
+	case <-readyCtx.Done():
+		res.Errors = append(res.Errors, "listeners did not bind within 8s")
+		res.OK = false
+		return res
 	}
 	res.InitOK = true
 
@@ -167,14 +171,6 @@ func SmokeTest(cfg Config, opts SmokeOptions) SmokeResult {
 
 	res.OK = len(res.Errors) == 0
 	return res
-}
-
-type waiter struct{ deadline time.Time }
-
-func (w *waiter) wait(ready func() bool) {
-	for !ready() && time.Now().Before(w.deadline) {
-		time.Sleep(25 * time.Millisecond)
-	}
 }
 
 func suffix(e string) string {

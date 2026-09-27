@@ -399,33 +399,7 @@ end
 	waitForRenderForm(out, "f")
 
 	// Debug: check if handler is registered on item_form
-	formTbl := s.L.GetGlobal("item_form")
-	if formTbl != lua.LNil {
-		if tbl, ok := formTbl.(*lua.LTable); ok {
-			t.Logf("DEBUG: item_form exists, type=%T", tbl)
-			if handlers := tbl.RawGetString("handlers"); handlers != lua.LNil {
-				t.Logf("DEBUG: item_form has handlers table")
-				if hTbl, ok := handlers.(*lua.LTable); ok {
-					if formHandlers := hTbl.RawGetString("@form"); formHandlers != lua.LNil {
-						t.Logf("DEBUG: item_form has @form handlers")
-						if fhTbl, ok := formHandlers.(*lua.LTable); ok {
-							fhTbl.ForEach(func(k, v lua.LValue) {
-								t.Logf("DEBUG: handler key=%v", k)
-							})
-						}
-					} else {
-						t.Logf("DEBUG: item_form has NO @form handlers")
-					}
-				} else {
-					t.Logf("DEBUG: item_form has NO handlers table")
-				}
-			} else {
-				t.Logf("DEBUG: item_form has NO handlers key")
-			}
-		}
-	} else {
-		t.Logf("DEBUG: item_form NOT found as global")
-	}
+	t.Logf("DEBUG: item_form = %s", describeFormHandlers(s, "item_form"))
 
 	// Try to save with negative value - should be rejected
 	s.PostGridFormSave("f", "g1", map[string]interface{}{
@@ -438,22 +412,7 @@ end
 	})
 
 	// Debug: check if handler is registered on item_form AFTER the save attempt
-	formTbl = s.L.GetGlobal("item_form")
-	if formTbl != lua.LNil {
-		if tbl, ok := formTbl.(*lua.LTable); ok {
-			if handlers := tbl.RawGetString("handlers"); handlers != lua.LNil {
-				if hTbl, ok := handlers.(*lua.LTable); ok {
-					if formHandlers := hTbl.RawGetString("@form"); formHandlers != lua.LNil {
-						if fhTbl, ok := formHandlers.(*lua.LTable); ok {
-							fhTbl.ForEach(func(k, v lua.LValue) {
-								t.Logf("DEBUG AFTER: handler key=%v", k)
-							})
-						}
-					}
-				}
-			}
-		}
-	}
+	t.Logf("DEBUG AFTER: item_form = %s", describeFormHandlers(s, "item_form"))
 
 	// Expect error outbox (modal should stay open)
 	select {
@@ -467,22 +426,7 @@ end
 	}
 
 	// Debug: check if handler is registered on item_form AFTER the save attempt
-	formTbl2 := s.L.GetGlobal("item_form")
-	if formTbl2 != lua.LNil {
-		if tbl, ok := formTbl2.(*lua.LTable); ok {
-			if handlers := tbl.RawGetString("handlers"); handlers != lua.LNil {
-				if hTbl, ok := handlers.(*lua.LTable); ok {
-					if formHandlers := hTbl.RawGetString("@form"); formHandlers != lua.LNil {
-						if fhTbl, ok := formHandlers.(*lua.LTable); ok {
-							fhTbl.ForEach(func(k, v lua.LValue) {
-								t.Logf("DEBUG AFTER: handler key=%v", k)
-							})
-						}
-					}
-				}
-			}
-		}
-	}
+	t.Logf("DEBUG AFTER 2: item_form = %s", describeFormHandlers(s, "item_form"))
 
 	// Modal should still be open - no close_form
 	select {
@@ -546,6 +490,42 @@ end
 }
 
 // --- Test Helpers ---
+
+// describeFormHandlers renders a form's handler registration for test logging.
+// The inspection runs on the session actor goroutine via Query: s.L and its
+// tables are not safe to read from the test goroutine while the actor is
+// running Lua, and dereferencing them after Query returns would race it.
+func describeFormHandlers(s *Session, formName string) string {
+	return s.Query(func(L *lua.LState) lua.LValue {
+		formTbl := L.GetGlobal(formName)
+		if formTbl == lua.LNil {
+			return lua.LString("NOT found as global")
+		}
+		tbl, ok := formTbl.(*lua.LTable)
+		if !ok {
+			return lua.LString("exists but is not a table")
+		}
+		handlers := tbl.RawGetString("handlers")
+		if handlers == lua.LNil {
+			return lua.LString("has NO handlers key")
+		}
+		hTbl, ok := handlers.(*lua.LTable)
+		if !ok {
+			return lua.LString("has NO handlers table")
+		}
+		formHandlers := hTbl.RawGetString("@form")
+		if formHandlers == lua.LNil {
+			return lua.LString("has NO @form handlers")
+		}
+		fhTbl, ok := formHandlers.(*lua.LTable)
+		if !ok {
+			return lua.LString("@form is not a table")
+		}
+		keys := make([]string, 0, 4)
+		fhTbl.ForEach(func(k, _ lua.LValue) { keys = append(keys, k.String()) })
+		return lua.LString("@form handlers: [" + strings.Join(keys, ", ") + "]")
+	}).String()
+}
 
 func waitForRenderForm(out <-chan outboxWire, form string) string {
 	deadline := time.After(5 * time.Second)
