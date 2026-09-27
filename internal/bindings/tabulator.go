@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Tabulator table control support (see kforms_enhancements.md §1).
 //
 // When k.ctrl.table is created with tabulator=true, the control renders as a

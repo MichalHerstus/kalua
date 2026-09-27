@@ -99,6 +99,11 @@ type Logger interface {
 	Tracef(format string, args ...interface{})
 }
 
+// Verbose returns whether verbose tracing is enabled.
+func (e *Env) Verbose() bool {
+	return e.verbose
+}
+
 // registerKnown tracks name→group across all envs. register() writes here so
 // the checker's Known() always describes what is truly installed.
 // Pre-populated with Phase 1 bindings so checker works before Setup runs.
@@ -389,6 +394,37 @@ func (e *Env) register(name, group string, fn lua.LGFunction) {
 	}
 }
 
+// registerInTable registers a function in a specific sub-table of k.
+// e.g., registerInTable(k.file, "open", "files", fn) creates k.file.open
+func (e *Env) registerInTable(parent *lua.LTable, name, group string, fn lua.LGFunction) {
+	e.known[name] = group
+	registerKnown[name] = group
+
+	var callFn lua.LGFunction = fn
+	if e.verbose && e.Logger != nil {
+		callFn = func(L *lua.LState) int {
+			n := L.GetTop()
+			args := make([]string, 0, n)
+			for i := 1; i <= n; i++ {
+				args = append(args, L.Get(i).String())
+			}
+			e.Logger.Tracef("k.%s(%s)", name, joinArgs(args))
+			ret := fn(L)
+			if ret > 0 {
+				top := L.GetTop()
+				outs := make([]string, 0, ret)
+				for i := top - ret + 1; i <= top; i++ {
+					outs = append(outs, L.Get(i).String())
+				}
+				e.Logger.Tracef("k.%s => %s", name, joinArgs(outs))
+			}
+			return ret
+		}
+	}
+
+	parent.RawSetString(name, e.L.NewFunction(callFn))
+}
+
 func split(s, sep string) []string {
 	var result []string
 	start := 0
@@ -407,103 +443,10 @@ func split(s, sep string) []string {
 // checker.
 func Known() map[string]bool {
 	m := make(map[string]bool, len(registerKnown))
-	for name := range registerKnown {
+for name := range registerKnown {
 		m[name] = true
 	}
 	return m
-}
-
-// Setup wires the k.* namespace, the K.* helpers and ARGS into a sandboxed
-// state, then installs every implemented binding. opts.Args seeds the ARGS
-// global table (in order, starting at 1). It must be called once per LState.
-// sess is the session this env belongs to (for msgbox, clipboard, etc.); can be nil.
-// logger is used for error logging; can be nil.
-func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterface, logger Logger) *Env {
-	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize, Sess: sess, Logger: logger, verbose: opts.Verbose}
-	if e.maxFileSize <= 0 {
-		e.maxFileSize = DefaultMaxFileSize
-	}
-	e.workdir = workdirOf(opts)
-	e.allowFS = allowFSOf(opts)
-
-	k := L.NewTable()
-	L.SetGlobal("k", k)
-	e.k = k
-
-	// K.NULL sentinel: the only value k.json_parse/k.json_load produce for a
-	// JSON null, and k.is_null's identity check.
-	e.kNULL = L.NewTable()
-
-	K := L.NewTable()
-	registerHelpers(e, K)
-	K.RawSetString("NULL", e.kNULL)
-	K.RawSetString("is_null", L.NewFunction(e.isNull))
-	L.SetGlobal("K", K)
-
-	// CTRL(name) - accessor function for controls
-	L.SetGlobal("CTRL", L.NewFunction(func(L *lua.LState) int {
-		formName := L.CheckString(1)
-		ctrlName := L.CheckString(2)
-
-		formTbl := L.GetGlobal(formName)
-		if formTbl == lua.LNil {
-			L.Push(lua.LNil)
-			return 1
-		}
-		tbl, ok := formTbl.(*lua.LTable)
-		if !ok {
-			L.Push(lua.LNil)
-			return 1
-		}
-
-		controls := tbl.RawGetString("controls")
-		if controls == lua.LNil {
-			L.Push(lua.LNil)
-			return 1
-		}
-		controlsTbl, ok := controls.(*lua.LTable)
-		if !ok {
-			L.Push(lua.LNil)
-			return 1
-		}
-
-		ctrl := controlsTbl.RawGetString(ctrlName)
-		L.Push(ctrl)
-		return 1
-	}))
-
-	registerFlow(e)
-	registerDebug(e)
-	registerForms(e)
-	registerControls(e)
-	registerDB(e)
-	registerFiles(e)
-	registerJSON(e)
-	registerCrypto(e)
-	registerXML(e)
-	registerExprFuncs(e)
-	registerFormats(e)
-	registerRows(e)
-	registerComm(e)
-	registerSMTP(e)
-	registerPop3(e)
-	registerFTP(e)
-	registerSoap(e)
-	registerSMTP(e)
-	registerPop3(e)
-	registerFTP(e)
-	registerSoap(e)
-
-	argsT := L.NewTable()
-	for i, a := range opts.Args {
-		argsT.RawSetInt(i+1, lua.LString(a))
-	}
-	L.SetGlobal("ARGS", argsT)
-
-	// Seed Kalipso error globals (nil/"", until a binding fails).
-	seedErrorGlobals(L, e)
-
-	return e
 }
 
 // seedErrorGlobals writes the initial ERRORCODE/ERRORMSG (nil/"") and resets

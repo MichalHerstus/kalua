@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the §5.7 POP3 bindings (k.pop3_*). A minimal
 // POP3 client over a raw TCP connection — no external dependency. Verbs map
 // to the Kalipso surface: connect, stat, list, retrieve (retr), delete (dele),

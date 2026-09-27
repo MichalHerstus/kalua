@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the §5.7 SMTP bindings: k.smtp_connect /
 // k.smtp_send / k.smtp_disconnect. Delivers mail over net/smtp; every call
 // runs through the async worker pattern (§2.2) so the session stays live.

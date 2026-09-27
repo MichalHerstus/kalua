@@ -10,6 +10,8 @@
 // Reads (page/sort/filter) go through the shared bindings.FetchTablePage pager.
 // Write operations (insert/update/delete) are wired server-side by later
 // phases; Phase 1 exposes k.grid.refresh and k.grid.set_db_source.
+//go:build !wasm
+
 package bindings
 
 import (

@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // DB-linked Looper tables (Kalipso "connect to database" parity).
 //
 // A k.ctrl.looper created with link_db is paged server-side by the Go host.

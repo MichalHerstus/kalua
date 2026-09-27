@@ -306,8 +306,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create session
-	sess, err := session.New(sessionID, scriptPath, s.opts, s.logger)
+	// Create WebSocket transport
+	transport := NewWSTransport(r.Context(), c)
+	defer transport.Close()
+
+	// Create session with transport
+	sess, err := NewSessionWithWSTransport(sessionID, scriptPath, s.opts, transport, s.logger)
 	if err != nil {
 		s.logger.Errorf("session create: %v", err)
 		c.Close(websocket.StatusInternalError, err.Error())
@@ -327,61 +331,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		sess.Close()
 	}()
 
-	// Send init message
+	// Start transport (handles outbox pump and inbox reader)
+	go transport.Run()
+
+	// Send init message via transport
 	initMsg := common.OutboxMsg{Type: "init", Form: sessionID}
-	if err := s.sendWS(c, initMsg); err != nil {
+	if err := transport.Send(initMsg); err != nil {
 		s.logger.Errorf("send init: %v", err)
 		return
 	}
 
-	// Start outbox pump
-	outboxDone := make(chan struct{})
-	go func() {
-		defer close(outboxDone)
-		for {
-			select {
-			case msg, ok := <-sess.Outbox():
-				if !ok {
-					return // outbox closed
-				}
-				if err := s.sendWS(c, msg); err != nil {
-					s.logger.Errorf("send outbox: %v", err)
-					return
-				}
-			case <-sess.Done():
-				return // session closing
-			}
-		}
-	}()
-
-	// Read inbox messages from WebSocket
-	ctx := r.Context()
-	for {
-		_, data, err := c.Read(ctx)
-		if err != nil {
-			// Expected when the browser refreshes, navigates away, or the tab
-			// closes: the graceful 1000/1001 close is normal, not an error.
-			if status := websocket.CloseStatus(err); status != -1 {
-				s.logger.Printf("ws closed by client (code %d)", status)
-			} else {
-				s.logger.Errorf("ws read: %v", err)
-			}
-			break
-		}
-
-		var msg map[string]interface{}
-		if err := json.Unmarshal(data, &msg); err != nil {
-			s.logger.Errorf("ws unmarshal: %v", err)
-			continue
-		}
-
-		s.handleWSMessage(sess, msg)
-	}
-
-	select {
-	case <-outboxDone:
-	case <-ctx.Done():
-	}
+	// Wait for transport to finish (connection closed)
+	<-r.Context().Done()
 }
 
 // sendWS sends a JSON message over WebSocket.

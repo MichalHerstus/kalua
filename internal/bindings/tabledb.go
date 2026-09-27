@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // DB-linked Tabulator tables (Kalipso "connect to database" parity).
 //
 // A k.ctrl.table created with tabulator=true plus a db handle and SELECT query

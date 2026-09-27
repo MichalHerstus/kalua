@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Chart.js control support (see kforms_enhancements.md §3).
 //
 // k.ctrl.chart renders a <canvas> inside a .kalua-chart-container whose

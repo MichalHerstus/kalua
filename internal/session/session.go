@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package session implements the per-tab actor that owns an LState and serializes
 // all Lua execution for that browser tab. It communicates with the browser via
 // an inbox (WS events, timers, async completions) and an outbox (UI commands).
@@ -19,87 +21,6 @@ import (
 	"kalua/internal/common"
 	"kalua/internal/vm"
 )
-
-// Inbox message types — all events that can reach the actor goroutine.
-type inboxMsgType int
-
-const (
-	inboxNone                   inboxMsgType = iota
-	inboxWSEvent                             // event from browser (click, input, etc.)
-	inboxTimer                               // timer fired
-	inboxAsyncDone                           // blocking operation completed (DB, HTTP, etc.)
-	inboxMsgboxChoice                        // user answered a k.msgbox
-	inboxPopupChoice                         // user picked a k.popup item
-	inboxPopupDismiss                        // user dismissed a k.popup (Esc / outside)
-	inboxClipboardResp                       // browser clipboard_get value
-	inboxFilePickerResp                      // browser file picker result (JSON-encoded files)
-	inboxQuery                               // external read of Lua state (tests)
-	inboxSleepDone                           // k.sleep completed
-	inboxTabulatorDataResp                   // browser answered k.table.get_data
-	inboxTabulatorSelectionResp              // browser answered k.table.get_selected_rows
-	inboxTabulatorAjaxRequest                // browser asked for a remote page of rows
-	inboxLooperScrollRequest                 // browser asked for the next looper batch of rows
-	inboxLooperRefreshRequest                // browser re-triggered a looper fetch
-	inboxChartImageResp                      // browser answered k.chart.get_image
-	inboxFormEvent                           // form lifecycle event (open_form, after_open_form, close_form, on_idle)
-	inboxExec                                // k.exec async function execution
-	inboxSelectionResp                       // browser answered k.ctrl.get_selection
-	inboxFilePickerSaveResp                  // browser answered k.pick_file save/download
-	inboxGridFormOpen                        // grid detail/edit/new modal requested
-	inboxGridFormSave                        // grid modal Save clicked
-	inboxGridFormCancel                      // grid modal Cancel/Close clicked
-	inboxGridRowDelete                       // grid row delete requested
-	inboxGridBatchDelete                     // grid selected-rows delete requested
-	inboxGridGetSelected                     // k.grid.get_selected request
-	inboxGridGetSelectedResp                 // k.grid.get_selected response
-	inboxGridGetRow                          // k.grid.get_row request
-	inboxGridGetRowResp                      // k.grid.get_row response
-	inboxGridDeleteRow                       // k.grid.delete_row request
-	inboxGridDeleteRowResp                   // k.grid.delete_row response
-	inboxGridBatchDeleteReq                  // k.grid.batch_delete request
-	inboxGridBatchDeleteResp                 // k.grid.batch_delete response
-	inboxGridInsertRow                       // k.grid.insert_row request
-	inboxGridInsertRowResp                   // k.grid.insert_row response
-	inboxGridUpdateRow                       // k.grid.update_row request
-	inboxGridUpdateRowResp                   // k.grid.update_row response
-)
-
-// asyncOp represents a suspended coroutine waiting for an async operation
-type asyncOp struct {
-	co     *lua.LState                               // coroutine to resume
-	cancel func()                                    // cleanup function
-	conv   func(*lua.LState, interface{}) lua.LValue // result converter (nil = default)
-	// For file picker: "open" | "save" | "download"
-	pickMode string
-}
-
-// gridAsyncOp represents a suspended coroutine waiting for a grid async operation
-type gridAsyncOp struct {
-	co     *lua.LState
-	cancel func()
-}
-
-// inboxMsg is a typed message delivered to the session actor's inbox.
-type inboxMsg struct {
-	typ   inboxMsgType
-	form  string      // form name (for form events)
-	ctrl  string      // control name
-	event string      // event name (click, input, etc.)
-	value lua.LValue  // event value
-	raw   interface{} // JSON-decoded event value (converted on the actor goroutine)
-	timer string      // timer ID
-	data  interface{} // generic payload for async completions
-
-	// respID and resp identify a browser round-trip response (msgbox choice,
-	// clipboard_get value) so the actor can resume the suspended coroutine.
-	respID     string
-	resp       string
-	selectRows []int
-
-	// query is a unit of work to run on the actor goroutine (inboxQuery).
-	query func(*lua.LState) lua.LValue
-	reply chan lua.LValue
-}
 
 // Session is the per-tab actor. It owns its LState and processes events
 // sequentially from its inbox.
@@ -210,6 +131,90 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 	go s.run(ctx, mainLFn, logger)
 
 	return s, nil
+}
+
+// NewWithTransport creates and starts a new session actor with a custom transport.
+// This is used for WASM where the transport is an in-page bridge instead of WebSocket.
+func NewWithTransport(id string, L *lua.LState, app *vm.App, env *bindings.Env, transport common.Transport, logger Logger) (*Session, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Session{
+		id:         id,
+		L:          L,
+		app:        app,
+		env:        env,
+		verbose:    env.Verbose(),
+		inbox:      make(chan inboxMsg, 64),
+		outbox:     make(chan common.OutboxMsg, 64),
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		timers:     make(map[string]*time.Timer),
+		idleTimers: make(map[string]*time.Timer),
+		// Form show coroutines
+		formCoros: make(map[string]*lua.LState),
+		// Async operations - suspended coroutines waiting for completion
+		asyncOps:      make(map[string]*asyncOp),
+		gridAsyncOps:  make(map[string]*gridAsyncOp),
+		// Sleep operations - suspended coroutines waiting for k.sleep
+		sleepOps: make(map[string]*lua.LState),
+	}
+
+	// Set session on env for msgbox, clipboard, etc.
+	env.Sess = s
+	// Share the session with the App so bindings' sendOutbox (which routes
+	// through e.App.Session()) reach the session outbox.
+	app.SetSession(s)
+
+	// Start the actor goroutine
+	s.wg.Add(1)
+	go s.runWithTransport(ctx, transport, logger)
+
+	return s, nil
+}
+
+// runWithTransport is the actor's main loop with a custom transport.
+func (s *Session) runWithTransport(ctx context.Context, transport common.Transport, logger Logger) {
+	defer s.wg.Done()
+	defer transport.Close()
+
+	// Start outbox pump
+	go func() {
+		for {
+			select {
+			case msg, ok := <-s.outbox:
+				if !ok {
+					return
+				}
+				if err := transport.Send(msg); err != nil {
+					logger.Errorf("transport send error: %v", err)
+					return
+				}
+			case <-s.done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Start inbox reader
+	go func() {
+		for {
+			select {
+			case msg, ok := <-transport.Recv():
+				if !ok {
+					return
+				}
+				s.handleTransportInbox(msg, logger)
+			case <-s.done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Wait for context cancellation or session done
+	<-ctx.Done()
 }
 
 // run is the actor's main loop. It starts main() and then drains the inbox.
@@ -336,6 +341,122 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 	case inboxGridUpdateRowResp:
 		s.handleGridUpdateRowResp(msg, logger)
 	}
+}
+
+// handleTransportInbox converts a common.InboxMsg to internal inboxMsg and processes it.
+func (s *Session) handleTransportInbox(msg common.InboxMsg, logger Logger) {
+	// Convert common.InboxMsg to internal inboxMsg
+	imsg := inboxMsg{
+		form:       msg.Form,
+		ctrl:       msg.Ctrl,
+		event:      msg.Event,
+		timer:      msg.Timer,
+		respID:     msg.ID,
+		resp:       msg.Choice,
+		selectRows: msg.SelectRows,
+	}
+
+	// Determine message type from the type field
+	switch msg.Type {
+	case "event":
+		imsg.typ = inboxWSEvent
+		imsg.raw = msg.Value
+	case "msgbox_choice":
+		imsg.typ = inboxMsgboxChoice
+		imsg.raw = msg.Value
+	case "popup_choice":
+		imsg.typ = inboxPopupChoice
+		imsg.raw = msg.Value
+	case "popup_dismiss":
+		imsg.typ = inboxPopupDismiss
+	case "clipboard_resp":
+		imsg.typ = inboxClipboardResp
+		imsg.resp = msg.Choice
+	case "file_picker_resp":
+		imsg.typ = inboxFilePickerResp
+		imsg.resp = msg.Choice
+	case "file_picker_save_resp":
+		imsg.typ = inboxFilePickerSaveResp
+		imsg.resp = msg.Choice
+	case "tabulator_data_resp":
+		imsg.typ = inboxTabulatorDataResp
+		imsg.resp = msg.Choice
+	case "tabulator_selection_resp":
+		imsg.typ = inboxTabulatorSelectionResp
+		imsg.selectRows = msg.SelectRows
+	case "tabulator_ajax_request":
+		imsg.typ = inboxTabulatorAjaxRequest
+		imsg.raw = msg.Value
+	case "looper_scroll_request":
+		imsg.typ = inboxLooperScrollRequest
+		imsg.raw = msg.Value
+	case "looper_refresh_request":
+		imsg.typ = inboxLooperRefreshRequest
+		imsg.raw = msg.Value
+	case "chart_image_resp":
+		imsg.typ = inboxChartImageResp
+		imsg.resp = msg.Choice
+	case "client_info":
+		// Handle client_info directly (not through handleInbox)
+		if data, ok := msg.Value.(map[string]interface{}); ok {
+			w := 0
+			h := 0
+			locale := ""
+			if v, ok := data["w"].(float64); ok {
+				w = int(v)
+			}
+			if v, ok := data["h"].(float64); ok {
+				h = int(v)
+			}
+			if v, ok := data["locale"].(string); ok {
+				locale = v
+			}
+			s.SetClientInfo(w, h, locale)
+		}
+		return
+	case "selection_resp":
+		imsg.typ = inboxSelectionResp
+		imsg.raw = msg.Value
+	case "grid_form_open":
+		imsg.typ = inboxGridFormOpen
+		imsg.raw = msg.Value
+	case "grid_form_save":
+		imsg.typ = inboxGridFormSave
+		imsg.raw = msg.Value
+	case "grid_form_cancel":
+		imsg.typ = inboxGridFormCancel
+		imsg.raw = msg.Value
+	case "grid_row_delete":
+		imsg.typ = inboxGridRowDelete
+		imsg.raw = msg.Value
+	case "grid_batch_delete":
+		imsg.typ = inboxGridBatchDelete
+		imsg.raw = msg.Value
+	case "grid_get_selected":
+		imsg.typ = inboxGridGetSelected
+		imsg.raw = msg.Value
+	case "grid_get_row":
+		imsg.typ = inboxGridGetRow
+		imsg.raw = msg.Value
+	case "grid_delete_row":
+		imsg.typ = inboxGridDeleteRow
+		imsg.raw = msg.Value
+	case "grid_batch_delete_req":
+		imsg.typ = inboxGridBatchDeleteReq
+		imsg.raw = msg.Value
+	case "grid_insert_row":
+		imsg.typ = inboxGridInsertRow
+		imsg.raw = msg.Value
+	case "grid_update_row":
+		imsg.typ = inboxGridUpdateRow
+		imsg.raw = msg.Value
+	default:
+		logger.Warnf("unknown inbox message type: %s", msg.Type)
+		return
+	}
+
+	// Process through the normal inbox handler
+	s.handleInbox(imsg, logger)
 }
 
 // handleWSEvent dispatches a browser event to the appropriate Lua handler.
@@ -3253,14 +3374,7 @@ func (s *Session) teardown(logger Logger) {
 	}
 }
 
-// Logger interface for session logging.
-type Logger interface {
-	Printf(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
-	Warnf(format string, args ...interface{})
-	Tracef(format string, args ...interface{})
-}
-
+// getStack returns a string representation of the Lua stack.
 func getStack(L *lua.LState) string {
 	dbg, ok := L.GetStack(1) // skip getStack frame
 	if !ok {
@@ -3268,6 +3382,10 @@ func getStack(L *lua.LState) string {
 	}
 	return fmt.Sprintf("%s:%d", dbg.Source, dbg.CurrentLine)
 }
+
+// postMortemDump builds a backtrace for an error: every frame with its
+
+// postMortemDump builds a backtrace for an error: every frame with its
 
 // postMortemDump builds a backtrace for an error: every frame with its
 // source, line, function name and local variables, plus upvalues. Used for

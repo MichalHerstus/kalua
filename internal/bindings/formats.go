@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the §5.10 data-format actions beyond JSON:
 // CSV, INI, YAML and XML document load/save/parse/string. Every format follows
 // the shared convention (k.<fmt>_load / _save / _parse / _string) with a
@@ -8,7 +10,6 @@
 //	{ _name="tag", _attrs={name="value",...}, _children={ element,... }, _text="..." }
 //
 // xml_load/xml_save and the §5.4 getter family both expose this shape via
-// nodeToTable / tableToNode.
 package bindings
 
 import (

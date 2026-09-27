@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the §5.4 Web Service Run binding
 // (k.webservice_run): a minimal SOAP 1.1/1.2 client. The profile table names
 // the endpoint and operation; params become the XML payload of the body

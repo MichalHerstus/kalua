@@ -22,6 +22,10 @@ go build -o KALUA ./cmd/KALUA
 
 # Language server (for editors)
 ./KALUA lsp
+
+# Build WASM bundle for browser (runs 100% client-side, no server)
+./KALUA wasm-bundle myapp.lua -o dist/
+# Open dist/index.html in browser
 ```
 
 ## Architecture
@@ -38,8 +42,23 @@ myapp.lua ──► KALUA run myapp.lua
 ```
 
 - **Entry point**: Lua script must define `function main()`
-- **Run modes**: `run` = interactive web app (UI bindings live), `serve` = headless API (HTTP/WS/TCP with worker pool)
+- **Run modes**: `run` = interactive web app (UI bindings live), `serve` = headless API (HTTP/WS/TCP with worker pool), `wasm` = 100% client-side in browser (no server)
 - **Sandbox**: gopher-lua with `SkipOpenLibs`, custom `k.*` API only
+
+## WASM Mode (Run Mode Client-Side)
+
+Ship `index.html` + `KALUA.wasm` (bundled via `KALUA wasm-bundle <app.lua>`) that runs any `run`-mode KALUA app 100% client-side. The existing browser client (`app.js`, `shell.html`) already speaks the session's outbox/inbox JSON protocol — this phase replaces one transport (WS/HTTP in `internal/web/server.go`) with an in-page bridge.
+
+- **In scope**: run-mode semantics per wasm instance (gopher-lua VM, session actor, forms/controls, timers, coroutine suspension); pure bindings unchanged; browser host-IO profile; wa-sqlite; optional localhost relay for non-browser protocols.
+- **Non-goals**: serve mode worker pool, `k.shared.*`, multi-session — native only. Tab isolation = one separate wasm instance per tab. No HTTP server in the page.
+
+**Implemented bindings (synchronous stubs for M2, async in M3+):**
+- Files: `k.file_*` via IndexedDB, `k.param_*` via localStorage
+- Network: `k.http_request` via fetch, `k.net_ok`, `k.ping`, `k.locale`, `k.screen_size`
+- Clipboard: `k.clipboard_set/get` via navigator.clipboard
+- File picker: `k.pick_file` via File System Access API
+- SQLite: `k.connect_sqlite` + `k.db_*` via wa-sqlite
+- Relay client: `k.relay.connect/call/close` for MySQL/PG/MSSQL/FTP/SMTP/POP3/TCP
 
 ## Features
 
@@ -91,7 +110,7 @@ Conversion: `tostr`, `tonum`, `todate`, `strtodate`, `boolstr`
 
 ```
 cmd/KALUA/           # CLI entry point
-internal/cli/        # Command parsing, flags
+internal/cli/        # Command parsing, flags (run, serve, check, test, lsp, builder, ai, scenario, wasm-bundle, relay, version)
 internal/host/       # App lifecycle, RunConfig, exit codes, logging
 internal/vm/         # LState setup, sandbox, script loader
 internal/bindings/   # k.* API registration (flow, forms, controls, db, files, server, crypto, etc.)
@@ -102,8 +121,9 @@ internal/session/    # Per-tab actor: inbox/outbox, form stack, timers
 internal/web/        # HTTP server, WebSocket bridge, embedded assets
 internal/server/     # Serve mode: worker pool, HTTP/WS/TCP servers, shared state
 internal/common/     # Shared types to avoid import cycles
-extensions/vscode-kalua/  # VSCode extension
+internal/wasm/       # WASM entry point, bridge, browser bindings
 third_party/gopher-lua/   # Vendored fork with debug.hook() support
+extensions/vscode-kalua/  # VSCode extension
 ```
 
 ## Dependencies
@@ -112,6 +132,7 @@ third_party/gopher-lua/   # Vendored fork with debug.hook() support
 - `github.com/coder/websocket v1.8+`
 - `go.lsp.dev/protocol v1.0.1`, `go.lsp.dev/jsonrpc2 v1.0.1`
 - `gopkg.in/yaml.v3`
+- `github.com/ncruces/go-sqlite3` (wa-sqlite for WASM)
 - gopher-lua: vendored fork at `third_party/gopher-lua` (based on v1.1.2 with `debug.hook()`)
 
 ## Testing

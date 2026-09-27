@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the §5.2 net/locale/param helpers used by the
 // flow bindings (k.net_ok, k.ping, k.locale, k.param_set/get).
 package bindings

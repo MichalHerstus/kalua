@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the §5.4 communications tier-2 bindings:
 // k.socket_* (TCP client sockets), plus k.ftp_* / k.webservice_run which live
 // in ftp.go and soap.go. Ping helpers sit beside the flow bindings.

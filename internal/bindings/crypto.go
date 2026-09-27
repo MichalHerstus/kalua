@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the crypto bindings (Phase 5 - Data groups).
 package bindings
 

@@ -926,6 +926,80 @@ k.ctrl.textbox("main", "age", { label = "Age", datetime = { mode = "date", forma
 **`k.grid`**  
 Grid control operations: k.grid.refresh/set_db_source/...
 
+**`k.grid.batch_delete(form, name, pksTable)`**  
+Deletes multiple rows by primary keys (async). Triggers tabulator_refresh on success. Returns boolean success or nil + error message.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `pksTable` | list | Array of primary key values. |
+
+**Example:**
+
+```lua
+local ok = k.grid.batch_delete("main", "users", {42, 43, 44})
+```
+
+**`k.grid.delete_row(form, name, pk)`**  
+Deletes a single row by primary key (async). Triggers tabulator_refresh on success. Returns boolean success or nil + error message.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `pk` | any | Primary key value. |
+
+**Example:**
+
+```lua
+local ok = k.grid.delete_row("main", "users", 42); if ok then print("deleted") end
+```
+
+**`k.grid.get_row(form, name, pk)`**  
+Fetches a single row by primary key (async). Yields until the DB query completes. Returns a row object (map of column→value) or nil if not found.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `pk` | any | Primary key value. |
+
+**Example:**
+
+```lua
+local row = k.grid.get_row("main", "users", 42); if row then print(row.name) end
+```
+
+**`k.grid.get_selected(form, name)`**  
+Returns the selected rows (async). Yields until the browser responds with the selected row data. Returns a list of row objects (each a map of column→value) or nil if none selected.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+
+**Example:**
+
+```lua
+local selected = k.grid.get_selected("main", "users"); if selected then for _, row in ipairs(selected) do print(row.id) end end
+```
+
+**`k.grid.insert_row(form, name, dataTable)`**  
+Inserts a new row (async). Returns the inserted row's primary key (if available) or true on success, or nil + error message.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `dataTable` | table | Column→value map for the new row. |
+
+**Example:**
+
+```lua
+local pk = k.grid.insert_row("main", "users", {name="Alice", email="alice@example.com"})
+```
+
 **`k.grid.refresh(form, name)`**  
 Re-runs a grid's data query and shows page 1.
 
@@ -953,6 +1027,22 @@ Swaps a grid's data source {db,query,columns?,page_size?,count_query?,where?,ord
 
 ```lua
 k.grid.set_db_source("main", "users", { db = "main", query = "SELECT * FROM users" })
+```
+
+**`k.grid.update_row(form, name, pk, dataTable)`**  
+Updates a row by primary key (async). Triggers tabulator_refresh on success. Returns boolean success or nil + error message.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `pk` | any | Primary key value. |
+| `dataTable` | table | Column→value map for the updated columns (PK column is ignored). |
+
+**Example:**
+
+```lua
+local ok = k.grid.update_row("main", "users", 42, {email="new@example.com"})
 ```
 
 **`k.looper`**  

@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the K.* literal-value helpers (expression
 // functions) and the Phase 1 flow bindings k.print/sleep/quit/error.
 package bindings

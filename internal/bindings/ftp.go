@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the §5.4 FTP bindings (k.ftp_*). A minimal FTP
 // client is implemented over net — control connection plus passive (EPSV/PASV)
 // data connections — with no external dependency. Verbs: connect, set_cwd,

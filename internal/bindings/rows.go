@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the §5.1/§5.4/§5.5 result-set conversions:
 // JSON / CSV / XML ↔ a result set {columns={...}, rows={{col=value,...}}}. The
 // result-set shape matches k.db_select / k.rows() so authors can shuttle data

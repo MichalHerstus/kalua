@@ -55,6 +55,10 @@ func Run(args []string) int {
 		return scenarioCmd(args[1:])
 	case "mcp":
 		return mcpCmd()
+	case "relay":
+		return relayCmd(args[1:])
+	case "wasm-bundle":
+		return wasmBundleCmd(args[1:])
 	case "version":
 		return versionCmd(args[1:])
 	default:
@@ -70,11 +74,13 @@ func printUsage() {
 Usage: KALUA <command> [args...]
 
 Commands:
-  run       <app.lua> [flags]   Run app as web app (--watch hot-reloads on change)
-  serve     <app.lua> [flags]   Run app as headless API server
-  check     <app.lua> [flags]   Validate script; --format/-w/-l/-d format it gofmt-style
-  test      <app.lua> [flags]   Headless test: check + format + run/serve smoke (auto-detected)
-  scenario  <app.lua> [flags]   Run UI scenario test (--scenario file.json)
+  run        <app.lua> [flags]   Run app as web app (--watch hot-reloads on change)
+  serve      <app.lua> [flags]   Run app as headless API server
+  relay      [flags]             Run relay server for WASM (MySQL/PG/MSSQL/FTP/SMTP/POP3/TCP)
+  wasm-bundle <app.lua> [flags] Build WASM bundle for browser (self-contained dist/)
+  check      <app.lua> [flags]   Validate script; --format/-w/-l/-d format it gofmt-style
+  test       <app.lua> [flags]   Headless test: check + format + run/serve smoke (auto-detected)
+  scenario   <app.lua> [flags]   Run UI scenario test (--scenario file.json)
   describe  <app.lua> [flags]   Structural overview: entry, forms, k.* API usage (AST-derived)
   builder  <app.lua|form.json> Visual form builder (opens browser)
   ai       AI builder (generate, fix, validate scripts)

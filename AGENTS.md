@@ -6,37 +6,6 @@
 ## Key Commands
 
 ```bash
-# Build
-go build -o KALUA ./cmd/KALUA
-
-# Run tests
-go test ./...
-
-# Run single package tests
-go test ./internal/host
-
-# CLI usage
-./KALUA run <app.lua> [--port 0] [--no-browser] [--watch] [--db NAME=DSN] [--arg K=V] [-v|--verbose] [--repl-on-error] [--debug] [--test]
-./KALUA serve <app.lua> [--port 8080] [--host 127.0.0.1] [--workers 4] [--mode http|ws|tcp] [--db NAME=DSN] [--arg K=V] [-v|--verbose] [--debug] [--debug-worker]
-./KALUA check <app.lua>     # static validation (syntax, unknown k.*, main)
-./KALUA check <app.lua> --format | -w | -l | -d   # gofmt-style formatting (see below)
-./KALUA ai generate "request" [-o app.lua]  # NL → Lua (run-mode forms)
-./KALUA ai fix <app.lua>                   # auto-fix via LLM
-# KALUA builder has an "AI" chat panel: NL prompt → /api/ai/stream (SSE) → code → Apply to Builder
-./KALUA ai validate <app.lua>              # static check
-./KALUA new <name>          # scaffold minimal app.lua
-./KALUA lsp                 # language server over stdio (LSP, Content-Length frames)
-./KALUA version             # build stamp; --json for machine-readable output
-
-# Release artifacts (see "Build metadata & releases" below)
-make dist                  # cross-build darwin/arm64 + linux/amd64 + windows/amd64 -> dist/ + SHA256SUMS
-make dist-verify           # re-verify dist/SHA256SUMS
-make release-check         # validate .goreleaser.yml (needs goreleaser)
-gh release create <tag> dist/KALUA_* dist/SHA256SUMS --prerelease
-
-# VSCode extension (extensions/vscode-kalua)
-# npm install && npm run compile && npm run package   -> .vsix
-# F5 launch uses the KALUA binary at the repo root.
 ```
 
 ## Architecture (from kalua_spec.md)
@@ -73,6 +42,7 @@ internal/session/    # Per-tab actor: inbox/outbox, form stack, timers
 internal/web/        # HTTP server, WebSocket bridge, embedded assets
 internal/server/     # Serve mode: worker pool, HTTP/WS/TCP servers, shared state
 internal/common/     # Shared types (OutboxMsg, SessionInterface) to avoid import cycles
+internal/wasm/       # WASM entry point, bridge, browser bindings (db_wasm.go, files_wasm.go, etc.)
 internal/builder/    # Visual Form Builder server (multi-form .lua/.json): AST import extracts ALL
                      # forms + per-statement line spans; export splices changed/new forms into the
                      # source via rebuild.go (non-form code preserved byte-for-byte); k.form.on
@@ -105,6 +75,7 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - Go 1.26.3 (matches go.mod)
 - Dependencies: `github.com/coder/websocket v1.8+`, `go.lsp.dev/protocol v1.0.1`, `go.lsp.dev/jsonrpc2 v1.0.1`
 - **gopher-lua**: vendored fork at `third_party/gopher-lua` (based on v1.1.2) with `debug.hook()` support; referenced via `replace github.com/yuin/gopher-lua => ./third_party/gopher-lua` in go.mod
+- **wa-sqlite**: `github.com/ncruces/go-sqlite3` (CGO-free SQLite for WASM)
 - LSP: `internal/lsp` serves `KALUA lsp` over stdio; position encoding is UTF-8 (character = byte offset in line); server is the source of truth for completion/hover/definition via `internal/bindings` api_doc; diagnostics use `internal/checker`. LSP union types are sealed interfaces (`Boolean`, `TextDocumentSync`, `InlayHintTooltip`); `TextDocumentContentChangeEvent` is a union of WholeDocument/Partial. The connection is wired manually (union-aware codec via `protocol.Marshal/Unmarshal`) so messages dispatch serially in arrival order — do NOT reintroduce `AsyncHandler`/`CancelHandler` (breaks LSP ordering; `CancelHandler`'s context propagation races the pooled request).
 - No linting/formatting config found — uses `go fmt` defaults
 - No CI/CD config found

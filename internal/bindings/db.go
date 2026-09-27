@@ -1,3 +1,5 @@
+//go:build !wasm
+
 // Package bindings implements the database bindings.
 package bindings
 
