@@ -1,6 +1,13 @@
 # Build output
+# A bare `KALUA` pattern also matches the cmd/KALUA/ *package directory*, which
+# silently excluded the main entry point from every commit. Ignore the built
+# binary by name, then re-include the source directory.
 KALUA
+!cmd/KALUA/
 *.exe
+
+# Release artifacts (make dist)
+/dist/
 
 # SQLite test databases
 *.db

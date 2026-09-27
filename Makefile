@@ -1,10 +1,25 @@
 # KALUA Makefile
 
-.PHONY: build test test-race fmt vet clean lint run serve lsp check new ai version gen-api check-api check-agents
+.PHONY: build test test-race fmt vet clean lint run serve lsp check new ai version gen-api check-api check-agents dist dist-verify dist-clean release-check
+
+# ---- build metadata -------------------------------------------------------
+# Stamped into the binary via -ldflags -X (see internal/version). All three
+# come from git, so a build from a given commit reports that commit. The date
+# is the *commit* date, not wall-clock, which keeps builds reproducible.
+# Overridable for local experiments, e.g. `make dist GIT_VERSION=alfa`.
+GIT_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GIT_COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+GIT_DATE    ?= $(shell git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+
+VERSION_PKG := kalua/internal/version
+LDFLAGS     := -s -w \
+	-X $(VERSION_PKG).Version=$(GIT_VERSION) \
+	-X $(VERSION_PKG).Commit=$(GIT_COMMIT) \
+	-X $(VERSION_PKG).Date=$(GIT_DATE)
 
 # Build the KALUA binary
 build:
-	go build -o KALUA ./cmd/KALUA
+	go build -trimpath -ldflags="$(LDFLAGS)" -o KALUA ./cmd/KALUA
 
 # Run all tests
 test:
@@ -70,6 +85,43 @@ version:
 # Build and run tests (CI pipeline)
 ci: build test-race vet check-assets
 
+# ---- release artifacts ----------------------------------------------------
+# Cross-compiled release binaries + SHA256SUMS, for the same platform set as
+# .goreleaser.yml. Works without goreleaser installed; `make dist-verify`
+# re-checks the checksums. Publishing is `make dist && gh release create <tag> dist/*`.
+DIST_DIR       ?= dist
+DIST_PLATFORMS ?= darwin/arm64 linux/amd64 windows/amd64
+
+dist: dist-clean
+	@mkdir -p $(DIST_DIR)
+	@for t in $(DIST_PLATFORMS); do \
+		os=$${t%/*}; arch=$${t#*/}; \
+		case "$$os" in windows) ext=".exe" ;; *) ext="" ;; esac; \
+		out="$(DIST_DIR)/KALUA_$${os}_$${arch}$$ext"; \
+		echo "==> $$os/$$arch -> $$out"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
+			go build -trimpath -ldflags="$(LDFLAGS)" -o "$$out" ./cmd/KALUA || exit 1; \
+	done
+	@cd $(DIST_DIR) && if command -v sha256sum >/dev/null 2>&1; \
+		then sha256sum KALUA_* > SHA256SUMS; \
+		else shasum -a 256 KALUA_* > SHA256SUMS; fi
+	@$(MAKE) --no-print-directory dist-verify
+	@echo "release artifacts in $(DIST_DIR)/ — version $(GIT_VERSION), commit $(GIT_COMMIT)"
+
+# Re-verify $(DIST_DIR)/SHA256SUMS against the binaries.
+dist-verify:
+	@test -d $(DIST_DIR) || { echo "ERROR: $(DIST_DIR)/ not found - run 'make dist' first" && exit 1; }
+	@cd $(DIST_DIR) && if command -v sha256sum >/dev/null 2>&1; \
+		then sha256sum -c SHA256SUMS; \
+		else shasum -a 256 -c SHA256SUMS; fi
+
+dist-clean:
+	@rm -rf $(DIST_DIR)
+
+# Validate .goreleaser.yml without building (requires `goreleaser`).
+release-check:
+	@goreleaser check
+
 # kalua.css is duplicated into the builder assets (the builder preview must load
 # the runtime form stylesheet; embed patterns cannot reach outside the package
 # dir, so a copy is embedded and served at /static/kalua.css).
@@ -110,6 +162,10 @@ help:
 	@echo "  ext-install  - Install VSCode extension"
 	@echo "  gen-api      - Generate API reference (_opencode/skills/kalua-api/api.md) + quickref (docs/agentic/quickref.md)"
 	@echo "  check-api    - Verify committed api.md + quickref.md match generated output"
+	@echo "  dist         - Cross-build release binaries + SHA256SUMS into dist/ (stamped from git)"
+	@echo "  dist-verify  - Re-verify dist/SHA256SUMS against the binaries"
+	@echo "  dist-clean   - Remove dist/"
+	@echo "  release-check - Validate .goreleaser.yml (needs goreleaser)"
 
 # Generate API reference markdown from api_doc.go, plus the compact quickref
 # card used by agents (docs/agentic/quickref.md).

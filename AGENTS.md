@@ -26,7 +26,13 @@ go test ./internal/host
 ./KALUA ai validate <app.lua>              # static check
 ./KALUA new <name>          # scaffold minimal app.lua
 ./KALUA lsp                 # language server over stdio (LSP, Content-Length frames)
-./KALUA version
+./KALUA version             # build stamp; --json for machine-readable output
+
+# Release artifacts (see "Build metadata & releases" below)
+make dist                  # cross-build darwin/arm64 + linux/amd64 + windows/amd64 -> dist/ + SHA256SUMS
+make dist-verify           # re-verify dist/SHA256SUMS
+make release-check         # validate .goreleaser.yml (needs goreleaser)
+gh release create <tag> dist/KALUA_* dist/SHA256SUMS --prerelease
 
 # VSCode extension (extensions/vscode-kalua)
 # npm install && npm run compile && npm run package   -> .vsix
@@ -61,6 +67,7 @@ internal/bindings/   # k.* API registration (flow, forms, controls, db, files, s
 internal/coerce/     # K.eq/ne/add value semantics
 internal/checker/    # Static analysis (syntax, unknown k.*, main presence)
 internal/config/     # KALUA.INI config layer: parse, lookup, Profiles, ApplyFlags (CLI<INI<env precedence)
+internal/version/    # Build stamp: Version/Commit/Date injected via -ldflags -X; Info() for --json
 internal/lsp/        # LSP server (stdio): completion, hover, diagnostics, definition
 internal/session/    # Per-tab actor: inbox/outbox, form stack, timers
 internal/web/        # HTTP server, WebSocket bridge, embedded assets
@@ -81,6 +88,17 @@ extensions/vscode-kalua/  # VSCode extension (TS client, Lua grammar, language-c
 - Logger with `Verbose: false` for quiet tests
 - Exit codes: `ExitOK=0`, `ExitError=1`, `ExitUsage=2`, `ExitIOError=3`
 - Use `--test` flag with `run` command for headless test mode
+
+## Build Metadata & Releases
+
+- `internal/version` holds `Version`, `Commit`, `Date` — plain `string` vars stamped at link time with `-X`. Nothing else in the tree may hardcode a version string.
+- `make build` / `make dist` derive all three from git: `git describe --tags --always --dirty`, `git rev-parse --short HEAD`, and the **commit** date (`--date=format-local:%Y-%m-%dT%H:%M:%SZ`, not wall-clock, so a commit rebuilds reproducibly). Overridable: `make dist GIT_VERSION=x GIT_COMMIT=y GIT_DATE=z`.
+- Unstamped builds (`go build ./cmd/KALUA` by hand) report `KALUA dev (unstamped, go1.26.3, <os>/<arch>)` — a missing stamp is visible, never silently wrong. `Info().Stamped` is the machine-readable form.
+- `KALUA version` prints the banner; `--json` emits `{version, commit, date, go, os, arch, stamped}` (matches the `--json` convention of `check`/`test`/`new`/`describe`).
+- Release platforms are declared **twice**, deliberately: `DIST_PLATFORMS` in the Makefile and `goos`/`goarch` + `ignore` in `.goreleaser.yml`. Change both together. Currently darwin/arm64, linux/amd64, windows/amd64.
+- All release builds are `CGO_ENABLED=0` + `-trimpath` (SQLite is pure-Go `modernc.org/sqlite`, so binaries are fully static with no runtime deps).
+- **goreleaser refuses non-semver tags** (`alfa` fails with `failed to parse tag 'alfa' as semver`) and refuses a dirty tree. For the `alfa` tag use `goreleaser release --clean --skip=validate`, or skip goreleaser entirely: `make dist && gh release create alfa dist/KALUA_* dist/SHA256SUMS --prerelease`.
+- `.gitignore` uses `KALUA` + `!cmd/KALUA/`: a bare `KALUA` pattern matches the *package directory* `cmd/KALUA/` and silently excluded the main entry point from every commit, so a fresh clone could not build. Keep the negation.
 
 ## Development Notes
 

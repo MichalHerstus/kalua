@@ -6,10 +6,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"kalua/internal/host"
+	"kalua/internal/version"
 )
 
 func TestRun_Hello(t *testing.T) {
@@ -65,9 +67,63 @@ func TestRun_New(t *testing.T) {
 }
 
 func TestRun_Version(t *testing.T) {
-	code := Run([]string{"version"})
+	code, out := captureStdout(t, func() int { return Run([]string{"version"}) })
 	if code != int(host.ExitOK) {
 		t.Errorf("Run version = %d, want %d", code, host.ExitOK)
+	}
+	line := strings.TrimSpace(out)
+	if !strings.HasPrefix(line, "KALUA ") {
+		t.Errorf("version output = %q, want a %q prefix", line, "KALUA ")
+	}
+	// Must name the target platform and the Go toolchain, and must not leak the
+	// old hardcoded placeholder.
+	if !strings.Contains(line, runtime.GOOS+"/"+runtime.GOARCH) {
+		t.Errorf("version output = %q, want it to contain %q", line, runtime.GOOS+"/"+runtime.GOARCH)
+	}
+	if !strings.Contains(line, runtime.Version()) {
+		t.Errorf("version output = %q, want it to contain %q", line, runtime.Version())
+	}
+	if strings.Contains(line, "phase 2") {
+		t.Errorf("version output = %q, want the hardcoded placeholder gone", line)
+	}
+	if strings.Contains(line, "unknown") {
+		t.Errorf("version output = %q, want unstamped fields omitted", line)
+	}
+}
+
+func TestRun_Version_JSON(t *testing.T) {
+	code, out := captureStdout(t, func() int { return Run([]string{"version", "--json"}) })
+	if code != int(host.ExitOK) {
+		t.Errorf("Run version --json = %d, want %d", code, host.ExitOK)
+	}
+	var got struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+		Go      string `json:"go"`
+		OS      string `json:"os"`
+		Arch    string `json:"arch"`
+		Stamped bool   `json:"stamped"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("version --json is not valid JSON: %v\noutput:\n%s", err, out)
+	}
+	if got.Version != version.Get().Version || got.Version == "" {
+		t.Errorf("json version = %q, want %q", got.Version, version.Get().Version)
+	}
+	if got.Go != runtime.Version() || got.OS != runtime.GOOS || got.Arch != runtime.GOARCH {
+		t.Errorf("json platform = %q/%q/%q, want %q/%q/%q",
+			got.Go, got.OS, got.Arch, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	}
+	// Tests run unstamped, so the flag must say so.
+	if got.Stamped {
+		t.Error("json stamped = true for an unstamped test build, want false")
+	}
+}
+
+func TestRun_Version_BadArg(t *testing.T) {
+	code := Run([]string{"version", "extra"})
+	if code != int(host.ExitUsage) {
+		t.Errorf("Run version extra = %d, want %d", code, host.ExitUsage)
 	}
 }
 

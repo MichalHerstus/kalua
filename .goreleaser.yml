@@ -1,0 +1,90 @@
+# goreleaser config for KALUA releases.
+#
+#   goreleaser check          # validate this file
+#   goreleaser release --clean --snapshot --skip=publish   # local dry run
+#   goreleaser release --clean
+#
+# NOTE: goreleaser refuses non-semver tags ("failed to parse tag 'alfa' as
+# semver"). The `alfa` tag therefore needs --skip=validate:
+#
+#   goreleaser release --clean --skip=validate
+#
+# It also refuses a dirty working tree, so commit before releasing. If you would
+# rather keep goreleaser's default semver handling, tag releases v0.x.y
+# (e.g. v0.1.0-alpha1) and publish them as pre-releases.
+#
+# `make dist` needs none of this and produces the same three platforms without
+# goreleaser installed; publish with
+# `gh release create <tag> dist/KALUA_* dist/SHA256SUMS --prerelease`.
+#
+# The platform set below matches `make dist` (DIST_PLATFORMS in the Makefile).
+# The -X targets must stay in sync with internal/version/version.go and with the
+# LDFLAGS in the Makefile.
+version: 2
+
+project_name: kalua
+
+builds:
+  - id: kalua
+    main: ./cmd/KALUA
+    binary: KALUA
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    # Only the three shipped targets; drop entries to ship more.
+    ignore:
+      - goos: darwin
+        goarch: amd64
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X kalua/internal/version.Version={{ .Version }}
+      - -X kalua/internal/version.Commit={{ .FullCommit }}
+      - -X kalua/internal/version.Date={{ .CommitDate }}
+    # Stamp the mtime from the commit so archives are reproducible.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: kalua
+    ids: [kalua]
+    name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - KALUA.ini.sample
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^\\.github:"
+
+release:
+  prerelease: auto
+  draft: false
+  replace_existing_draft: true
+  footer: |
+    ---
+    Verify a download with `SHA256SUMS`:
+    ```
+    shasum -a 256 -c SHA256SUMS
+    ```
+    KALUA is a single generic binary that runs any Kalipso-style `.lua` app.
+    See https://github.com/MichalHerstus/kalua#readme for usage.

@@ -56,8 +56,7 @@ func Run(args []string) int {
 	case "mcp":
 		return mcpCmd()
 	case "version":
-		fmt.Println("KALUA dev (phase 2)")
-		return int(host.ExitOK)
+		return versionCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "KALUA: unknown command %q\n\n", cmd)
 		printUsage()
