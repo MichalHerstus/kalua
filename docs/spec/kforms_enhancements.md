@@ -864,10 +864,60 @@ Enhance existing controls and add a new image control:
 </div>
 ```
 
+### Click Handling
+
+The image control supports click events when `clickable=true` is set. The click can be handled in two ways:
+
+**1. Inline onclick handler (constructor option):**
+```lua
+k.ctrl.image("main", "logo", {
+    src = "assets/logo.png",
+    clickable = true,
+    onclick = function()
+        k.msgbox("Logo clicked!")
+    end,
+})
+```
+
+**2. Event-based handler via `k.form.on` (recommended for consistency):**
+```lua
+k.ctrl.image("main", "logo", {
+    src = "assets/logo.png",
+    clickable = true,
+})
+
+k.form.on("main", "logo", "click", function()
+    k.msgbox("Logo clicked!")
+end)
+```
+
+The image control supports custom click data via the `onclick_data` option, which allows passing custom data with the click event:
+
+```lua
+k.ctrl.image("main", "logo", {
+    src = "assets/logo.png",
+    clickable = true,
+    onclick_data = { action = "open_modal", modal = "about" },
+})
+```
+
+When clicked, the event value passed to the handler will contain the custom data.
+
+### Click Event Value
+
+By default, clicking an image control sends an empty value `{}`. If `onclick_data` is provided, the custom data is passed as the event value.
+
 ### Dynamic Update
 - `k.ctrl.set_value(form, name, new_src)` → updates `src` attribute
 - `k.ctrl.set_property(form, name, "src", new_src)` → same
 - `k.ctrl.set_property(form, name, "alt", ...)` etc.
+
+### Visual Feedback
+
+When `clickable=true`, the image gets visual feedback:
+- **Hover**: Slight scale up (1.02x) with subtle shadow
+- **Active/Click**: Slight scale down (0.98x)
+- **Cursor**: Pointer cursor indicates clickability
 
 ---
 

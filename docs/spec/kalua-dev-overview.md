@@ -250,9 +250,13 @@ extension (Phase 5 LSP & editor).
 | `kalua_wasm_plan.md` | M0–M5 | 🔶 M0–M4 ✅, M5 ⏳ |
 | `AI_builder.md` | AI phases 1–4, agentic P0–P2 | ✅ complete |
 | `kform_builder_plan.md` | Webview builder phases 1–7, table/looper editor | 🔁 superseded; table/looper + named DBs ✅ |
-| `kforms_enhancements.md` | §§1–9 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳ |
+| `kforms_enhancements.md` | §§1–11 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳, §10 layout controls ⏳ |
 | `vscode-ext.md` | Extension guide | ✅ shipped |
 
 **Top pending plan items (no code yet):** REPL mode (§8 #11) · DAP debugger (§11 B/C) ·
 codebase cleanup C/D (§13) · WASM M5 JS simplification · `k.ctrl.login` (§8) ·
-`k.ctrl.tree` (§9).
+`k.ctrl.tree` (§9) · **Layout Controls: Topbar, Sidebar, Footer (§11) · Image onclick handling (§4.3)**.
+
+---
+
+*Generated from specs in `docs/spec/`. Run `make gen-api && make check-api` to verify API docs sync.*
