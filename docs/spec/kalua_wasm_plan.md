@@ -216,9 +216,127 @@ github.com/chromedp/chromedp v0.x.x    // E2E tests (test only)
 
 ---
 
-## User Decisions
-1. **wa-sqlite**: `github.com/ncruces/go-sqlite3` (WASM-compatible, pure Go)
-2. **Relay protocol**: Plain JSON over WebSocket (matching run-mode protocol)
-3. **Assets**: Embed all CSS/JS inline in `index.html` (self-contained, works `file://`)
-4. **IndexedDB FS**: Subset matching `k.file_*` API
-5. **Priority**: Sequential M0→M1→M2→M3→M4
+---
+ 
+## Milestone M5: JS/HTML Simplification via WASM Logic Migration (Week 7-9)
+**Goal:** Reduce `app.js` from ~2050 to ~300 lines; eliminate inlined Tabulator/Chart.js/flatpickr from HTML.
+
+### Current State
+| Component | Lines | Responsibility |
+|-----------|-------|----------------|
+| `app.js` | ~2050 | Transport, event delegation, all UI logic, message routing, form rendering, Tabulator/Chart/Looper/Grid, msgbox/popup/status, form value handling |
+| `index.html` template | ~20 | Inlines 6 CSS + 5 JS files + app.js |
+
+### Target Architecture
+- **WASM (Go) — "Brain"**: Message routing, form/control HTML generation, protocol logic, state management, component lifecycle
+- **JavaScript — "Hands"**: DOM manipulation, event attachment, browser APIs, third-party lib init, actual DOM updates
+
+### Phases
+
+#### Phase 1: Message Router & Protocol Logic (Week 7, ~2 days)
+Move `handleMessage` switch (30+ cases) and `sendEvent`/`send` to WASM.
+
+```go
+// internal/wasm/bridge.go — new message router
+func (b *WasmBridge) handleInbox(msg common.InboxMsg) {
+    switch msg.Type {
+    case "render_form":     b.renderForm(msg)
+    case "update_control":  b.updateControl(msg)
+    case "close_form":      b.closeForm(msg)
+    case "msgbox":          b.showMsgbox(msg)
+    // ... all 30+ cases
+    }
+}
+```
+
+**JS becomes:** Single `onmessage` handler calling `wasmBridge.handleMessage(msg)`
+
+#### Phase 2: Form/Control HTML Generation (Week 7-8, ~3 days)
+Move form/control rendering to WASM (reuse existing Go logic in `internal/bindings/forms.go`).
+
+```go
+// internal/wasm/forms.go — expose existing form rendering
+func (b *WasmBridge) renderForm(msg common.InboxMsg) {
+    html := forms.RenderFormHTML(b.env, msg.Form, msg.HTML) // reuse existing Go logic
+    b.sendToJS(map[string]any{"type": "dom_update", "selector": "#stage", "html": html})
+}
+```
+
+**JS becomes:** Single `dom_update` handler doing `el.innerHTML = html`
+
+#### Phase 3: Control Value & Event Logic (Week 8, ~3 days)
+Move `getControlValue`, `collectFormValues`, `sendEvent` logic to WASM.
+
+```go
+// internal/wasm/controls.go
+func (b *WasmBridge) extractFormValues(formName string) map[string]any { ... }
+
+func (b *WasmBridge) handleDOMEvent(form, ctrl, event string, value any) {
+    // Map DOM event → protocol event → dispatch to Lua via session inbox
+}
+```
+
+**JS becomes:** Generic event delegator calling `wasmBridge.onDOMEvent(form, ctrl, event, value)`
+
+#### Phase 4: Component Lifecycle Management (Week 8-9, ~2 days)
+Move Tabulator/Chart/Looper/flatpickr init/destroy logic to WASM.
+
+```go
+// internal/wasm/components.go
+func (b *WasmBridge) initComponents(scopeSelector string) []ComponentCmd {
+    // Returns commands for JS to execute
+    // e.g., {type: "init_tabulator", selector: "#c:form:ctrl", config: {...}}
+}
+```
+
+**JS becomes:** Generic component initializer executing WASM-returned commands
+
+#### Phase 5: Simplified JS Bundle & Cleanup (Week 9, ~1 day)
+New `app.js` (~300 lines):
+```javascript
+const wasmBridge = {
+    onMessage: (msg) => wasmModule.handleMessage(msg),
+    onDOMEvent: (form, ctrl, event, value) => wasmModule.onDOMEvent(form, ctrl, event, value),
+    domUpdate: (selector, html) => { document.querySelector(selector).innerHTML = html; },
+    initComponent: (cmd) => initComponent(cmd), // Tabulator/Chart/flatpickr
+    // Browser APIs only
+    clipboard: {...}, filePicker: {...}, fetch: {...}, ...
+};
+```
+
+**index.html** — loads only `wasm_exec.js`, `KALUA.wasm`, minimal `app.js` (~300 lines). Tabulator/Chart/flatpickr loaded on-demand via WASM commands.
+
+### Effort & Risk
+
+| Phase | Effort | Risk | Notes |
+|-------|--------|------|-------|
+| 1: Message Router | 2 days | Low | Pure Go logic |
+| 2: Form HTML Gen | 3 days | Low | Reuse existing Go code |
+| 3: Control/Event | 3 days | Medium | Value coercion edge cases |
+| 4: Component Lifecycle | 2 days | Medium | Third-party lib quirks |
+| 5: JS Cleanup | 1 day | Low | Deletion |
+
+**Total: ~11 days** to reduce `app.js` from 2050→~300 lines.
+
+### Open Questions
+1. **Incremental or big bang?** Phases 1-3 incremental; 4-5 need 1-3.
+2. **Tabulator/Chart/flatpickr loading:** On-demand via WASM commands vs keep inlined?
+3. **WASM size budget:** Moving HTML gen to WASM adds ~200KB. Acceptable?
+4. **Backward compat:** Keep current JS as fallback for native mode?
+5. **HTML generation reuse:** Use existing `internal/bindings/forms.go` `renderForm`/`renderControl` functions?
+
+---
+
+## File Tree Additions for M5
+
+```
+internal/
+├── wasm/
+│   ├── bridge.go           # EXTENDED: handleInbox message router
+│   ├── forms.go            # NEW: form/control HTML generation
+│   ├── controls.go         # NEW: control value extraction, event mapping
+│   ├── components.go       # NEW: Tabulator/Chart/Looper init/destroy commands
+│   └── app_minimal.go      # NEW: minimal app entry for M5
+├── cli/
+│   └── wasm_bundle.go      # UPDATED: new app_minimal.js template
+```

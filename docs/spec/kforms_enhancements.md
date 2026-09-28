@@ -1883,3 +1883,645 @@ k.ctrl.grid("main", "users", {
 
 **6.4 Code Quality**
 - `go test ./...`, `go vet ./...`, `node --check`, `make check-assets` all pass
+
+---
+
+# 8. Login Control (`k.ctrl.login`)
+
+## Overview
+
+Introduce a new `k.ctrl.login(form, name, opts)` control: a **declarative login dialog** rendered as a single panel inside its form. The script declares it, shows the form modally, and receives the verified `users` record as a Lua map through a `k.form.on` event.
+
+The control is a peer of `k.ctrl.grid` (section 7) — same shape (`addControl`, inline in the form, modal presentation via `k.form.show(name, {modal = true})`, results delivered by form events rather than a return value).
+
+It is deliberately **not** a blocking `k.form.login(opts)` call: a control composes with the rest of the form system, needs no new coroutine suspension, and returns its result through the existing event-dispatch path.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  .form-modal-overlay          (k.form.show(f, {modal = true}))   │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  Sign in                          ← control title          │  │
+│  │  Enter your credentials           ← control subtitle       │  │
+│  │                                                            │  │
+│  │  Login     [ ann            ]                             │  │
+│  │  Password  [ ••••••••       ]                             │  │
+│  │  Invalid login or password         ← error line (retry)   │  │
+│  │                                                            │  │
+│  │                    [Cancel]  [Sign IN]                    │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## API Surface
+
+### Control Creation
+
+```lua
+k.form.new("loginform", { title = "Sign in", layout = "vertical", align = "center" })
+
+k.ctrl.login("loginform", "login", {
+    -- Verification source (mirrors grid's db/query, but a single table)
+    db             = "main",   -- named handle (--db main=…) or k.connect_sqlite/k.connect_db id. REQUIRED
+    table          = "users",  -- users table
+    login_column   = "login",  -- column matched against the login input
+    password_column = "password",
+    salt_column    = "salt",   -- required for hash="pbkdf2" unless salt= is given
+
+    -- Password hashing
+    hash       = "pbkdf2",     -- "pbkdf2" | "sha256" | "plain"
+    salt       = nil,          -- static salt; overrides salt_column
+    iterations = 100000,       -- pbkdf2 rounds (k.checksum defaults to 10000; stricter here)
+    keylen     = 32,           -- pbkdf2 key length in bytes
+
+    -- Presentation
+    title      = "Sign in",
+    subtitle   = "Enter your credentials",
+    login_label = "Login",
+    password_label = "Password",
+    login_placeholder = nil,
+    password_placeholder = nil,
+    submit_label = "Sign IN",
+    cancel_label = "Cancel",
+
+    -- Retry policy
+    error_message = "Invalid login or password",
+    attempts      = 3,         -- wrong-password retries before the control stops retrying
+})
+```
+
+### Events (via `k.form.on(form, ctrl, event, fn)`)
+
+| Event | Signature | Fires when |
+|-------|-----------|------------|
+| `on_login_submit` | `on_login_submit(login, password)` | "Sign IN" clicked or Enter pressed. Runs **before** verification; the control always verifies afterwards regardless of the handler's return value. |
+| `on_login` | `on_login(user)` | Credentials verified. `user` is the matched `users` row as a Lua map (`{id=1, login="ann", …}`), built by the same `toLuaValue` conversion `k.grid.get_row` uses. |
+| `on_login_error` | `on_login_error(message, attempts_left)` | Wrong login/password. `attempts_left` reaches `0` once the retry budget is exhausted. |
+| `on_login_cancel` | `on_login_cancel()` | "Cancel" clicked. No record is delivered. |
+
+Registering only `on_login` is the common case:
+
+```lua
+k.form.on("loginform", "login", "on_login", function(user)
+    k.print("welcome " .. user.login)
+    k.msgbox("Hello " .. user.name)
+end)
+k.form.on("loginform", "login", "on_login_cancel", function()
+    k.quit()
+end)
+```
+
+### Options Reference
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `db` | string | — | **Required.** Named DB handle (`--db main=sqlite://…`) or a runtime id from `k.connect_sqlite` / `k.connect_db`. |
+| `table` | string | `"users"` | Users table. Validated as a SQL identifier. |
+| `login_column` | string | `"login"` | Column compared to the login input. Validated. |
+| `password_column` | string | `"password"` | Column holding the stored hash/secret. Validated. |
+| `salt_column` | string | `""` | Per-user salt column (`hash="pbkdf2"`). Validated. |
+| `hash` | string | `"pbkdf2"` | `pbkdf2` \| `sha256` \| `plain`. |
+| `salt` | string | `""` | Static salt; overrides `salt_column`. |
+| `iterations` | number | `100000` | pbkdf2 rounds. |
+| `keylen` | number | `32` | pbkdf2 derived key length. |
+| `title` | string | `""` | Panel heading. Independent of the form's own `title`. |
+| `subtitle` | string | `""` | Secondary line under the heading. |
+| `login_label` | string | `"Login"` | Label above the login input. |
+| `password_label` | string | `"Password"` | Label above the password input. |
+| `login_placeholder` | string | `""` | Placeholder for the login input. |
+| `password_placeholder` | string | `""` | Placeholder for the password input. |
+| `submit_label` | string | `"Sign IN"` | Primary button text. |
+| `cancel_label` | string | `"Cancel"` | Secondary button text. |
+| `error_message` | string | `"Invalid login or password"` | Inline error shown on a failed attempt. |
+| `attempts` | number | `3` | Wrong-password retries before the control stops retrying. |
+| `label`, `enabled`, `visible`, `cell`, `align` | — | — | Standard control options from section 6 — handled by `renderVisibility` and the grid-cell layout for free. |
+
+### Reading the verified user
+
+`k.ctrl.get_value(form, "login")` returns the last verified user map (set on success, `nil` otherwise), mirroring the image control's `set_value`→`src` mapping from section 4.3. `k.ctrl.set_value` on a login control is ignored.
+
+## Architecture
+
+### 1. Go Runtime — `internal/bindings/login.go` (new file)
+
+The control is **registered** alongside `k.ctrl.grid` in `registerForms` (`forms.go:443`):
+
+```go
+e.register("ctrl.login", "controls", func(L *lua.LState) int {
+    formName := L.CheckString(1)
+    name     := L.CheckString(2)
+    opts     := L.OptTable(3, L.NewTable())
+    addControl(L, formName, name, "login", opts)
+    return 0
+})
+```
+
+`addControl` (`forms.go:966`) stores the opts verbatim — the login control keeps its DB/crypto config on the control table, so no extra Go-side registry is needed.
+
+The file hosts the verification logic, which must live in `bindings` rather than `session` because it needs the package-private `isValidIdentifier` (`db.go:671`) and `(*DBHandle).Placeholder` (`db.go:877`) — the same reason `session.go` calls `bindings.GridTableFromQuery`:
+
+| Function | Signature | Responsibility |
+|----------|-----------|----------------|
+| `LoginOptsFromTable` | `(L *lua.LState, ctrl *lua.LTable) (LoginOptions, error)` | Apply defaults; validate `table`/`login_column`/`password_column`/`salt_column` through `isValidIdentifier`; require `db`. |
+| `LookupLoginUser` | `(L *lua.LState, ctrl *lua.LTable, login string) (map[string]interface{}, error)` | `getDBHandle(L, opts.DB)` (`db.go:686`) → `SELECT * FROM <table> WHERE <login_column> = <Placeholder(1)>` → `h.Query(...)` (`db.go:921`); first row or `nil`. |
+| `VerifyLoginPassword` | `(L *lua.LState, ctrl *lua.LTable, row map[string]interface{}, password string) bool` | Dispatch on `hash`; `crypto/subtle.ConstantTimeCompare` in every mode. |
+| `loginUserFromRow` | `(L *lua.LState, row map[string]interface{}) *lua.LTable` | `common.GoValueToLua` conversion of the row into a Lua map. |
+
+### 2. Rendering — `internal/bindings/forms.go`
+
+`renderControl` (`forms.go:1613`) gains `case "login"` delegating to `renderLoginPanel(ctrl)`:
+
+```html
+<div class="kalua-control kalua-login" id="c:loginform:login" data-k-login="1"
+     data-k-form="loginform" data-k-ctrl="login">
+  <div class="kalua-login-title">Sign in</div>
+  <div class="kalua-login-subtitle">Enter your credentials</div>
+  <label class="kalua-label" for="c:loginform:login:login">Login</label>
+  <input class="kalua-input kalua-login-input" type="text" id="c:loginform:login:login"
+         name="login" data-k-form="loginform" data-k-ctrl="login" value="">
+  <label class="kalua-label" for="c:loginform:login:password">Password</label>
+  <input class="kalua-input kalua-login-input" type="password" id="c:loginform:login:password"
+         name="password" data-k-form="loginform" data-k-ctrl="password" value="">
+  <div class="kalua-login-error">Invalid login or password</div>   <!-- only when ctrl.error -->
+  <div class="kalua-login-actions">
+    <button type="button" class="kalua-btn" data-k-login-cancel="1"
+            data-k-form="loginform" data-k-ctrl="login">Cancel</button>
+    <button type="button" class="kalua-btn kalua-login-submit" data-k-login-submit="1"
+            data-k-form="loginform" data-k-ctrl="login">Sign IN</button>
+  </div>
+</div>
+```
+
+The two action buttons are modelled on `gridModalFooter` (`session.go:1333`): they carry `data-k-form`/`data-k-ctrl` for identification but use `data-k-login-*` hooks, so the generic button branch at the end of `handleClick` (`app.js:1864`) never sees them and no spurious `click` event is fired. The two inputs *do* carry `data-k-form`/`data-k-ctrl` so the existing `gridFormValues(overlay)` collector (`app.js:842`) picks them up.
+
+Server-side state lives on the control table, so nothing extra is needed in the session:
+- `ctrl.attempt` — failed attempts so far (reset on success and on exhaustion)
+- `ctrl.error` — current inline error text
+- `ctrl.login_value` / `ctrl.password_value` — re-render values (login preserved, password always cleared on retry)
+- `ctrl.user` — last verified row
+
+**New: `k.ctrl.textbox { password = true }`.** No password input type exists today — `renderControl`'s default textbox branch hardcodes `type="text"` (`forms.go:1678`). Add the option so both the login control and ordinary forms can use it:
+
+```go
+if ctrl.RawGetString("password").String() == "true" {
+    return `<div class="kalua-control"…><label …>` + label + `</label>` +
+        `<input type="password" class="kalua-input" id="…" name="…" value="…"` + attrs + enabled + `>
+        </div>`
+}
+```
+
+`getControlValue` (`app.js:1950`) already returns `el.value` for `type="password"`, so no client change is needed to read it.
+
+### 3. Client-Side — `internal/web/assets/app.js`
+
+No new outbox message type. Two branches in `handleClick`, placed **before** the generic `[data-k-form][data-k-ctrl]` branch (siblings of the grid-footer branches at `app.js:1827-1862`):
+
+```js
+const loginSubmit = e.target.closest('[data-k-login-submit]');
+if (loginSubmit) {
+    e.preventDefault();
+    const overlay = loginSubmit.closest('.form-modal-overlay');
+    const v = overlay ? gridFormValues(overlay) : {};
+    send({ type: 'event', form: loginSubmit.dataset.kForm,
+           ctrl: loginSubmit.dataset.kCtrl, event: 'on_login_submit',
+           value: { login: v.login || '', password: v.password || '' } });
+    return;
+}
+
+const loginCancel = e.target.closest('[data-k-login-cancel]');
+if (loginCancel) {
+    e.preventDefault();
+    send({ type: 'event', form: loginCancel.dataset.kForm,
+           ctrl: loginCancel.dataset.kCtrl, event: 'on_login_cancel', value: null });
+    return;   // the script decides what to do with the modal
+}
+```
+
+Plus `setupLoginModal()` attached from the `render_form` branch of `handleMessage` (`app.js:1047`): focus the login input, and bind a `keydown` listener on the overlay so **Enter** in either input submits (mirrors the focus trap already installed by `renderModalForm`).
+
+### 4. Session Event Handling — `internal/session/session.go`
+
+`handleWSEvent` (`session.go:463`) grows a `loginDispatch` case, structurally identical to the existing `looperDispatch` / `chartDispatch` handling:
+
+```go
+loginDispatch := false
+if msg.event == "on_login_submit" && s.isLoginControl(msg.form, msg.ctrl) {
+    if vt, ok := value.(*lua.LTable); ok {
+        loginDispatch = vt.RawGetString("password") != lua.LNil
+    }
+}
+```
+
+Two consequences, both required:
+
+1. `loginDispatch` joins `looperDispatch`/`chartDispatch` in the guard at `session.go:495`, so **`updateControlValue` is skipped** — the plaintext password is never written into the Lua form definition.
+2. `resumeArgs` unpacks to `[]lua.LValue{login, password}` so the script handler receives the two scalars.
+
+After `on_login_submit` returns, the session runs the same flow `fireGridEvent` uses (`session.go:1271`):
+
+| Outcome | Action |
+|---------|--------|
+| Row found **and** password verified | `ctrl.user = row`; clear `ctrl.error`/`ctrl.attempt`; `runFormHandler(form, ctrl, "on_login", [rowTable])` |
+| Not found / mismatch, `attempt < attempts` | `ctrl.attempt++`; `ctrl.error = error_message`; `ctrl.login_value = login`; `ctrl.password_value = ""`; push the standard `update_control` outbox (`forms.go:521`) to re-render just the control; `runFormHandler(..., "on_login_error", [msg, left])` |
+| Not found / mismatch, budget exhausted | same, but `ctrl.attempt = 0` (fresh budget for the next dialog) and `attempts_left = 0` |
+| `on_login_cancel` | `runFormHandler(form, ctrl, "on_login_cancel", [])` |
+
+`updateControl` (`app.js:1483`) replaces the element with `outerHTML`, which is why the submitted values are echoed through `ctrl.login_value` / `ctrl.password_value` before re-rendering.
+
+`isLoginControl` is a copy of `isChartControl` (`session.go:3222`) testing `type == "login"`.
+
+## Password Verification
+
+| `hash` | Computation | Stored value |
+|--------|-------------|--------------|
+| `pbkdf2` (default) | `hex(pbkdf2.Key([]byte(pw), []byte(salt), iterations, keylen, sha256.New))` | hex digest in `password_column` |
+| `sha256` | `hex(sha256(pw))`, or `hex(sha256(pw+salt))` when a salt is present | hex digest in `password_column` |
+| `plain` | raw string | raw string in `password_column` |
+
+- `golang.org/x/crypto/pbkdf2` is already imported by `crypto.go:27`; `golang.org/x/crypto v0.57.0` is in `go.mod:11`. **No new dependency.**
+- A non-empty salt is **mandatory** for `pbkdf2` — the same rule `k.checksum` enforces (`crypto.go:63`). A missing/empty salt is a configuration error, surfaced via `on_login_error`, never silently downgraded to `plain`.
+- Every mode compares with `crypto/subtle.ConstantTimeCompare` so a wrong password leaks no timing information.
+- `iterations` defaults to 100 000 here, deliberately stricter than `k.checksum`'s 10 000 default.
+
+Hash creation is the script's job (there is no `k.hash_password`); the demo derives it with `k.checksum`:
+
+```lua
+k.sql(db, "INSERT INTO users (login, password, salt) VALUES (?, ?, ?)",
+      "ann", k.checksum("pbkdf2", "secret", "pepper", 100000, 32), "pepper")
+```
+
+## WebSocket Message Types
+
+**No new types.** The control reuses `event` (submit/cancel) and the existing `render_form` / `update_control` outbox messages. `common.OutboxMsg` and `common.SessionInterface` are untouched.
+
+## Key Behavior Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **Control, not a blocking `k.form.login(opts)` call** | Composes with the form system, needs no coroutine suspension, and delivers its result through the same event path as every other control |
+| **Inline panel, shown via `k.form.show(..., {modal = true})`** | Reuses `renderModalForm` verbatim — zero new outbox types, one modal code path |
+| **Result via `k.form.on` events, not a return value** | Consistent with `k.ctrl.grid` (`on_row_view(row)`) and `k.ctrl.chart` (`chart_click(...)`) |
+| **Row map, not a filtered map** | `k.grid.get_row` already returns the whole row; hiding columns would surprise callers. Mask the secret in the handler if it matters |
+| **`pbkdf2` default, configurable hash** | No KDF policy baked in; reuses the existing `k.checksum` primitive; no new dependency |
+| **Retry inside the dialog, surfaced as `on_login_error(msg, left)`** | A failed attempt re-renders in place, keeping the login value and clearing the password, instead of returning to the script and re-showing the form |
+| **Plaintext password skipped in `updateControlValue`** | `loginDispatch` joins the existing guard so the secret never lands in the Lua form definition |
+| **Identifier validation on all four column/table names** | Same `isValidIdentifier` rule `buildWhereClause` (`db.go:647`) already applies; prevents SQL injection through option strings |
+| **Verification always runs, even without `on_login_submit`** | The submit event is an observation hook, not a gate; a script cannot bypass authentication by omitting it |
+| **Attacks:** no lockout, no rate limiting | Out of scope. `attempts` only bounds retries within one dialog; a script that re-shows the form gets a fresh budget |
+
+## Implementation Phases
+
+### Phase 1: `k.ctrl.textbox { password = true }` (0.5 day)
+`renderControl` textbox branch + `api_doc.go` + `forms_test.go` render assertion. Self-contained; unblocks Phase 3.
+
+### Phase 2: Verification core (2 days)
+New `internal/bindings/login.go`: `LoginOptsFromTable`, `LookupLoginUser`, `VerifyLoginPassword`. Fully testable headlessly against a real SQLite `users` table in `t.TempDir()` — this is the security-critical part and needs no UI.
+
+### Phase 3: Rendering (1 day)
+`case "login"` in `renderControl`, `renderLoginPanel`, CSS, `make sync-assets` (the builder preview stylesheet is a copy guarded by `make check-assets`), render test.
+
+### Phase 4: Registration & plumbing (0.5 day)
+`e.register("ctrl.login", …)`, `registerKnown` entry (`bindings.go:110`) — without it `KALUA check` reports `unknown k.ctrl.login` (`checker.go:337`) — `api_doc.go` entry (required by `TestApiDocSync`, `api_doc_test.go:9`), `serve.go:317` `ctrlFuncs`, `internal/ai/knowledge.go` `runModeBindings`.
+
+### Phase 5: Client (1 day)
+`handleClick` submit/cancel branches, `setupLoginModal` focus + Enter-to-submit, `node --check`.
+
+### Phase 6: Session (1.5 days)
+`loginDispatch` + `resumeArgs` unpack, `isLoginControl`, submit/cancel handlers, retry re-render via `update_control`, `get_value` for the verified user.
+
+### Phase 7: Tests, docs, demo (1.5 days)
+E2E session test, `make gen-api`, `USER_GUIDE.md`, `kalua_spec.md`, `AGENTS.md`, `testdata/apps/login_demo.lua`.
+
+**Total: ~8 days**
+
+## File Changes
+
+| File | Change |
+|------|--------|
+| `internal/bindings/login.go` | **New** — options parsing, `LookupLoginUser`, `VerifyLoginPassword`, row→Lua conversion |
+| `internal/bindings/forms.go` | `ctrl.login` registration; `case "login"` in `renderControl`; `renderLoginPanel`; textbox `password` option |
+| `internal/session/session.go` | `loginDispatch` + `resumeArgs` in `handleWSEvent`; `isLoginControl`; submit/cancel handling; retry re-render |
+| `internal/web/assets/app.js` | `handleClick` login branches; `setupLoginModal`; Enter-to-submit |
+| `internal/web/assets/kalua.css` | `.kalua-login*` rules |
+| `internal/bindings/bindings.go` | `"ctrl.login": "controls"` in `registerKnown` |
+| `internal/bindings/api_doc.go` | `ctrl.login` `Info`; extend `ctrl.textbox` doc with `password` |
+| `internal/bindings/serve.go` | add `"login"` to `ctrlFuncs` so serve mode raises instead of silently nil-ing |
+| `internal/ai/knowledge.go` | `"ctrl.login": true` in `runModeBindings` (otherwise invisible to the AI builder) |
+| `_opencode/skills/kalua-api/api.md`, `docs/agentic/quickref.md` | regenerated by `make gen-api` |
+| `docs/USER_GUIDE.md`, `kalua_spec.md`, `AGENTS.md` | prose updates |
+| `testdata/apps/login_demo.lua` | **New** — seeds a `users` table, shows the form modally, greets the user |
+
+## CSS Additions (kalua.css)
+
+```css
+/* Login control (k.ctrl.login) */
+.kalua-login { display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
+.kalua-login-title { font-size: 18px; font-weight: 600; color: #212121; }
+.kalua-login-subtitle { font-size: 13px; color: #757575; margin-bottom: 8px; }
+.kalua-login-input { width: 100%; box-sizing: border-box; }
+.kalua-login-error { display: none; font-size: 13px; color: #c62828; min-height: 18px; }
+.kalua-login-error:not(:empty) { display: block; }
+.kalua-login-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.kalua-login-submit { background: #1976d2; color: #fff; border-color: #1976d2; }
+```
+
+## Dependencies
+
+None. `golang.org/x/crypto/pbkdf2` is already a dependency (`go.mod:11`, used by `crypto.go:27`).
+
+## Tests
+
+**`internal/bindings/login_test.go`** (new)
+- `TestLoginPanelRender` — title, subtitle, `<input type="password"`, both `data-k-login-*` buttons; labels/placeholders escaped
+- `TestVerifyLoginUser` — real SQLite `users` table: correct pbkdf2 password returns the row map with the expected columns; wrong password fails; unknown login fails; missing salt with `hash="pbkdf2"` errors; `sha256` and `plain` modes
+- `TestLoginOptsValidation` — non-identifier characters in `table`/`login_column`/`password_column`/`salt_column` rejected; missing `db` raises
+- `TestTextboxPassword` — `password=true` → `type="password"`, absent → `type="text"`
+
+**`internal/session/login_e2e_test.go`** (new, modelled on `grid_e2e_test.go`)
+- Real session + real SQLite `users` table; drain `s.Outbox()`; assert the `render_form` message carries `Modal:true` and the login HTML
+- `PostEvent(form, ctrl, "on_login_submit", …)` with a wrong password → no `on_login`, an `update_control` carrying the error text arrived, `ctrl.attempt == 1`
+- Correct password → the `on_login` handler sets a global equal to the row map
+- `on_login_cancel` → handler fires, no record
+- Regression guard: the password is never written into the form definition
+
+## Resolved Design Questions
+
+| Question | Decision |
+|----------|----------|
+| **Control vs. blocking form call** | Control — `k.ctrl.login` (see Overview) |
+| **Modal presentation** | Inline control; the script calls `k.form.show(name, {modal = true})` |
+| **Result channel** | `k.form.on` events; `k.ctrl.get_value` also returns the verified user |
+| **Password input markup** | New `k.ctrl.textbox { password = true }` (reusable, not login-private) |
+| **Hash algorithm** | `pbkdf2` default; `sha256`/`plain` configurable |
+| **Wrong credentials** | Retry in-dialog up to `attempts`, then `on_login_error(msg, 0)` |
+| **Cancel** | `on_login_cancel()`, no record |
+| **Exhausted retries vs. cancel** | Distinguishable only to a handler registering both `on_login_error` and `on_login_cancel` |
+| **Row contents** | Whole row returned; masking is the handler's job |
+| **User storage / sessions** | Out of scope — the control verifies, the app stores `user` in a global |
+| **Brute-force protection** | Out of scope — no lockout, no rate limiting |
+
+## Open Decisions
+
+- Should retry exhaustion raise a Lua error (`KErrorUserCanceled`, `bindings.go:541`) instead of only firing `on_login_error(msg, 0)`? Current design stays non-throwing, consistent with `on_save` returning `{ok, error}`.
+- Should `k.ctrl.get_value(form, "login")` exist at all, or should the record be reachable only through the event? Cheap to add, cheap to drop.
+- Should the control expose `on_login_locked` for an in-DB `locked_until` column, so lockout policy can live in the schema?
+
+## Example App
+
+`testdata/apps/login_demo.lua` — seeds a `users` table in SQLite, declares the control, shows the form modally, and greets the verified user. Doubles as the runnable counterpart to the `k.form.new("login", …)` layout example in section 6.
+
+## Implementation Status
+
+Not started — plan only.
+
+---
+
+# 9. Tree Control (`k.ctrl.tree`)
+
+## Overview
+
+Introduce a new `k.ctrl.tree(form, name, opts)` control that displays a **specified field from a database table as an expandable tree**. The hierarchy is an adjacency list: each row has a unique-ID column and a parent-reference column (`parent_id`). The control is a peer of `k.ctrl.looper` / `k.ctrl.grid` — DB-linked config stored on the control, results delivered through `k.form.on` events.
+
+```
+categories                                (table rows)
+┌──────────┬──────────────┐
+│ id       │ parent_id    │
+├──────────┼──────────────┤
+│ 1        │ NULL         │  → Electronics
+│ 2        │ 1            │     ├─ Laptops
+│ 3        │ 1            │     └─ Phones
+│ 4        │ 2            │        └─ ThinkPad
+│ 5        │ NULL         │  → Books
+└──────────┴──────────────┘
+
+Rendered:  ▸ Electronics     (click ▸ expands)
+             ▸ Laptops
+               └─ ThinkPad
+             ▸ Phones
+           ▸ Books
+```
+
+### Design decisions (locked)
+
+| Decision | Rationale |
+|----------|-----------|
+| **Full load — all nodes upfront** | Server fetches all matching rows in one query; hierarchy built server-side; client expands/collapses locally. No per-node round-trips; good to ~5k nodes |
+| **Flat rows `{id, parent_id, label, …extra}`** | `label_field` picks the displayed column; the script receives the full row map in events |
+| **`on_click` / `on_expand` / `on_select` events** | Mirrors `k.ctrl.looper`'s `onselect`/`onclick`; node objects delivered as Lua maps |
+| **Full builder support** | Palette entry, property editor, import/export, preview — same effort as any new control type |
+
+## API Surface
+
+### Control Creation
+
+```lua
+k.form.new("main", { title = "Categories" })
+
+k.ctrl.tree("main", "tree", {
+    -- Data source (DB-linked, like looper/table)
+    db      = "main",                 -- named handle from --db, or k.connect_sqlite/k.connect_db id. REQUIRED
+    table   = "categories",           -- source table. REQUIRED
+    where   = "",                     -- extra WHERE clause (identifier/params guarded)
+    order_by = "name ASC",            -- deterministic sibling order (recommended)
+
+    -- Hierarchy definition (adjacency list)
+    id_field     = "id",              -- DEFAULT "id"
+    parent_field = "parent_id",       -- DEFAULT "parent_id"
+    label_field  = "name",            -- REQUIRED: column rendered as the node label
+
+    -- Presentation
+    expand_all = false,               -- DEFAULT false: render roots collapsed
+    max_nodes  = 5000,                -- DEFAULT 5000: safety cap on full-load
+})
+```
+
+### Events (via `k.form.on(form, ctrl, event, fn)`)
+
+| Event | Signature | Description |
+|-------|-----------|-------------|
+| `on_click` | `on_click(node)` | Node clicked. `node` = full row map (`{id=…, parent_id=…, [label_field]=…, …extra columns}`) |
+| `on_select` | `on_select(node)` | Node selected (click while `selection=...` active). Same payload as `on_click` |
+| `on_expand` | `on_expand(node_id, expanded)` | A node was expanded (`true`) or collapsed (`false`) by the user |
+| `on_loaded` | `on_loaded(node_count)` | Full tree fetched and rendered on the client. `node_count` = total nodes (0 on error) |
+| `on_error` | `on_error(message)` | Fetch/SQL/max_nodes failure. Control renders an empty state; never crashes the session |
+
+```lua
+k.form.on("main", "tree", "on_click", function(node)
+    k.print("clicked " .. node.name .. " (id=" .. tostr(node.id) .. ")")
+end)
+k.form.on("main", "tree", "on_select", function(node)
+    k.ctrl.set_value("main", "detail", node.name)   -- feed a sibling control
+end)
+```
+
+### Reading values
+
+- `k.ctrl.get_value(form, "tree")` returns the **currently selected node map** (or `nil`). Mirror of the login control's verified-user read-back (section 8) and the image control's `src` mapping (section 4.3).
+- `k.ctrl.set_value(form, "tree", node)` is ignored (nodes come from the DB).
+
+## Architecture
+
+### 1. Go Runtime — `internal/bindings/tree.go` (new file, `!wasm`)
+
+Registered in `registerForms` alongside `k.ctrl.grid` (`forms.go:443`):
+
+```go
+e.register("ctrl.tree", "controls", func(L *lua.LState) int {
+    formName := L.CheckString(1)
+    name     := L.CheckString(2)
+    opts     := L.OptTable(3, L.NewTable())
+    addControl(L, formName, name, "tree", opts)
+    return 0
+})
+```
+
+| Function | Signature | Responsibility |
+|----------|-----------|----------------|
+| `TreeLinkFromControl` | `(L *lua.LState, ctrl *lua.LTable) (*TreeLink, bool)` | Read `db`/`table`/`where`/`order_by`/`id_field`/`parent_field`/`label_field`/`max_nodes`. Requires `db`+`table`+`label_field`. Validates identifiers via `isValidIdentifier` (`db.go:671`) like `buildWhereClause` |
+| `FetchTreeRows` | `(L *lua.LState, link *TreeLink) (*TreePage, error)` | `getDBHandle` (`db.go:686`) → `SELECT * FROM <table>` + optional `WHERE` + `ORDER BY` → `h.Query` (`db.go:921`). Returns columns + all rows |
+| `BuildTree` | `(L *lua.LState, link *TreeLink, rows []map[string]interface{}) (*lua.LTable, int, error)` | Build the adjacency tree in Go: map `parent_id` → children (strings as keys for mixed id types); roots = parents missing/`NULL`/not in the set; attach full row data to each node as `{id, parent_id, label, _children=[...], ...extra}`. Returns node count |
+
+**Safety:**
+- `max_nodes` (default 5000): `FetchTreeRows` fails fast (no unbounded memory).
+- Orphan children (parent reference that is not a loaded row) are surfaced as **root-level** nodes so no row is lost.
+- `WHERE` is passed through verbatim (same contract as looper/table `where`); `id_field`/`parent_field`/`label_field`/`table` are identifier-guarded.
+
+### 2. Rendering — `internal/bindings/forms.go`
+
+`renderControl` (`forms.go:1613`) gains `case "tree"` → `renderTree(ctrl, formName, name)`:
+
+```html
+<div class="kalua-control kalua-tree-control">
+  <div class="kalua-tree" id="c:main:tree"
+       data-k-form="main" data-k-ctrl="tree"
+       data-k-tree-expand-all="false"
+       data-k-tree-selection="single"
+       data-k-tree-error="">
+    <div class="kalua-tree-empty">Loading…</div>
+  </div>
+</div>
+```
+
+The container carries the config the client needs to issue the single `tree_data_request`; the Go side does **not** render nodes (the client renders from the nested JSON payload for cheap local expand/collapse).
+
+The control participates in the switch at `forms.go:1747` (`case "grid"` region) and gets visibility/enabled/layout (cell/align §6) for free via `renderVisibility`/`renderAttrs`.
+
+### 3. Client — `internal/web/assets/app.js`
+
+- **`initTrees(scope)`** — like `initLoopers` (`app.js:1272`): scan `.kalua-tree:not([data-k-tree-ready])`, mark ready, send `{type:"tree_data_request", form, ctrl}` once.
+- **`handleTreeData(msg)`** — the `tree_data` outbox carries nested JSON; client renders recursively:
+  ```js
+  function renderTreeNodes(list, depth) {
+      return list.map(n => `<li class="kalua-tree-node" data-k-node-id="${n.id}"
+              data-k-node='${escapeAttr(JSON.stringify(n))}' style="padding-left:${depth*14}px">
+          ${n._children ? `<button class="kalua-tree-toggle" data-k-tree-toggle="1">▸</button>` : ''}
+          <span class="kalua-tree-label" data-k-tree-label="1">${escapeHtml(n.label)}</span></li>`).join('');
+  }
+  ```
+  The node's full row map is embedded as `data-k-node` JSON → the click event echoes the whole record back to the host so `on_click` receives the row map.
+- **Toggle** — `data-k-tree-toggle` toggles the nested `<ul>` (`display:none/none`), rotates ▸/▾, and sends `{type:"event", form, ctrl, event:"on_expand", value:{node_id, expanded}}`.
+- **Node click** — `data-k-tree-label` sends `{type:"event", form, ctrl, event:"on_click", value:{node:<parsed data-k-node>}}`; with selection enabled also `on_select` with the same payload.
+
+### 4. Session Event Handling — `internal/session/session.go`
+
+| Message | Handler |
+|---------|---------|
+| `tree_data_request` (inbox) | `handleTreeDataRequest` — resolve control → `TreeLinkFromControl` → `FetchTreeRows` → `BuildTree` → send `tree_data` outbox; errors → `on_error` |
+| `tree_data` (outbox) | `{Type:"tree_data", Form, Ctrl, Selector:"#c:form:ctrl", Data:<nested JSON>}` — mirrors `looper_db_batch` |
+| `on_click`/`on_select` | In `handleWSEvent` (`session.go:463`), mirror the chart/looper dispatch: unpack the `value` table's `node` into `[]lua.LValue{nodeTable}`; skip `updateControlValue` (a node map is not a control value) |
+| `on_expand` | unpack `{node_id, expanded}` → `[]lua.LValue{nodeID, expandedBool}` |
+
+A `treeDispatch` guard (like `looperDispatch`/`chartDispatch`, `session.go:476-497`) prevents the node table from being written into the form definition.
+
+### 5. WebSocket Message Types
+
+| Type | Direction | Payload |
+|------|-----------|---------|
+| `tree_data_request` | browser → host | `{type, form, ctrl}` |
+| `tree_data` | host → browser | `Data` = `{nodes:[{id,parent_id,label,_children:[...],…extra}], count:n}` |
+| `event` (`on_click`/`on_select`/`on_expand`) | browser → host | existing event mechanism |
+
+No new `OutboxMsg`/`InboxMsg` fields needed — `Data`/`Value` suffice (same as looper).
+
+## Key Behavior Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **Full load, not lazy** | ≤ ~5k nodes; one query; client-side expand/collapse with zero latency. Lazy per-child fetch is future work (`page_size` in the link) |
+| **Server builds tree, client renders** | Go produces the adjacency JSON once; JS renders it to HTML — no server round-trip on expand |
+| **Whole row map per node** | `on_click`/`on_select` receive the full record (like `k.grid.get_row`), so the app can surface extra columns without a second lookup |
+| **`label_field` required** | The whole point of the control; missing → `on_error` |
+| **Identifier-guarded fields** | `id_field`/`parent_field`/`label_field`/`table` pass `isValidIdentifier` — same SQL-injection posture as `buildWhereClause` |
+| **Orphans as roots** | No row is dropped when its parent isn't in the fetch window |
+| **`max_nodes` cap** | Fast-fail on pathological tables instead of unbounded memory |
+
+## Implementation Phases
+
+| # | Phase | Est. |
+|---|-------|------|
+| 1 | `internal/bindings/tree.go`: `TreeLinkFromControl` + `FetchTreeRows` + `BuildTree` | 2 days |
+| 2 | `renderTree` in `forms.go` + support `tree` in the serve/registry/api-doc surfaces | 1 day |
+| 3 | Builder palette + property editor + export/import + preview | 1.5 days |
+| 4 | Client (`app.js`): `initTrees`/`handleTreeData`/toggle/click dispatch | 1.5 days |
+| 5 | Session handlers (`tree_data_request`, `treeDispatch`, events) | 1 day |
+| 6 | Tests (bindings unit + session e2e) | 1 day |
+| 7 | Docs (`api_doc.go`, USER_GUIDE, spec, AGENTS.md) + demo app + `make gen-api` | 1 day |
+| **Total** | | **~8 days** |
+
+## File Changes
+
+| File | Change |
+|------|--------|
+| `internal/bindings/tree.go` | **New** — link parsing, fetch, tree build |
+| `internal/bindings/forms.go` | `ctrl.tree` registration; `case "tree"` in `renderControl`; `renderTree` |
+| `internal/bindings/bindings.go` | `"ctrl.tree": "controls"` in `registerKnown` (required by checker `checker.go:337`) |
+| `internal/bindings/api_doc.go` | `ctrl.tree` Info (Group `controls`) — required by `TestApiDocSync` |
+| `internal/bindings/serve.go:317` | add `"tree"` to `ctrlFuncs` so serve mode raises instead of nil-ing |
+| `internal/ai/knowledge.go` | `"ctrl.tree": true` in `runModeBindings` |
+| `internal/session/session.go` | `tree_data_request` handler, `treeDispatch`, event unpacking |
+| `internal/web/assets/app.js` | `initTrees`, `handleTreeData`, toggle/click handlers |
+| `internal/web/assets/kalua.css` | `.kalua-tree`, `.kalua-tree-node`, `.kalua-tree-toggle`, `.kalua-tree-label`, `::marker` reset |
+| `internal/builder/model.go` | add `"tree"` to `Types` |
+| `internal/builder/assets/builder.js` | `PALETTE` + `TYPE_OPTS.tree` (db, table, where, order_by, id/parent/label field, expand_all, max_nodes) |
+| `internal/builder/lua_export.go` | DB-handle export already handled generically; verify `table`-style handling |
+| `_opencode/skills/kalua-api/api.md`, `docs/agentic/quickref.md` | regenerate via `make gen-api` |
+| `docs/USER_GUIDE.md`, `kalua_spec.md`, `AGENTS.md` | prose updates |
+| `testdata/apps/tree_demo.lua` | **New** — org-chart/menu-tree demo with expand/click/select handlers |
+
+## CSS Additions (kalua.css)
+
+```css
+/* Tree control (k.ctrl.tree §9) */
+.kalua-tree { display: block; max-height: 360px; overflow-y: auto;
+              font-size: 14px; border: 1px solid #e0e0e0; border-radius: 4px; }
+.kalua-tree ul { list-style: none; margin: 0; padding: 0 0 0 14px; }
+.kalua-tree-node { line-height: 1.7; }
+.kalua-tree-toggle { background: none; border: 0; cursor: pointer; width: 18px; }
+.kalua-tree-toggle.open { transform: rotate(90deg); }  /* ▸ → ▾ */
+.kalua-tree-label { cursor: pointer; }
+.kalua-tree-label.selected { background: #e3f2fd; }
+.kalua-tree-empty { color: #757575; padding: 8px; }
+```
+
+Run `make sync-assets` to mirror into the builder preview stylesheet (guarded by `make check-assets`).
+
+## Dependencies
+
+None. Reuses `getDBHandle`/`h.Query`/`isValidIdentifier` from `db.go`.
+
+## Tests
+
+**`internal/bindings/tree_test.go`** (new)
+- `TestTreeLinkDefaults` — `id`/`parent_id` defaults; `db`+`table`+`label_field` required; non-identifier fields rejected
+- `TestFetchTreeRows` — real SQLite `t.TempDir()`; `SELECT *` + `where` + `order_by` honored
+- `TestBuildTree` — nesting, multi-root forests, orphan rows promoted to roots, `max_nodes` cap error
+- `TestRenderTree` — render carries `data-k-tree-*` attrs and empty state
+
+**`internal/session/tree_e2e_test.go`** (new, modelled on `looper_e2e_test.go`)
+- Real SQLite categories table + session; drain `s.Outbox()`; `PostTreeDataRequest` → `tree_data` payload with nested children and count
+- `PostEvent(form, ctrl, "on_click", {node=…})` → `on_click` handler global set to the row map
+- `PostEvent(form, ctrl, "on_expand", {node_id=…, expanded=true})` → handler args correct
+- Regression guard: node table never written into the form's control values (mirror `TestLooperRowSelection`)
+
+## Implementation Status
+
+Not started — plan only.
