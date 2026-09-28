@@ -11,6 +11,7 @@
 5. [KALUA Functions — `k.*` Syntax & Usage](#5-kalua-functions--k-syntax--usage)
 6. [Examples](#6-examples)
 7. [KALUA Builder](#7-kalua-builder)
+8. [WASM Mode — Run 100% Client-Side](#8-wasm-mode--run-100-client-side)
 
 ---
 
@@ -20,12 +21,15 @@ KALUA is a Go runtime that embeds a sandboxed **gopher-lua** virtual machine to 
 
 The `k.*` API is inspired by the **Sysdev Mobile Kalipso** low-code platform (`k.form`, `k.ctrl`, data formats, DB access, file & communication functions), so developers familiar with Kalipso can mostly port their logic directly. KALUA adds Kalipso-compatible *expression functions* (`left`, `round`, `sys_date`, `lookup`, …) and value semantics (`K.eq`, `K.add`, `K.truthy`) on top of plain Lua.
 
-## 1.1 Two run modes
+## 1.1 Run modes
 
 | Mode | Command | What it does |
 |------|---------|--------------|
 | **Interactive web app** | `KALUA run app.lua` | Serves the app at `http://127.0.0.1:9000` and opens the browser. The Lua script builds **forms**, controls and event handlers; each browser tab gets its own Lua session. |
 | **Headless API server** | `KALUA serve app.lua` | Exposes `handle_http`, `handle_ws` and/or `handle_tcp` Lua callbacks as an HTTP/WebSocket/TCP server with a worker pool and shared state (`k.shared.*`). No UI bindings. |
+| **In-browser app** | `KALUA wasm-bundle app.lua -o dist/` | Emits a self-contained static page (`dist/index.html` + `dist/KALUA.wasm`) that runs the app **100% client-side with no server**. The Lua VM, session actor and the whole UI protocol run inside the browser; the output is a static `dist/` you can host anywhere. |
+
+The three modes share one binary, one `.lua` format and the same `k.*` API — `run` and `wasm` are both interactive UI modes, `serve` is headless. See the **WASM mode** chapter below for what works in-browser and where the optional `relay` fits.
 
 ## 1.2 Architecture
 
@@ -53,6 +57,7 @@ myapp.lua ──► KALUA run myapp.lua
 - The Lua script must define a `function main()` — the entry point.
 - In `run` mode every browser tab owns a single Lua state. UI events arrive on the session inbox; UI commands go out over WebSocket.
 - In `serve` mode a pool of Lua workers shares thread-safe state through `k.shared.*`.
+- In `wasm` mode the whole runtime (VM, session actor, bindings) is compiled to a WASM module running in the page. A Go-side **"brain"** holds the client protocol (message routing, form/component state, control values — `common.RouteOutbox` / `internal/wasm/brain.go`) and the page ships only a compact **"hands"** client (`app.minimal.js`) doing DOM work; the same Go renderer (`internal/bindings/render.go`) produces the form HTML in both `run` and `wasm` modes.
 - `KALUA mcp` runs a stdio MCP server (protocol 2025-06-18) exposing 9 tools for AI agents: static validation, formatting, headless tests, structural overview, DB queries, LSP completions/hover, and scenario testing.
 
 ## 1.3 Sandbox
@@ -247,12 +252,14 @@ The `[CHECK]` section of `KALUA.INI` accepts the matching keys (`format`, `w`,
 `l`, `d`, `verbose`) so e.g. a project can default `check` to format-in-place
 with `w = 1`.
 
-## 3.4 `new`, `lsp`, `mcp`, `version`
+## 3.4 `new`, `lsp`, `mcp`, `wasm-bundle`, `relay`, `version`
 
 ```bash
 KALUA new <name>         # write a minimal runnable <name>.lua
 KALUA lsp                # Language Server over stdio (LSP frames), UTF-8 positions
 KALUA mcp                # Model Context Protocol server over stdio (protocol 2025-06-18)
+KALUA wasm-bundle <app.lua> [-o dist/] [--relay]   # build the static in-browser bundle (see §3.8)
+KALUA relay              # relay server for WASM: MySQL/PG/MSSQL/FTP/SMTP/POP3/TCP (see WASM chapter)
 KALUA version
 ```
 
@@ -276,9 +283,30 @@ KALUA version
 ./KALUA check -d myapp.lua             # preview formatting changes as a diff
 ./KALUA check -w myapp.lua             # canonicalize the file in place
 ./KALUA builder forms/app.lua --no-browser --model local-model
+./KALUA wasm-bundle myapp.lua -o dist/         # static in-browser page, no server needed
+./KALUA wasm-bundle myapp.lua --relay          # …plus the localhost relay for DB/comm protocols
 ./KALUA run myapp.lua --ini ./myapp.ini        # persistent flags from a KALUA.INI (or just ./KALUA.INI)
 ./KALUA mcp                            # Model Context Protocol server over stdio
 ```
+
+## 3.8 `wasm-bundle` — build the in-browser static page
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-o DIR` | `dist` | Output directory |
+| `--relay` | off | Also build the `relay` binary into the output for the non-browser protocols |
+| `-v` | off | Verbose logging |
+
+`KALUA wasm-bundle app.lua -o dist/` produces a **self-contained static site**:
+
+| File | Purpose |
+|------|---------|
+| `index.html` | The page: embedded Lua source, runtime CSS/JS (Tabulator, Chart.js, flatpickr) and the compact `app.minimal.js` "hands" client |
+| `KALUA.wasm` | The whole runtime compiled to WebAssembly — Lua VM, session actor and bindings |
+| `wasm_exec.js` | The Go WASM loader (`wasm_exec.js`), auto-generated by the Go toolchain |
+| `relay` | Only with `--relay`: the localhost relay binary for MySQL/PG/MSSQL/FTP/SMTP/POP3/TCP |
+
+Because the page is static, there is **no server to deploy** — host `dist/` on any static file server (or open `index.html` from disk) and the app runs entirely in the browser. See the **WASM mode** chapter for the full story.
 
 ## 3.7 `KALUA.INI` — persistent configuration file
 
@@ -844,12 +872,12 @@ k.form.return_to("main")
 ```
 
 **`k.form.show(name, [options])`**  
-Shows a form and suspends the script until it closes. By default the form fills the stage (normal). With `options.modal=true` the form is shown as a centered modal overlay with configurable gap from screen edges.
+Shows a form and suspends the script until it closes. By default the form fills the stage (normal). With options.modal=true the form is shown as a centered modal overlay with configurable gap from screen edges.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | string | Form name declared with k.form.new. |
-| `options` | table | Optional: `{modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)}` |
+| `options` | table | Optional: {modal=true|false (default false), gap=number|{x=num,y=num} (default 5% desktop, 3% mobile)} |
 
 **Example:**
 
@@ -1171,6 +1199,35 @@ Returns a control's current value.
 local age = k.ctrl.get_value("main", "age")
 ```
 
+**`k.ctrl.grid(form, name, optsTable)`**  
+Adds a CRUD grid control (kforms_enhancements.md §7): a DB-linked Tabulator table with row/global actions, selection and an optional detail/edit form. opts: {db, query, count_query?, page_size?, where?, order_by?, pk_field?, columns, row_actions?, global_actions?, selection_mode? (default multi), row_click_action?, column_visibility?, form ("name" or inline {title, controls})}. Reads page/sort/filter through the Go host like tabulator=true tables; writes are wired via later phases.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.db` | string | DB handle (k.connect_db result) or a --db NAME. |
+| `optsTable.query` | string | Base SELECT for the grid data. |
+| `optsTable.columns` | list | Tabulator column definitions {field, title, sortable, headerFilter, visible}. |
+| `optsTable.pk_field` | string | Primary-key column (used by row actions/CRUD). |
+| `optsTable.page_size` | number | Rows per page (default 25). |
+| `optsTable.row_actions` | table | Row action toggles: {view=true, edit=true, delete=true, ...}. |
+| `optsTable.global_actions` | table | Toolbar actions: {new_record=true, batch_delete=true, ...}. |
+| `optsTable.selection_mode` | string | "none", "single" or "multi" (default "multi"). |
+| `optsTable.row_click_action` | string | Action on row click: "view" | "edit" | "select" | "none". |
+| `optsTable.form` | any | Detail/edit form: a referenced form name or an inline {title, controls} table. |
+
+**Example:**
+
+```lua
+k.ctrl.grid("main", "users", {
+  db = "main", query = "SELECT * FROM users", pk_field = "id",
+  columns = { {field="id", title="ID"}, {field="name", title="Name"} },
+  row_actions = { view = true, edit = true, delete = true },
+  global_actions = { new_record = true, batch_delete = true },
+})
+```
+
 **`k.ctrl.image(form, name, optsTable)`**  
 Adds an image control (<img>). opts: {src (required), alt, width, height (px or %), fit="cover|contain|fill|scale-down|none" (default contain), clickable?, onclick?}. k.ctrl.set_value(form, name, new_src) updates the image (kforms_enhancements.md §4.3).
 
@@ -1227,21 +1284,22 @@ k.ctrl.list("main", "sel", { items = {"a", "b", "c"} })
 ```
 
 **`k.ctrl.looper(form, name, optsTable)`**  
-Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}.
+Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}; db is a k.connect_db handle or a --db NAME prereregistered at startup. With opts.row (array of {type,name,property?,field?|column?,opts?} row-template control defs) rows are rendered server-side as real controls (label/textbox/image/checkbox, read-only); links can be omitted — they are derived from row.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `form` | string | Parent form name. |
 | `name` | string | Unique control name. |
-| `optsTable.db` | string | DB handle for a DB-linked looper. |
+| `optsTable.db` | string | DB handle (k.connect_db result) or a --db NAME. |
 | `optsTable.query` | string | SQL query for a DB-linked looper. |
-| `optsTable.links` | list | Maps result columns to template controls. |
+| `optsTable.links` | list | Maps result columns to template controls (optional when row is set). |
+| `optsTable.row` | list | Row-template control defs {type, name, property, field or column, opts} — server-rendered read-only rows. |
 | `optsTable.page_size` | number | Rows per page for pagination. |
 
 **Example:**
 
 ```lua
-k.ctrl.looper("main", "rows", { db = h, query = "SELECT * FROM items", links = { {field = "name", control = "tpl_name", property = "text"} } })
+k.ctrl.looper("main", "rows", { db = h, query = "SELECT * FROM items", row = { {type="label", name="lb_name", field="name"}, {type="textbox", name="tx_qty", field="qty"} } })
 ```
 
 **`k.ctrl.radio(form, name, optsTable)`**  
@@ -1350,14 +1408,14 @@ k.ctrl.set_value("main", "age", 31)
 ```
 
 **`k.ctrl.table(form, name, optsTable)`**  
-Adds a table control; rows manipulated via k.table.*. With opts {db, query, ...} the table is DB-linked (Tabulator mode).
+Adds a table control; rows manipulated via k.table.*. With opts {db, query, ...} the table is DB-linked (Tabulator mode). db is a k.connect_db handle or a --db NAME prereregistered at startup.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `form` | string | Parent form name. |
 | `name` | string | Unique control name. |
 | `optsTable.columns` | list | Column definitions (Tabulator mode). |
-| `optsTable.db` | string | DB handle for a DB-linked table. |
+| `optsTable.db` | string | DB handle (k.connect_db result) or a --db NAME. |
 | `optsTable.query` | string | SQL query for a DB-linked table. |
 
 **Example:**
@@ -1388,6 +1446,128 @@ Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolea
 
 ```lua
 k.ctrl.textbox("main", "age", { label = "Age", datetime = { mode = "date", format = "Y-m-d" } })
+```
+
+**`k.grid`**  
+Grid control operations: k.grid.refresh/set_db_source/...
+
+**`k.grid.batch_delete(form, name, pksTable)`**  
+Deletes multiple rows by primary keys (async). Triggers tabulator_refresh on success. Returns boolean success or nil + error message.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `pksTable` | list | Array of primary key values. |
+
+**Example:**
+
+```lua
+local ok = k.grid.batch_delete("main", "users", {42, 43, 44})
+```
+
+**`k.grid.delete_row(form, name, pk)`**  
+Deletes a single row by primary key (async). Triggers tabulator_refresh on success. Returns boolean success or nil + error message.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `pk` | any | Primary key value. |
+
+**Example:**
+
+```lua
+local ok = k.grid.delete_row("main", "users", 42); if ok then print("deleted") end
+```
+
+**`k.grid.get_row(form, name, pk)`**  
+Fetches a single row by primary key (async). Yields until the DB query completes. Returns a row object (map of column→value) or nil if not found.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `pk` | any | Primary key value. |
+
+**Example:**
+
+```lua
+local row = k.grid.get_row("main", "users", 42); if row then print(row.name) end
+```
+
+**`k.grid.get_selected(form, name)`**  
+Returns the selected rows (async). Yields until the browser responds with the selected row data. Returns a list of row objects (each a map of column→value) or nil if none selected.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+
+**Example:**
+
+```lua
+local selected = k.grid.get_selected("main", "users"); if selected then for _, row in ipairs(selected) do print(row.id) end end
+```
+
+**`k.grid.insert_row(form, name, dataTable)`**  
+Inserts a new row (async). Returns the inserted row's primary key (if available) or true on success, or nil + error message.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `dataTable` | table | Column→value map for the new row. |
+
+**Example:**
+
+```lua
+local pk = k.grid.insert_row("main", "users", {name="Alice", email="alice@example.com"})
+```
+
+**`k.grid.refresh(form, name)`**  
+Re-runs a grid's data query and shows page 1.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+
+**Example:**
+
+```lua
+k.grid.refresh("main", "users")
+```
+
+**`k.grid.set_db_source(form, name, opts)`**  
+Swaps a grid's data source {db,query,columns?,page_size?,count_query?,where?,order_by?,pk_field?,selection_mode?} and refreshes.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `opts` | table | New source: {db, query, columns, page_size, count_query, where, order_by, pk_field, selection_mode}. |
+
+**Example:**
+
+```lua
+k.grid.set_db_source("main", "users", { db = "main", query = "SELECT * FROM users" })
+```
+
+**`k.grid.update_row(form, name, pk, dataTable)`**  
+Updates a row by primary key (async). Triggers tabulator_refresh on success. Returns boolean success or nil + error message.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Grid control name. |
+| `pk` | any | Primary key value. |
+| `dataTable` | table | Column→value map for the updated columns (PK column is ignored). |
+
+**Example:**
+
+```lua
+local ok = k.grid.update_row("main", "users", 42, {email="new@example.com"})
 ```
 
 **`k.looper`**  
@@ -1810,7 +1990,7 @@ k.db_update(h, "items", { price = 11.5 }, { name = "widget" })
 ```
 
 **`k.disconnect_db([handle])`**  
-Closes a connection, or all connections when no handle is given.
+Closes a database handle. With no argument closes all handles including --db prereregistered connections.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -3925,3 +4105,108 @@ the existing form instead of replacing the whole app.
 ---
 
 *Generated sections of this guide (chapter 5) come from `internal/bindings/api_doc.go`. Keep them fresh with `go run ./cmd/kalua-userguide`.*
+# 8. WASM Mode — Run 100% Client-Side
+
+## 8.1 What it is
+
+`KALUA wasm-bundle app.lua -o dist/` compiles the **whole KALUA runtime** — the
+gopher-lua VM, the session actor and the bindings — into a WebAssembly module
+(`KALUA.wasm`) and packs it into a self-contained static page. The app runs
+entirely in the browser: **no server, no deployment, no WebSocket**. Host
+`dist/` on any static file server (or open `index.html` from disk) and the app
+works offline.
+
+Same script, same `k.*` API, same forms and controls as `KALUA run` — the only
+difference is *where* the runtime lives.
+
+```
+dist/
+├── index.html       # page: embedded app.lua + runtime assets + the "hands" client
+├── KALUA.wasm       # the entire Go runtime (VM + session + bindings) in WebAssembly
+├── wasm_exec.js     # Go WASM loader (from the Go toolchain)
+└── relay            # only with --relay: localhost bridge for non-browser protocols
+```
+
+## 8.2 How the page is wired (the M5 design)
+
+The browser-side JavaScript is intentionally small. Protocol logic lives in the
+Go **"brain"** inside the WASM module:
+
+- **Brain (Go)** — `common.RouteOutbox` maps every session UI command onto a
+  compact "hands" vocabulary (`stage`, `modal_open`, `update_control`,
+  `component`, `component_scan`, `msgbox`, `popup`, `status`, `clipboard_*`,
+  `pick_file*`, …); `internal/wasm/brain.go` holds the JS sink, the live
+  component inventory and reported control values. Forms are rendered to HTML
+  by the **same Go renderer** used by `KALUA run`
+  (`internal/bindings/render.go`) — identical markup in both modes.
+- **Hands (JS)** — `app.minimal.js` only does DOM work, event delegation,
+  browser APIs and third-party widget init (Tabulator, Chart.js, flatpickr).
+  There is no WebSocket, no transport detection and no ~30-case message switch.
+
+```
+Lua app ──► WASM brain (Go: routing / state / render / lifecycle)
+                │ compact commands
+                ▼
+            app.minimal.js "hands" (DOM + browser APIs + 3rd-party widgets)
+                │ raw DOM events (kaluaOnDOMEvent)
+                ▼
+            WASM brain ──► session actor ──► Lua handlers
+```
+
+## 8.3 What works in the browser
+
+| Area | Implementation |
+|------|----------------|
+| Forms & controls | Full form model, 11 control types, events — rendered by the shared Go renderer |
+| Files | `k.file_*` against an IndexedDB virtual filesystem |
+| Params | `k.param_get` / `k.param_set` in `localStorage` |
+| HTTP | `k.http_request` via `fetch` (CORS caveats) |
+| Clipboard | `k.clipboard_get` / `k.clipboard_set` via `navigator.clipboard` |
+| File picker | `k.pick_file` (open / save / download) via the File System Access API + browser fallbacks |
+| SQLite | `k.connect_sqlite` + `k.db_*` via **wa-sqlite** (SQLite compiled to WASM) |
+| Screen / locale | `k.screen_size`, `k.net_ok`, `k.ping`, `k.locale` |
+| Relay client | `k.relay.connect/call/close` — see §8.5 |
+
+Everything async (streaming `k.http_request`, `k.msgbox`, pickers, chart/image
+round-trips) uses the same coroutine-suspension model as `run` mode, resumed in
+the browser event loop.
+
+Pure expression functions, coercion (`K.*`) and the data-format parsers
+(`k.csv_*`, `k.ini_*`, `k.yaml_*`, `k.json_*`, `k.xml_*`) are unchanged — they
+are pure Lua/Go and need no browser services.
+
+## 8.4 What is not in the browser
+
+| Feature | Why |
+|---------|-----|
+| Serve-mode worker pool, `k.shared.*`, `k.ws.*`, `k.tcp.*` | Serve mode is a server concept; WASM is one instance per tab |
+| MySQL / PostgreSQL / SQL Server / FTP / SMTP / POP3 / raw sockets | The browser cannot open raw TCP — these route through the **relay** (§8.5) |
+| `KALUA run` / `KALUA serve` servers | There is no server in WASM mode at all |
+
+Attempting a serve-only binding in WASM fails at runtime, matching serve mode's
+behaviour for UI bindings.
+
+## 8.5 The relay — bridge to the non-browser protocols
+
+Because a browser cannot open raw TCP, `KALUA wasm-bundle --relay` also produces
+a **`relay`** binary. Run it on localhost:
+
+```bash
+./relay                      # listens on ws://127.0.0.1:9090/relay by default
+```
+
+The page auto-connects when the bundle was built with `--relay`; scripts then reach
+MySQL/PG/MSSQL, FTP, SMTP, POP3 and TCP via `k.relay.connect(url)` +
+`k.relay.call(handle, method, params)` instead of needing those protocols
+in-page. Pure-offline apps (SQLite via wa-sqlite, `k.http_request`, files,
+params) never touch the relay.
+
+## 8.6 Notes
+
+- **One tab = one WASM instance.** Each tab runs its own VM; there is no shared
+  state across tabs (use `k.param_*` for cross-tab persistence, it survives
+  reloads).
+- **Rebuild after editing the app**: `KALUA wasm-bundle app.lua -o dist/`
+  re-embeds the current source — no server restart, just re-host `dist/`.
+- `docs/spec/kalua_wasm_plan.md` tracks the implementation milestone-by-milestone
+  (M0 toolchain spike → M5 JS/HTML simplification); the M5 state above is live.
