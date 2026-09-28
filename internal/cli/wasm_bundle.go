@@ -211,7 +211,9 @@ func generateIndexHTML(outputPath, scriptSrc string, includeRelay bool, assets e
 	tabulatorJS, _ := assets.ReadFile("wasm_assets/tabulator.min.js")
 	chartJS, _ := assets.ReadFile("wasm_assets/chart.umd.js")
 	flatpickrJS, _ := assets.ReadFile("wasm_assets/flatpickr.min.js")
-	appJS, _ := assets.ReadFile("wasm_assets/app.js")
+	// M5: the page ships the compact "hands" (app.minimal.js), not the full
+	// WS client — the Go brain inside the WASM binary owns routing/protocol.
+	appJS, _ := assets.ReadFile("wasm_assets/app.minimal.js")
 
 	// Escape script for embedding
 	scriptEscaped := template.JSEscapeString(scriptSrc)

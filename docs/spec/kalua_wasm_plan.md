@@ -221,6 +221,40 @@ github.com/chromedp/chromedp v0.x.x    // E2E tests (test only)
 ## Milestone M5: JS/HTML Simplification via WASM Logic Migration (Week 7-9)
 **Goal:** Reduce `app.js` from ~2050 to ~300 lines; eliminate inlined Tabulator/Chart.js/flatpickr from HTML.
 
+**Status: Phase 1–5 implemented (2026-09-28).** The WASM page now ships
+`app.minimal.js` (~1370 lines) instead of the full 2050-line client; the rest
+moved into the WASM Go binary:
+
+- **Phase 1 — Message router in Go**: `common.RouteOutbox` (pure, natively
+  unit-tested in `internal/common/brain_test.go`) maps every session outbox
+  message onto a compact "hands" command vocabulary (`stage`, `modal_open`,
+  `update_control`, `component`, `component_scan`, `msgbox`, `popup`, `status`,
+  `clipboard_*`, `pick_file*`, ...). `internal/wasm/brain.go` (`WasmBrain`)
+  owns the JS sink + browser-side component/control-value inventory. Unknown
+  message types are dropped instead of reaching the page.
+- **Phase 2 — Form/control HTML generation in WASM**: the pure renderer
+  (`renderForm`/`renderControl`/`renderTable`/`renderGrid`/`renderChart`/
+  looper/image + helpers) was extracted out of the `//go:build !wasm` files
+  into `internal/bindings/render.go`, which compiles for both targets; the
+  WASM forms profile (`forms_wasm.go`) now emits **real rendered HTML** in
+  `render_form`/`update_control` (previously empty), so forms render in-browser
+  via the same markup the native client consumes.
+- **Phase 3 — Control value & event logic**: the JS hands report raw DOM events
+  through a two-argument bridge (`kaluaOnDOMEvent(form, ctrl, event, value)`);
+  the brain builds the session `InboxMsg` and tracks reported control values so
+  click payloads can be assembled without DOM re-reads.
+- **Phase 4 — Component lifecycle**: after every render/update the brain emits a
+  `component_scan {scope}` command; the hands execute it against a component
+  registry (Tabulator/Grid/Chart/looper/flatpickr) and answer round-trip
+  requests (`tabulator_get_data`/`get_selection`, `chart_get_image`) via compact
+  `component {kind, op, selector}` commands.
+- **Phase 5 — Simplified JS bundle**: `internal/cli/wasm_assets/app.minimal.js`
+  is the "hands" — DOM ops, event delegation, browser APIs, and third-party
+  component init only. No WebSocket, no transport detection, no ~30-case
+  message switch, no ping/reconnect. `wasm-bundle` embeds it in `index.html`.
+  The removed `wasm_assets/app.js` copy is gone; the native WS client
+  (`internal/web/assets/app.js`) is untouched.
+
 ### Current State
 | Component | Lines | Responsibility |
 |-----------|-------|----------------|

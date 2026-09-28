@@ -685,7 +685,7 @@ Status legend: ✅ implemented · ⏳ pending.
     - **UI bindings (subset, like serve mode)**: `k.msgbox`, `k.status_show/close`, `k.clipboard_get/set`, `k.bell`, `k.screen_size`, `k.net_ok`, `k.locale`, `k.ping` work; `k.form.*` and `k.ctrl.*` raise runtime error.
     - **Frontend**: split view (Monaco editor top, output console bottom); Ctrl+Enter executes, Shift+Enter newlines; color-coded output (print/result/error); modal for msgbox; status bar for status_show.
     - **Build**: `make assets-monaco` downloads Monaco min bundle to `internal/web/assets/monaco/`; embedded via `go:embed`.
-12. ⏳ **WASM in browser (run mode)** — fully offline static page (`index.html` + `KALUA.wasm`)
+12. ✅ **WASM in browser (run mode)** — fully offline static page (`index.html` + `KALUA.wasm`)
     running any app client-side with no server; wa-sqlite for `k.db_*`, real browser FS +
     IndexedDB for `k.file_*`, optional localhost `KALUA relay` for the non-browserable
     protocol bindings (MySQL/PG/MSSQL, FTP/SMTP/POP3, TCP sockets). Run-mode semantics per
@@ -1278,6 +1278,11 @@ demo app under `testdata/apps/`.
 
 ### 14.5 Status
 
-Pending (plan only). No implementation yet; §8 phase 12 references this plan.
+M0–M5 implemented. M0–M4 shipped 2026-09-27 (`go build GOOS=js GOARCH=wasm` +
+`KALUA wasm-bundle <app.lua>`); M5 (JS/HTML simplification, 2026-09-28) moved the
+client-protocol brain into Go — `common.RouteOutbox` + `internal/wasm/brain.go`
+— and reduced the page JS to `app.minimal.js` hands, with the form renderer
+extracted into the wasm-capable `internal/bindings/render.go` so WASM forms
+render real HTML. See `docs/spec/kalua_wasm_plan.md` §M5.
 
 (End of file)

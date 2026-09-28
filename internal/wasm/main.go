@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"syscall/js"
 
 	"github.com/yuin/gopher-lua"
@@ -20,6 +21,7 @@ var (
 	app            *vm.App
 	wasmBridge     *WasmBridge
 	currentSession *session.Session
+	brain          *WasmBrain
 )
 
 // wasmLogger is a no-op logger for WASM (logging goes to browser console via JS).
@@ -83,6 +85,18 @@ func startApp(source string) js.Value {
 
 	// Create WASM bridge
 	wasmBridge = NewWasmBridge()
+
+	// M5 brain: pure protocol routing lives in common.RouteOutbox; this wrapper
+	// owns the JS sink so the hands receive compact commands, not the raw
+	// session protocol.
+	brain = NewWasmBrain()
+	brain.SetSendCommand(func(json string) {
+		if wasmBridge == nil || wasmBridge.onMessageFunc.IsUndefined() || !wasmBridge.onMessageFunc.Truthy() {
+			return
+		}
+		jsVal := js.Global().Get("JSON").Call("parse", json)
+		wasmBridge.onMessageFunc.Invoke(jsVal)
+	})
 
 	// Execute the script to define main()
 	chunkFn, err := vm.LoadSource(L, "app.lua", source)
@@ -149,19 +163,15 @@ func startApp(source string) js.Value {
 	})
 }
 
-// pumpOutbox sends outbox messages to JavaScript via the registered callback.
+// pumpOutbox sends outbox messages to JavaScript via the M5 brain: each session
+// command is routed through common.RouteOutbox into compact "hands" commands
+// (stage / modal_open / component ...) and delivered to the JS handler.
 func (b *WasmBridge) pumpOutbox() {
 	for {
 		select {
 		case msg := <-b.sendChan:
-			if !b.onMessageFunc.IsUndefined() && b.onMessageFunc.Truthy() {
-				// Convert OutboxMsg to JSON and call JS callback
-				data, err := json.Marshal(msg)
-				if err != nil {
-					continue
-				}
-				jsVal := js.Global().Get("JSON").Call("parse", string(data))
-				b.onMessageFunc.Invoke(jsVal)
+			if brain != nil {
+				brain.HandleOutbox(msg)
 			}
 		case <-b.done:
 			return
@@ -176,10 +186,45 @@ func PostInboxMessage(msgJSON string) {
 		if err := json.Unmarshal([]byte(msgJSON), &msg); err != nil {
 			return
 		}
+		// Track reported control values so the brain can assemble click
+		// payloads (button clicks reuse the current form values, mirroring the
+		// native client's collectFormValues without re-reading the DOM).
+		if brain != nil && msg.Type == "event" {
+			brain.SetControlValue(msg.Form, msg.Ctrl, msg.Value)
+		}
 		select {
 		case wasmBridge.recvChan <- msg:
 		case <-wasmBridge.done:
 		}
+	}
+}
+
+// kaluaOnDOMEvent is the compact JS→Go event entry point (M5 Phase 3): the
+// hands report a DOM event with raw values; the brain turns it into the session
+// InboxMsg and merges the current form values for button clicks.
+func kaluaOnDOMEvent(form, ctrl, event, valueJSON string) {
+	if wasmBridge == nil || brain == nil {
+		return
+	}
+	var value interface{}
+	if valueJSON != "" {
+		dec := json.NewDecoder(strings.NewReader(valueJSON))
+		dec.UseNumber()
+		if err := dec.Decode(&value); err != nil {
+			value = valueJSON
+		}
+	}
+	msg := common.InboxMsg{
+		Type:  "event",
+		Form:  form,
+		Ctrl:  ctrl,
+		Event: event,
+		Value: value,
+	}
+	brain.SetControlValue(form, ctrl, value)
+	select {
+	case wasmBridge.recvChan <- msg:
+	case <-wasmBridge.done:
 	}
 }
 
@@ -215,6 +260,23 @@ func main() {
 		}
 		msgJSON := args[0].String()
 		PostInboxMessage(msgJSON)
+		return nil
+	}))
+
+	js.Global().Set("kaluaOnDOMEvent", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 4 {
+			return nil
+		}
+		form := args[0].String()
+		ctrl := args[1].String()
+		event := args[2].String()
+		valueJSON := ""
+		if args[3].Type() == js.TypeString {
+			valueJSON = args[3].String()
+		} else {
+			valueJSON = js.Global().Get("JSON").Call("stringify", args[3]).String()
+		}
+		kaluaOnDOMEvent(form, ctrl, event, valueJSON)
 		return nil
 	}))
 

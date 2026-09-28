@@ -14,12 +14,32 @@ func registerFormsWasm(e *Env) {
 	// k.form.new(name, opts)
 	e.register("form.new", "forms", func(L *lua.LState) int {
 		name := L.CheckString(1)
-		_ = L.OptTable(2, L.NewTable())
+		opts := L.OptTable(2, L.NewTable())
 
-		// Create form table
+		// Create form table. It stores what the shared renderer (render.go)
+		// needs: title/layout/align/gap, a controls table keyed by name, and an
+		// "order" list preserving creation order for deterministic output.
 		form := L.NewTable()
 		form.RawSetString("name", lua.LString(name))
+		if v := opts.RawGetString("title"); v != lua.LNil {
+			form.RawSetString("title", lua.LString(v.String()))
+		}
+		form.RawSetString("layout", lua.LString("vertical"))
+		form.RawSetString("align", lua.LString("left"))
+		if v := opts.RawGetString("layout"); v != lua.LNil && v.String() != "" {
+			form.RawSetString("layout", lua.LString(v.String()))
+		}
+		if v := opts.RawGetString("align"); v != lua.LNil && v.String() != "" {
+			form.RawSetString("align", lua.LString(v.String()))
+		}
+		if v := opts.RawGetString("gap"); v != lua.LNil {
+			form.RawSetString("gap", v)
+		}
+		if v := opts.RawGetString("cells"); v != lua.LNil {
+			form.RawSetString("cells", v)
+		}
 		form.RawSetString("controls", L.NewTable())
+		form.RawSetString("order", L.NewTable())
 		form.RawSetString("handlers", L.NewTable())
 		L.SetGlobal(name, form)
 
@@ -30,11 +50,13 @@ func registerFormsWasm(e *Env) {
 	// k.form.show(name)
 	e.register("form.show", "forms", func(L *lua.LState) int {
 		name := L.CheckString(1)
-		// In WASM, we send a render_form message via the session
+		// Render the form HTML with the shared renderer (M5 Phase 2) so the
+		// render_form outbox carries real markup for the hands.
 		if e.Sess != nil {
 			e.Sess.SendOutbox(common.OutboxMsg{
 				Type: "render_form",
 				Form: name,
+				HTML: renderForm(L, name),
 			})
 		}
 		return 0
@@ -115,6 +137,7 @@ func registerFormsWasm(e *Env) {
 			e.Sess.SendOutbox(common.OutboxMsg{
 				Type: "render_form",
 				Form: name,
+				HTML: renderForm(L, name),
 			})
 		}
 		return 0
@@ -201,7 +224,7 @@ func registerControlsWasm(e *Env) {
 				Form:     formName,
 				Ctrl:     ctrlName,
 				Selector: "#c:" + formName + ":" + ctrlName,
-				HTML:     value.String(),
+				HTML:     renderControl(ctrlTbl),
 			})
 		}
 		return 0
@@ -279,6 +302,7 @@ func addControlWasm(L *lua.LState, e *Env, ctrlType string) int {
 	ctrl := L.NewTable()
 	ctrl.RawSetString("type", lua.LString(ctrlType))
 	ctrl.RawSetString("name", lua.LString(name))
+	ctrl.RawSetString("form", lua.LString(formName))
 	ctrl.RawSetString("value", lua.LNil)
 	// Copy opts
 	opts.ForEach(func(k, v lua.LValue) {
@@ -287,10 +311,21 @@ func addControlWasm(L *lua.LState, e *Env, ctrlType string) int {
 
 	controlsTbl.RawSetString(name, ctrl)
 
+	// Track creation order so the shared renderer emits controls deterministically.
+	order := tbl.RawGetString("order")
+	if orderTbl, ok := order.(*lua.LTable); ok {
+		orderTbl.RawSetInt(orderTbl.Len()+1, lua.LString(name))
+	} else {
+		order = L.NewTable()
+		order.(*lua.LTable).RawSetInt(1, lua.LString(name))
+		tbl.RawSetString("order", order)
+	}
+
 	if e.Sess != nil {
 		e.Sess.SendOutbox(common.OutboxMsg{
 			Type: "render_form",
 			Form: formName,
+			HTML: renderForm(L, formName),
 		})
 	}
 
