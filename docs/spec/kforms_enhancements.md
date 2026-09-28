@@ -2495,13 +2495,6 @@ No new `OutboxMsg`/`InboxMsg` fields needed — `Data`/`Value` suffice (same as 
               font-size: 14px; border: 1px solid #e0e0e0; border-radius: 4px; }
 .kalua-tree ul { list-style: none; margin: 0; padding: 0 0 0 14px; }
 .kalua-tree-node { line-height: 1.7; }
-.kalua-tree-toggle { background: none; border: 0; cursor: pointer; width: 18px; }
-.kalua-tree-toggle.open { transform: rotate(90deg); }  /* ▸ → ▾ */
-.kalua-tree-label { cursor: pointer; }
-.kalua-tree-label.selected { background: #e3f2fd; }
-.kalua-tree-empty { color: #757575; padding: 8px; }
-```
-
 Run `make sync-assets` to mirror into the builder preview stylesheet (guarded by `make check-assets`).
 
 ## Dependencies
@@ -2525,3 +2518,225 @@ None. Reuses `getDBHandle`/`h.Query`/`isValidIdentifier` from `db.go`.
 ## Implementation Status
 
 Not started — plan only.
+
+---
+
+## 17. `kforms_enhancements.md` — §11 Layout Controls: Topbar, Sidebar, Footer
+
+### Overview
+
+Three new layout controls provide a complete application shell:
+
+- **Topbar** (`k.ctrl.topbar`) — Fixed header with app branding, user info, and logout
+- **Sidebar** (`k.ctrl.sidebar`) — Collapsible navigation (grid cell or horizontal tabs)
+- **Footer** (`k.ctrl.footer`) — Fixed bottom bar with version, copyright, links
+
+All three are **layout controls** — they render outside the normal form control flow and
+provide the application shell. The Topbar and Footer are fixed-position elements that
+span the full viewport width. The Sidebar behaves differently depending on the form's
+layout mode.
+
+### 11.1 Topbar Control (`k.ctrl.topbar`)
+
+#### Overview
+
+The Topbar is a fixed-position header bar at the top of the viewport. It displays
+application branding, the current user's information, and an optional logout action.
+
+#### API Surface
+
+```lua
+k.ctrl.topbar(form, name, {
+    icon = "assets/logo.png",     -- image path relative to assets folder
+    title = "My App",             -- app name
+    user = {                      -- optional user info
+        name = "John Doe",
+        role = "admin",
+        avatar = "assets/avatar.png",
+    },
+    logout = function() k.quit() end,  -- direct logout call
+    visible = true,
+})
+```
+
+#### Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `icon` | `string` | Image path relative to assets folder (JPG/PNG/SVG) |
+| `title` | `string` | App name |
+| `user` | `table` | User info table with `name`, `role`, `avatar` (image path) |
+| `logout` | `function` | Called when user clicks avatar/name — direct logout call |
+| `visible` | `boolean` | Show/hide the topbar (default: `true`) |
+
+#### Behavior
+
+- **Fixed position** at top of viewport, outside form layout flow
+- **User click** → invokes the `logout` function directly (no dropdown menu)
+- **Assets** loaded from `assets/` folder beside the KALUA binary
+- **Fixed height** (56px default), spans full viewport width
+
+#### Events
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `logout` | `{}` | Fired when user clicks avatar/name; triggers `logout` function |
+
+### 11.2 Sidebar Control (`k.ctrl.sidebar`)
+
+#### Overview
+
+The Sidebar is a navigation panel that adapts to the form's layout mode:
+
+- **Grid layout**: Renders as a grid cell (assigned via `cell = "sidebar"`), collapsible to an icon-only strip
+- **Vertical layout**: Renders as a horizontal tab bar below the topbar
+
+#### API Surface
+
+```lua
+k.ctrl.sidebar(form, name, {
+    position = "left",              -- "left" | "right"
+    width = 280,                    -- expanded width in pixels
+    collapsed_width = 64,           -- collapsed width (icon strip only)
+    collapsible = true,             -- allow user to collapse/expand
+    collapsed = false,              -- initial state (session only, resets on reload)
+    items = {
+        { label = "Dashboard", icon = "assets/home.png", action = "nav_dashboard" },
+        { type = "separator" },
+        { label = "Users", icon = "assets/users.png", action = "nav_users", badge = 5 },
+        { label = "Settings", icon = "assets/settings.png", action = "nav_settings" },
+    },
+    on_select = function(item) end,  -- optional global handler
+    visible = true,
+    style = { bg = "#f8f9fa", border_right = "1px solid #e0e0e0" }
+})
+```
+
+#### Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `position` | `string` | `"left"` or `"right"` (default: `"left"`) |
+| `width` | `number` | Expanded width in pixels (default: `280`) |
+| `collapsed_width` | `number` | Collapsed width in pixels (default: `64`) |
+| `collapsible` | `boolean` | Allow user to collapse/expand (default: `true`) |
+| `collapsed` | `boolean` | Initial collapsed state (default: `false`, session only) |
+| `items` | `table[]` | Array of item definitions (see below) |
+| `on_select` | `function` | Global selection handler (optional) |
+| `visible` | `boolean` | Show/hide sidebar (default: `true`) |
+| `style` | `table` | CSS style overrides |
+
+#### Item Definition
+
+Each item in the `items` array is a table with:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `label` | `string` | Display text |
+| `icon` | `string` | Image path relative to assets folder (JPG/PNG/SVG) |
+| `action` | `string` | Action identifier sent on click |
+| `badge` | `number\|string` | Optional badge text/number |
+| `type` | `string` | `"separator"` for visual divider (no label/action needed) |
+
+#### Behavior
+
+- **Grid layout**: Renders as a grid cell (`cell = "sidebar"`), occupies assigned columns, collapsible to icon strip
+- **Vertical layout**: Renders as horizontal tab bar below the topbar (full width)
+- **Collapse state**: Session-only (resets on page reload), controlled via collapse button
+- **Icons**: JPG/PNG/SVG images from `assets/` folder beside KALUA binary
+- **Click behavior**: Fires `k.form.on` event with `sidebar_select` event and item data
+
+#### Events
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `sidebar_select` | `{action: string, item: table, index: number}` | Fired when user clicks a sidebar item |
+
+```lua
+k.form.on("main", "side", "select", function(item)
+    k.ctrl.set_value("main", "content", item.action .. "_content")
+end)
+```
+
+### 11.3 Footer Control (`k.ctrl.footer`)
+
+#### Overview
+
+The Footer is a fixed-position bar at the bottom of the viewport displaying
+version info, copyright, and optional links.
+
+#### API Surface
+
+```lua
+k.ctrl.footer(form, name, {
+    text = "© 2024 My Company",      -- copyright text
+    version = "1.0.0",               -- app version (auto-filled from KALUA if omitted)
+    script_name = "myapp.lua",       -- running script name
+    links = {                        -- optional links
+        { label = "Privacy", url = "/privacy" },
+        { label = "Terms", url = "/terms" }
+    },
+    visible = true,
+    style = { bg = "#f5f5f5", height = 40 }
+})
+```
+
+#### Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `text` | `string` | Copyright/description text |
+| `version` | `string` | App version (auto-filled from KALUA if omitted) |
+| `script_name` | `string` | Running script name (auto-filled) |
+| `links` | `table[]` | Array of `{label, url}` for footer links |
+| `visible` | `boolean` | Show/hide footer (default: `true`) |
+| `style` | `table` | CSS style overrides (`bg`, `height`, etc.) |
+
+#### Behavior
+
+- **Fixed position** at bottom of viewport
+- **Auto-populated**: `version` from KALUA version, `script_name` from running script
+- **Links** render as inline links
+- **Fixed height** (40px default), spans full viewport width
+
+### 11.4 Layout Integration
+
+| Layout | Topbar | Sidebar | Footer |
+|--------|--------|---------|--------|
+| **Grid** | Fixed top (spans 12 cols) | Grid cell (`cell="sidebar"`), collapsible | Fixed bottom (12 cols) |
+| **Vertical** | Fixed top | **Horizontal tab bar** (below topbar) | Fixed bottom |
+
+#### Grid Layout
+
+In grid layout, the sidebar is assigned to a cell via `cell = "sidebar"` in the
+control options. The form's `cells` definition should include a `sidebar` cell:
+
+```lua
+k.form.new("main", {
+    layout = "grid",
+    cells = {
+        sidebar  = {width = 3, bg = "#f8f9fa", border = {width=1, color="#e0e0e0"}},
+        content  = {width = 9},
+    }
+})
+
+k.ctrl.sidebar("main", "side", { cell = "sidebar", ... })
+```
+
+The sidebar cell width determines the expanded width; collapsed width is fixed at 64px.
+
+### 11.5 Events Summary
+
+| Control | Event | Payload |
+|---------|-------|---------|
+| Topbar | `logout` | `{}` — user clicked avatar/name |
+| Sidebar | `sidebar_select` | `{action, item, index}` — user clicked an item |
+| Footer | — | No events |
+
+### 11.6 Implementation Notes
+
+- **Renderer**: Shared renderer in `internal/bindings/render.go` (same as native)
+- **Assets**: Icons/images loaded from `assets/` folder beside KALUA binary
+- **Sidebar state**: Collapsed/expanded state is session-only (resets on reload)
+- **Layout switching**: Grid ↔ Vertical transition preserves sidebar content, changes rendering mode
+- **Assets**: Icons/images served from `assets/` folder beside KALUA binary (served via static file handler)

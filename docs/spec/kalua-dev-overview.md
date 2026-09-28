@@ -175,6 +175,16 @@ lsp_complete, lsp_hover, run_scenario.
 | 5 — Builder integration | CRUD tab, live preview, export/import | ✅ |
 | 6 — Documentation & polish | api_doc, USER_GUIDE, grid e2e tests, demo app | ✅ |
 
+## 10. `kforms_enhancements.md` — §10 Layout Controls: Topbar, Sidebar, Footer
+
+| Phase | Work | Status |
+|-------|------|--------|
+| 1 | Topbar — `k.ctrl.topbar` with app icon, user info, logout | ⏳ |
+| 2 | Sidebar — `k.ctrl.sidebar` (grid cell + horizontal tabs), collapsible | ⏳ |
+| 3 | Footer — `k.ctrl.footer` with version, copyright, links | ⏳ |
+| 4 | Layout integration — Grid (cell) + Vertical (horizontal tabs) | ⏳ |
+| 5 | Go renderer (`render.go`) + JS hands (`app.minimal.js`) | ⏳ |
+
 ## 14. `kforms_enhancements.md` — §8 Login control
 
 | Phase | Work | Status |
