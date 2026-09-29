@@ -175,17 +175,36 @@ lsp_complete, lsp_hover, run_scenario.
 | 5 — Builder integration | CRUD tab, live preview, export/import | ✅ |
 | 6 — Documentation & polish | api_doc, USER_GUIDE, grid e2e tests, demo app | ✅ |
 
-## 10. `kforms_enhancements.md` — §10 Layout Controls: Topbar, Sidebar, Footer
+## 14. `kforms_enhancements.md` — §10 Tab Control
 
 | Phase | Work | Status |
 |-------|------|--------|
-| 1 | Topbar — `k.ctrl.topbar` with app icon, user info, logout | ⏳ |
-| 2 | Sidebar — `k.ctrl.sidebar` (grid cell + horizontal tabs), collapsible | ⏳ |
-| 3 | Footer — `k.ctrl.footer` with version, copyright, links | ⏳ |
-| 4 | Layout integration — Grid (cell) + Vertical (horizontal tabs) | ⏳ |
-| 5 | Go renderer (`render.go`) + JS hands (`app.minimal.js`) | ⏳ |
+| 1 | `forms.go`: Register `ctrl.tab`, parse options | ⏳ |
+| 2 | `render.go`: `renderTab()` with nested panels | ⏳ |
+| 3 | `tab.go`: `k.tab.*` operations (set_tab, get_tab, add/remove/insert, title/icon) | ⏳ |
+| 4 | `api_doc.go`: Document tab API | ⏳ |
+| 5 | `app.js`: Client init, click/swipe, `tab_set_tab` handling | ⏳ |
+| 6 | `session.go`: `tab_change` inbox, `onchange` handler dispatch | ⏳ |
+| 7 | `kalua.css`: Tab styles (headers, panels, active, swipe) | ⏳ |
+| 8 | Builder: Palette, editor modal, preview, export | ⏳ |
+| 9 | Tests: Unit + e2e session | ⏳ |
+| 10 | Demo app: `testdata/apps/tab_demo.lua` | ⏳ |
 
-## 14. `kforms_enhancements.md` — §8 Login control
+## 15. `kforms_enhancements.md` — §11 Layout Controls: Topbar, Sidebar, Footer
+
+Three layout controls forming an application shell. Topbar/Footer are fixed-position
+elements spanning the viewport; Sidebar behaves differently per form layout mode
+(grid cell, or horizontal tabs in vertical layout).
+
+| Phase | Work | Status |
+|-------|------|--------|
+| 1 | `k.ctrl.topbar` — fixed header, branding, user info, `logout` | ⏳ |
+| 2 | `k.ctrl.sidebar` — collapsible nav (grid cell or horizontal tabs), `items[]` | ⏳ |
+| 3 | `k.ctrl.footer` — fixed bottom bar, version/copyright, `links[]` | ⏳ |
+| 4 | `render.go` renderers + `kalua.css` layout/shell styles | ⏳ |
+| 5 | Session events (`on_select`, `on_logout`), `app.js`, builder, tests, demo | ⏳ |
+
+## 16. `kforms_enhancements.md` — §8 Login control
 
 | Phase | Work | Status |
 |-------|------|--------|
@@ -197,7 +216,7 @@ lsp_complete, lsp_hover, run_scenario.
 | 6 | Session (`loginDispatch`, retry re-render) | ⏳ |
 | 7 | Tests, docs, demo (~8 days total) | ⏳ |
 
-## 15. `kforms_enhancements.md` — §9 Tree control
+## 17. `kforms_enhancements.md` — §9 Tree control
 
 | Phase | Work | Status |
 |-------|------|--------|
@@ -209,9 +228,100 @@ lsp_complete, lsp_hover, run_scenario.
 | 6 | Tests — bindings unit + session e2e (1 d) | ⏳ |
 | 7 | Docs + demo app + `make gen-api` (1 d) | ⏳ |
 
+## 18. `kforms_enhancements.md` — §12 AI Chat form (`k.form.ai_agent`)
+
+Built-in modal AI chat for `KALUA run`. Every script-global function is auto-exposed
+as an agent tool (parameter names via gopher-lua `Proto.DbgLocals`, descriptions from
+the comment above each function), so the model can act on the app's own data. The call
+**blocks until the chat closes and returns the transcript**, matching the existing
+`k.form.show` / `k.msgbox` idiom.
+
+Three constraints drive the design: the agent loop blocks on network I/O → runs via
+`RunAsync`; tools touch `lua.LState` → executed through `Session.Query` on the actor
+goroutine; a form's suspend resumes with `LNil` → needs a new `PendingFormShowValue`.
+
+Decisions: **text tool protocol** `<tool_call>{json}</tool_call>` (`internal/ai` has
+no native tool support, and many local models lack `tool_calls`) · **auto-exposure**
+with a `k.ai.tool` override hook · **config** reuses `[AI]` INI + `KALUA_AI_*` env, **no
+new run flags** (`resolveAI` already shared with `builderCmd`) · **streaming** on ·
+**tools synchronous only in phase 1** · `max_turns` default 8 · reuses the builder's
+escape-first `markdown.js` and prior-art chat UX.
+
+| Phase | Work | Status |
+|-------|------|--------|
+| 1 | `internal/ai/tools.go` — `ToolCall`/`ToolSchema` + `ExtractToolCalls` parser (1 d) | ⏳ |
+| 2 | `internal/ai/agent.go` — `AgentRun` loop, `ToolExecutor`, turn bound; no `lua` import (1 d) | ⏳ |
+| 3 | `internal/ai/collect.go` — `_G` walk, `Proto` introspection, comment extraction (1 d) | ⏳ |
+| 4 | `common/ai.go` `AIConfig` + `Options.AIConfig` + `runCmd` `resolveAI` wiring (0.5 d) | ⏳ |
+| 5 | `vm/app.go` `PendingFormShowValue` + `Session.ResumeFormCoroWith` (0.5 d) | ⏳ |
+| 6 | `bindings/aichat.go` — `k.form.ai_agent`, `k.ai.tool`, `__kai_chat` materialization (1.5 d) | ⏳ |
+| 7 | `session/aichat.go` — agent loop, `ai_chat_*` inbox/outbox, `Query` tool exec (2 d) | ⏳ |
+| 8 | `markdown.js` → `web/assets/`; `app.js` handlers; `kalua.css`; `shell.html` (1.5 d) | ⏳ |
+| 9 | WASM parity — `common/brain.go` `RouteOutbox` + `session_wasm.go` stubs (0.5 d) | ⏳ |
+| 10 | `registerKnown` + `api_doc.go` + `USER_GUIDE.md` + `make gen-api` (0.5 d) | ⏳ |
+| 11 | Tests — `ai/{tools,agent,collect}_test.go`, `session/aichat_test.go`, `cli/ai_test.go` (1.5 d) | ⏳ |
+| 12 | Demo app `testdata/apps/ai_agent_demo.lua` (0.5 d) | ⏳ |
+
 ---
 
-## 16. `kform_builder_plan.md` — Original builder plan (webview)
+## 19. `kalua-serve-enhancements.md` — Serve flow primitives (Node-RED-inspired)
+
+Adopt the *useful primitives* of the Node-RED node model, plus an MQTT **client**
+(no embedded broker). Script-only. Phases 0–2 are the primitives; **Phase 3
+supersedes the original "no flow graph" decision** with a minimal LangGraph-style
+*composition* layer — a sequential state machine, not a Node-RED routing registry.
+**Phase 4** adds Zebra FX/ATR RFID reader input over the ZIOTC protocol.
+**Phase 5** adds structured logging to a self-maintained `klog.db` SQLite file
+(off by default, flag/`KALUA.INI`-tunable, no new dependency).
+
+| Phase | Work | Status |
+|-------|------|--------|
+| 0 — Serve-mode correctness | Register `registerJSON`/`registerXML`; real `k.sleep`; fix `k.exec`/`k.assign(table)`/`k.quit`; bounded worker wait + `Retry-After` instead of instant 503; enable headless-safe `registerFlow` subset | ⏳ |
+| 1 — Flow primitives | `k.timer_start`/`k.timer_stop` (inject), `k.http_request` (http request), `k.template`, `k.ws.list`/`k.ws.count`, `k.shared` TTL | ⏳ |
+| 2 — MQTT client | `k.mqtt_connect/subscribe/publish/unsubscribe/close/on` via `MQTTHub` (paho) | ⏳ |
+| 3 — `k.graph` graph workflows | G1: sequential state machine (state + per-key reducers, nodes by `k.*` name or Lua fn, static/conditional/`Send` edges, `max_steps` guard) as an `//go:embed` Lua engine. G2: file-backed run store (`resolvePath` + `writeFileAtomic`) + `g:resume` | ⏳ |
+| 4 — Zebra RFID (ZIOTC) reader input | R0: `RFIDHub` + capped ring buffer + tolerant tag parser. R1: `WSReader` transport (outbound `coder/websocket` `Dial`, no new dep) + REST control + batched `k.rfid_on`. R2: `MQTTReader` + `control-resp` correlation. R3: WS egress, `k.graph` nodes | ⏳ |
+| 5 — Structured logging to `klog.db` | Reuses the already-present `modernc.org/sqlite` driver — **no new dependency**, and `CGO_ENABLED=0` release builds stay static. One writer goroutine behind a bounded channel (drop-and-count, never blocks a request), WAL, fixed schema with a JSON `data` column, age **and** size retention, `k.log.*` + `k.log.stats`. Sink lives in a new leaf package `internal/klog` because `internal/server` already imports `bindings` (a sink there would be cyclic); `!wasm`-tagged, since WASM uses wa-sqlite | ⏳ |
+
+Phase 3 design notes: engine is embedded Lua because the sandbox has no runtime Lua
+loading (`vm.LoadFile` is startup-only), so there is no `require`/`dofile` to
+import it by. Execution is **sequential, not Pregel/BSP** — each worker owns its own
+`LState`, so parallel super-steps would need cross-worker state that does not exist.
+No mid-node suspension, so a node doing several blocking `k.http_request` calls
+**holds its worker**; G1 graphs should stay short. Serve mode only (the engine is
+mode-agnostic, so run mode is a cheap later addition).
+
+Phase 4 design notes: the reader's WebSocket/TCP endpoints are *listeners*, so KALUA
+must dial **out** — `internal/server/ws.go` is a server and is not reusable here;
+the WS path needs no new dependency since `coder/websocket` is already vendored.
+The ZIOTC tag payload is a JSON **array** of events nested under `data`
+(`idHex`/`peakRssi`/`antenna`/`reads`), with a `+0000` offset timestamp string — not
+the `{readerName, tags:[…]}` envelope in most online examples. Readers emit ~120
+tags/sec, and `CallWS`/`CallTCP` run a full `L.Resume` per event on one leased
+worker, so tag dispatch is **buffered and batched**, never per-tag; the buffer is
+hard-capped and `k.rfid_count` reports `dropped_since`. Reader-side `filter` /
+`rssiFilter` / `reportFilter` are the primary rate control.
+
+Phase 5 design notes: `bindings.Logger` is an *interface*, so `SQLLogger` satisfies it
+and every existing call site keeps working — the database complements stdout rather
+than replacing it, and `k.print` stays stdout-only. The `DenyFS` hardening is
+sequenced early and independently because it is a standalone fix: `k.connect_db`
+(**C7**) and `k.zip_extract` member targets both bypass `resolvePath`, so a
+deny-list there alone would look correct while leaving `klog.db` readable. The
+per-row cap is enforced in `Emit` *before* enqueueing, so the channel can never hold
+an oversized record.
+
+Net effect: serve goes from 110 to **169** `k.*` functions (59 new names, 7 newly
+functional). Ships `--allow-net` (P0 in `kalua_security_plan.md`) *before* Phase 2
+and again before R1.
+
+> Full audit findings, design notes, the LangGraph→KALUA fidelity table, the
+> complete post-implementation `k.*` inventory, and risk register are in
+> `kalua-serve-enhancements.md`.
+
+---
+
+## 20. `kform_builder_plan.md` — Original builder plan (webview)
 
 | Phase | Work | Status |
 |-------|------|--------|
@@ -229,7 +339,7 @@ lsp_complete, lsp_hover, run_scenario.
 
 ---
 
-## 17. `vscode-ext.md` — VS Code extension
+## 21. `vscode-ext.md` — VS Code extension
 
 | Area | Status |
 |------|--------|
@@ -250,12 +360,17 @@ extension (Phase 5 LSP & editor).
 | `kalua_wasm_plan.md` | M0–M5 | 🔶 M0–M4 ✅, M5 ⏳ |
 | `AI_builder.md` | AI phases 1–4, agentic P0–P2 | ✅ complete |
 | `kform_builder_plan.md` | Webview builder phases 1–7, table/looper editor | 🔁 superseded; table/looper + named DBs ✅ |
-| `kforms_enhancements.md` | §§1–11 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳, §10 layout controls ⏳ |
+| `kforms_enhancements.md` | §§1–12 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳, §10 tab ⏳, §11 layout controls ⏳, §12 AI chat form ⏳ |
+| `kalua_security_plan.md` | Security assessment (intranet model) | ⏳ assessment complete; mitigations P0–P10 pending |
+| `kalua-serve-enhancements.md` | Serve flow primitives (Node-RED-inspired) + MQTT client + `k.graph` graph workflows + Zebra RFID (ZIOTC) reader input + structured logging to `klog.db` | ⏳ plan only; phases 0–5 not started |
 | `vscode-ext.md` | Extension guide | ✅ shipped |
 
 **Top pending plan items (no code yet):** REPL mode (§8 #11) · DAP debugger (§11 B/C) ·
 codebase cleanup C/D (§13) · WASM M5 JS simplification · `k.ctrl.login` (§8) ·
-`k.ctrl.tree` (§9) · **Layout Controls: Topbar, Sidebar, Footer (§11) · Image onclick handling (§4.3)**.
+`k.ctrl.tree` (§9) · **`k.ctrl.tab` (§10) · Layout Controls: Topbar, Sidebar, Footer (§11) · Image onclick handling (§4.3)** ·
+**AI chat form `k.form.ai_agent` — auto-exposed script-function tools (§12)** ·
+**Serve flow primitives — Phase 0 correctness first, then timers/`http_request`, then MQTT, then `k.graph`, then Zebra RFID reader input, then structured logging to `klog.db` (§19)** ·
+**Security hardening (P0–P3: network/SQL allowlists, auth middleware, path sandbox; C7 `k.connect_db` sandbox escape is fixed in Phase 5 §8.11)**.
 
 ---
 

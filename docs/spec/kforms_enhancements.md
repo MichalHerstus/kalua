@@ -2571,7 +2571,223 @@ Not started — plan only.
 
 ---
 
-## 17. `kforms_enhancements.md` — §11 Layout Controls: Topbar, Sidebar, Footer
+## 10. `kforms_enhancements.md` — §10 Tab Control
+
+### Overview
+
+Add a **Tab control** (`k.ctrl.tab`) to KALUA matching Kalipso's tab control behavior. The control organizes content into multiple tabs, showing only one tab's content at a time. Users switch tabs by clicking headers or swiping left/right on the content area.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Go Host (Session)                        │
+│  ┌─────────────────┐    ┌──────────────────┐                  │
+│  │ k.ctrl.tab      │    │ k.tab.set_tab    │                  │
+│  │ (tabs array,    │───▶│ (programmatic    │                  │
+│  │  position,      │    │  tab switching)  │                  │
+│  │  swipable)      │    └────────┬─────────┘                  │
+│  └────────┬────────┘             │                             │
+│           │                      ▼                             │
+│           ▼              ┌───────────────────────┐             │
+│  ┌─────────────────────────────────────────┐                  │
+│  │ renderControl: <div.kalua-tab> + data   │                  │
+│  │ attributes (tabs, position, swipable)   │                  │
+│  └─────────────────────────────────────────┘                  │
+└────────────────────┼──────────────────────────────────────────┘
+                     │ WebSocket update_control
+                     ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Browser (app.js)                            │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ Tab initialization: click handlers, swipe detection       │   │
+│  │ Instance Map keyed by selector (#c:form:ctrl)             │   │
+│  │ On tab click: send 'tab_change' event to host             │   │
+│  │ On swipe: detect delta, send 'tab_change' event           │   │
+│  │ On 'tab_set_tab' from host: activate tab programmatically │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### API Surface
+
+#### New Constructor: `k.ctrl.tab(form, name, opts)`
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `tabs` | `table` | required | Array of tab definitions: `{title="Tab 1", icon="📊"}` |
+| `tab_position` | `string` | `"top"` | `"top"` or `"bottom"` |
+| `swipable` | `boolean` | `true` | Enable swipe navigation on content |
+| `visible` | `boolean` | `true` | Control visibility |
+| `enabled` | `boolean` | `true` | Control enabled state |
+| `cell` | `string` | — | Grid cell assignment (§6) |
+| `align` | `string` | — | Alignment override (§6) |
+
+**Tab definition:**
+```lua
+{
+  tabs = {
+    {title = "Dashboard", icon = "📊"},
+    {title = "Reports", icon = "📈"},
+    {title = "Settings", icon = "⚙️"}
+  },
+  tab_position = "top",
+  swipable = true,
+  onchange = function(new_idx, old_idx)
+    print("Switched from tab " .. old_idx .. " to " .. new_idx)
+  end
+}
+```
+
+#### Tab Operations (`k.tab.*`)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `k.tab.set_tab` | `(form, name, index)` | Programmatically switch to tab (1-based) |
+| `k.tab.get_tab` | `(form, name)` → number | Returns current tab index (1-based) |
+| `k.tab.get_tab_count` | `(form, name)` → number | Returns number of tabs |
+| `k.tab.add_tab` | `(form, name, {title, icon?})` | Add tab at end |
+| `k.tab.insert_tab` | `(form, name, index, {title, icon?})` | Insert tab at position |
+| `k.tab.remove_tab` | `(form, name, index)` | Remove tab by index |
+| `k.tab.set_tab_title` | `(form, name, index, title)` | Update tab title |
+| `k.tab.set_tab_icon` | `(form, name, index, icon)` | Update tab icon |
+
+#### Events (via `k.form.on(form, ctrl, event, fn)`)
+
+| Event | Payload |
+|-------|---------|
+| `onchange` | `{new_index, old_index}` — fired when user switches tabs |
+
+### Example Usage
+
+```lua
+function main()
+    k.form.new("main", {title = "Tab Demo", layout = "vertical"})
+    
+    k.ctrl.tab("main", "tabs", {
+        tabs = {
+            {title = "Dashboard", icon = "📊"},
+            {title = "Reports", icon = "📈"},
+            {title = "Settings", icon = "⚙️"}
+        },
+        tab_position = "top",
+        swipable = true,
+        onchange = function(new_idx, old_idx)
+            k.ctrl.set_value("main", "status", "Switched from tab " .. old_idx .. " to " .. new_idx)
+        end
+    })
+    
+    k.ctrl.textbox("main", "status", {label = "Status", value = "Tab 1 active"})
+    k.ctrl.button("main", "btn_goto_3", {label = "Go to Settings", onclick = function()
+        k.tab.set_tab("main", "tabs", 3)
+    end})
+    
+    k.form.show("main")
+end
+```
+
+### Key Behavior Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Tab content** | Each tab panel is a nested form-like container | Controls can be added to each tab's panel |
+| **Swipe support** | Client-side only (touch events on panel container) | No server round-trip for swipe |
+| **State sync** | `current_tab` stored in Lua control table | Client and server in sync via `tab_change` / `tab_set_tab` |
+| **Accessibility** | Proper ARIA: `role="tablist"`, `role="tab"`, `role="tabpanel"` | WCAG compliance |
+| **Icons** | Emoji or text string prepended to title | Simple, no icon font dependency |
+| **Tab index** | 1-based (Kalipso convention) | Consistency with other controls |
+
+### WebSocket Message Types
+
+| Direction | Type | Payload |
+|-----------|------|---------|
+| Browser → Go | `tab_change` | `{form, ctrl, event, value: {index}}` |
+| Go → Browser | `tab_set_tab` | `{selector, index}` |
+
+### Implementation Phases
+
+| Phase | Description | Days |
+|-------|-------------|------|
+| 1 | `forms.go`: Register `ctrl.tab`, parse options, store tabs array | 1 |
+| 2 | `render.go`: Implement `renderTab()` with nested panel structure | 2 |
+| 3 | `tab.go` (new): `k.tab.*` operations (set_tab, get_tab, add/remove, etc.) | 1 |
+| 4 | `api_doc.go`: Document `ctrl.tab` and all `k.tab.*` ops | 0.5 |
+| 5 | `app.js`: Client-side init, click/swipe handlers, `tab_set_tab` handling | 2 |
+| 6 | `session.go`: Handle `tab_change` inbox, run `onchange` handler | 0.5 |
+| 7 | `kalua.css`: Tab styling (headers, panels, active state, swipe hints) | 1 |
+| 8 | Builder: Palette entry, property editor, tab management UI, preview | 2 |
+| 9 | Tests: Unit (bindings) + e2e (session) | 1 |
+| 10 | Demo app: `testdata/apps/tab_demo.lua` | 0.5 |
+| **Total** | | **~11.5** |
+
+### File Changes
+
+| File | Changes |
+|------|---------|
+| `internal/bindings/forms.go` | Register `ctrl.tab` in `registerControls()`, store options |
+| `internal/bindings/render.go` | Add `case "tab":` → `renderTab()`, nested panel rendering |
+| `internal/bindings/tab.go` | **New** — `registerTabOps()`, all `k.tab.*` functions |
+| `internal/bindings/api_doc.go` | Document `ctrl.tab` and `k.tab.*` |
+| `internal/session/session.go` | Add `inboxTabChange`, `handleTabChange()`, form close cleanup |
+| `internal/web/assets/app.js` | `tabInstances` Map, `initTabs()`, click/swipe handlers, `tabUpdate()` |
+| `internal/web/assets/kalua.css` | Tab styles (`.kalua-tab`, `.kalua-tab-btn`, `.kalua-tab-panel`) |
+| `internal/builder/server.go` | Add tab control to palette, preview, export |
+| `internal/builder/assets/builder.js` | Tab editor modal (add/remove/reorder tabs) |
+| `internal/checker/checker.go` | Validate tab options |
+| `internal/lsp/server.go` | Completions for tab API |
+
+### CSS Additions (kalua.css)
+
+```css
+/* Tab control */
+.kalua-tab { display: flex; flex-direction: column; }
+.kalua-tab[data-k-tab-position="bottom"] { flex-direction: column-reverse; }
+.kalua-tab-headers { display: flex; border-bottom: 1px solid #ddd; }
+.kalua-tab[data-k-tab-position="bottom"] .kalua-tab-headers { 
+  border-top: 1px solid #ddd; border-bottom: none; 
+}
+.kalua-tab-btn { 
+  flex: 1; padding: 12px 16px; background: transparent; border: none; 
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font: inherit; color: #666; border-bottom: 3px solid transparent; margin-bottom: -1px;
+}
+.kalua-tab-btn[aria-selected="true"] { 
+  color: #007bff; border-bottom-color: #007bff; font-weight: 600; 
+}
+.kalua-tab-panels { flex: 1; overflow: hidden; position: relative; }
+.kalua-tab-panel { display: none; height: 100%; overflow: auto; }
+.kalua-tab-panel[aria-hidden="false"] { display: block; }
+.kalua-tab-panel > .kalua-form { height: 100%; }
+/* Swipe support */
+.kalua-tab[data-k-swipable="true"] .kalua-tab-panels { touch-action: pan-y; }
+```
+
+### Dependencies
+
+- No new external dependencies
+- No new Go dependencies
+- Pure Go/JS implementation
+
+### Tests
+
+**`internal/bindings/tab_test.go`** (new)
+- `TestTabRender` — renders headers + panels, correct `aria-selected`, `tab_position` bottom
+- `TestTabSetGet` — `set_tab`/`get_tab`/`get_tab_count` work correctly
+- `TestTabAddRemoveInsert` — add/remove/insert tab updates tab count and panels
+- `TestTabTitleIcon` — `set_tab_title`/`set_tab_icon` update header
+
+**`internal/session/tab_e2e_test.go`** (new)
+- Real session: create tab, switch tabs programmatically, verify `onchange` fires
+- Test programmatic `k.tab.set_tab` updates `current_tab` and sends `tab_set_tab`
+- Test swipe not applicable in headless; test `onchange` payload correctness
+
+### Implementation Status
+
+Not started — plan only.
+
+---
+
+## 11. `kforms_enhancements.md` — §11 Layout Controls: Topbar, Sidebar, Footer
 
 ### Overview
 
@@ -2790,3 +3006,325 @@ The sidebar cell width determines the expanded width; collapsed width is fixed a
 - **Sidebar state**: Collapsed/expanded state is session-only (resets on reload)
 - **Layout switching**: Grid ↔ Vertical transition preserves sidebar content, changes rendering mode
 - **Assets**: Icons/images served from `assets/` folder beside KALUA binary (served via static file handler)
+
+---
+
+## 12. `kforms_enhancements.md` — §12 AI Chat Form (`k.form.ai_agent`)
+
+### Overview
+
+A **built-in, modal AI chat form** for `KALUA run`. Every function the script defines
+becomes a tool the agent can call, so the model can act on the app's own data
+(`k.db_select`, file reads, computed helpers) rather than only answering in prose.
+
+`k.form.ai_agent(opts)` **blocks the script** (like `k.form.show` / `k.msgbox`) and
+returns the full transcript when the user closes the chat.
+
+```lua
+function get_customer(id)
+    -- Look up a customer by id        ← comment above becomes the tool description
+    return k.db_select("select * from customers where id = ?", {id})
+end
+
+function main()
+    local transcript = k.form.ai_agent{ title = "Support assistant" }
+    for _, m in ipairs(transcript) do print(m.role, m.content) end
+end
+```
+
+Three design constraints drive the architecture:
+
+1. **The agent loop blocks on network I/O**, so it must not run on the session actor
+   goroutine → it runs via `RunAsync`.
+2. **Tools touch `lua.LState`**, which is actor-goroutine-only → tool calls are routed
+   through the existing `Session.Query` primitive.
+3. **A form's suspend resumes with `LNil`** (`ResumeFormCoro` hardcodes it) → the chat
+   needs a new pending kind that resumes with a table.
+
+#### Prior art (already shipped, reused rather than reinvented)
+
+| Existing asset | Reuse |
+|----------------|-------|
+| `internal/builder/assets/builder.js` (`aiAddMsg`, `mdRender`, `aiStop`, history) | Chat UI shape and streaming UX |
+| `internal/builder/assets/markdown.js` | Copied to `internal/web/assets/` (escape-first, zero-dep) |
+| `internal/ai/` (`Client`, `Completion`, `CompletionStream`) | Provider transport — reused unchanged |
+| `internal/cli/ai.go` (`resolveAI`) | Config resolution — already handles `[AI]` INI + `KALUA_AI_*` env |
+| `materializeGridForm` (`grid.go:431`) | Runtime-form materialization pattern |
+| `Query` (`session.go:3065`) | Cross-goroutine tool execution |
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Go Host (Session)                        │
+│  k.form.ai_agent{…}  ──► materialize __kai_chat form table      │
+│         │                        │                              │
+│         │                  App.Block(PendingFormShowValue)      │
+│         │                        ║  (script suspends)          │
+│         ▼                        ▼                              │
+│  ┌──────────────┐   RunAsync   ┌──────────────────────────────┐ │
+│  │ ai.AgentRun  │◄─────────────│  worker goroutine            │ │
+│  │  (internal/ai│   ◄── Query ──┤   • CompletionStream loop   │ │
+│  │   VM-free)   │  (actor)     │   • ExtractToolCalls         │ │
+│  └──────┬───────┘              │   • exec tools via Query     │ │
+│         │ onDelta              └──────────────────────────────┘ │
+│         ▼                                                       │
+│  outbox: ai_chat_open / _delta / _status / _done                │
+└─────────────────────┼───────────────────────────────────────────┘
+                      │ WebSocket
+                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Browser (app.js)                            │
+│  • Markdown rendering (markdown.js, escape-first)              │
+│  • Token deltas append to the streaming assistant bubble        │
+│  • "Calling get_customer(7)…" status line during tool exec      │
+│  • Enter / Send → ai_chat_send ; close → ai_chat_close          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Tool-Calling Protocol
+
+**Text protocol, model-agnostic.** `internal/ai` has no native tool support today
+(`ChatRequest` has no `tools`; `ChatMessage` has only `Role`/`Content`), and the
+default target is a local OpenAI-compatible endpoint where many models do not
+implement `tool_calls` at all. So the model is instructed to emit a tagged JSON block:
+
+```
+<tool_call>{"name":"get_customer","arguments":{"id":7}}</tool_call>
+```
+
+Loop: stream assistant reply → `ExtractToolCalls(text)` → if any, execute each,
+append the results as `role:"tool"`, re-prompt → repeat until the model answers in
+prose or the turn bound is hit.
+
+**No `lua` import in `internal/ai`.** The loop takes a `ToolExecutor` callback, so the
+package stays VM-free and testable against an `httptest` fake.
+
+### Auto-Exposed Tools
+
+Auto-exposure is viable because gopher-lua retains enough debug info to build **real
+JSON schemas**, not just a bare name list:
+
+| Schema field | Source | Verified |
+|--------------|--------|----------|
+| Parameter names | `LFunction.Proto.DbgLocals[i].Name`, count from `Proto.NumParameters` | `get_customer(id, limit)` → `NumParameters=2`, `DbgLocals=[id, limit]` |
+| Vararg | `Proto.IsVarArg` | `withvar(a, ...)` → `IsVarArg=7` |
+| Description | Comment block above `Proto.LineDefined`, read from the script source | — |
+| Types | `@param <name> <type>` in the comment, else `string` | — |
+
+**Exclusions:** `main`; members of `vm.SandboxGlobals.Libs`; `k`, `K`, `CTRL`, `ARGS`;
+any name starting with `_`; Go functions and library tables (kept only when
+`Proto != nil`).
+
+`k.ai.tool(name, {desc=, params=}, fn)` exists as an **override** — auto-exposure
+cannot know intent, so a script can supply a better description or document a
+parameter the comment missed.
+
+### API Surface
+
+#### New Function: `k.form.ai_agent([opts])` → transcript table
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `title` | `string` | `"AI Assistant"` | Form header text |
+| `welcome` | `string` | — | Assistant message seeded into the transcript |
+| `system` | `string` | — | Extra system prompt (persona, domain rules) |
+| `max_turns` | `number` | `8` | Tool-loop bound; prevents a model looping forever |
+| `tools` | `table` | auto | Explicit tool-name allowlist (default: every script global) |
+
+**Return value** — array of message tables, in order:
+
+```lua
+{ {role = "user",      content = "customer 7?"},
+  {role = "assistant", content = "Let me look that up."},
+  {role = "tool",      name = "get_customer", content = '{"name":"Ada"}'},
+  {role = "assistant", content = "Ada, 42."} }
+```
+
+#### New Function: `k.ai.tool(name, schema, fn)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | Tool name the model calls |
+| `schema` | `table` | `{desc = string, params = {{name=, type=, required=}}}` |
+| `fn` | `function` | Implementation (defaults to the global `name`) |
+
+Overrides auto-exposure for `name`. Calling it with no `fn` registers the existing
+global `name`.
+
+### Example Usage
+
+```lua
+-- Tools are ordinary script functions. The comment above each one becomes
+-- the description shown to the model.
+function get_customer(id)
+    -- Look up a customer by id
+    return k.db_select("select id, name, city from customers where id = ?", {id})
+end
+
+function search_orders(email, since)
+    -- Find a customer's orders since a date (YYYY-MM-DD)
+    return k.db_select(
+        "select o.id, o.total, o.created from orders o join customers c on c.id=o.customer_id " ..
+        "where c.email = ? and o.created >= ? order by o.created desc limit 20",
+        {email, since})
+end
+
+function money(n)
+    -- Format a number as a currency amount
+    return string.format("%.2f", n)
+end
+
+function main()
+    k.connect_sqlite("app.db")
+
+    local transcript = k.form.ai_agent{
+        title     = "Sales assistant",
+        welcome   = "Ask me about customers and orders.",
+        system    = "You are a sales assistant. Always cite the customer id.",
+        max_turns = 6,
+    }
+
+    -- Runs after the user closes the chat.
+    for _, m in ipairs(transcript) do
+        print(m.role .. ": " .. m.content)
+    end
+end
+```
+
+### Key Behavior Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Tool protocol** | Text (`<tool_call>{json}</tool_call>`) | `internal/ai` has no native tool support; many local models lack `tool_calls` entirely. Model-agnostic, fully unit-testable, no provider variance |
+| **Tool exposure** | Auto-expose all script globals | Zero declaration. Made viable by `Proto` introspection (real param names) + comment-derived descriptions, so schemas are meaningful rather than noise |
+| **Override hook** | `k.ai.tool` | Auto-exposure cannot know intent; a script can improve or hide a tool |
+| **Semantics** | Blocks until closed, returns transcript | Matches the established `k.form.show` / `k.msgbox` idiom; the script gets the result naturally |
+| **Config** | Reuse `[AI]` INI + `KALUA_AI_*` env, **no new flags** | `resolveAI` already exists and is shared with `builderCmd`; config already lives in one place |
+| **Streaming** | Yes — token deltas | Matches the builder chat UX; a slow local model otherwise looks frozen (the builder needed a "still working…" nudge for exactly this) |
+| **Tool execution** | `Session.Query`, **synchronous only** (phase 1) | `Query` runs the closure on the actor goroutine and cannot suspend |
+| **Loop location** | `RunAsync` worker goroutine | The loop blocks on network I/O; the actor goroutine must stay responsive |
+| **Turn bound** | `max_turns` (default 8) | A model that keeps calling tools terminates instead of hanging the session |
+| **Markdown** | Reuse `markdown.js` (escape-first) | LLM output is untrusted; the renderer escapes everything before transforming |
+
+### Suspend Plumbing
+
+`k.form.show` resumes with `LNil` (`ResumeFormCoro`, `session.go:3294`). The chat must
+resume with a table, so:
+
+```go
+// internal/vm/app.go
+PendingFormShowValue   // resumes the blocked coroutine with a Lua table
+```
+
+```go
+// internal/session/session.go
+func (s *Session) ResumeFormCoroWith(name string, val lua.LValue) bool
+```
+
+`ResumeFormCoro` delegates to it with `LNil`, so no existing caller changes.
+
+### WebSocket Message Types
+
+All payload fields already exist on `common.OutboxMsg` / `common.InboxMsg` — no
+protocol struct change required.
+
+| Direction | Type | Payload |
+|-----------|------|---------|
+| Browser → Go | `ai_chat_send` | `{form, text}` |
+| Browser → Go | `ai_chat_close` | `{form}` |
+| Go → Browser | `ai_chat_open` | `{form, html}` — modal shell + transcript |
+| Go → Browser | `ai_chat_delta` | `{form, text}` — one streamed token |
+| Go → Browser | `ai_chat_status` | `{form, text}` — "Calling get_customer(7)…" / "Thinking…" |
+| Go → Browser | `ai_chat_done` | `{form}` — turn finished (also emitted on error) |
+
+### Implementation Phases
+
+| Phase | Description | Days |
+|-------|-------------|------|
+| 1 | `internal/ai/tools.go` — `ToolCall`, `ToolSchema`, `ExtractToolCalls` | 1 |
+| 2 | `internal/ai/agent.go` — `AgentRun` loop, `ToolExecutor`, turn bound | 1 |
+| 3 | `internal/ai/collect.go` — `_G` walk, `Proto` introspection, comment extraction | 1 |
+| 4 | `common/ai.go` `AIConfig` + `Options.AIConfig` + `runCmd` `resolveAI` wiring | 0.5 |
+| 5 | `vm/app.go` `PendingFormShowValue` + `ResumeFormCoroWith` | 0.5 |
+| 6 | `internal/bindings/aichat.go` — `k.form.ai_agent`, `k.ai.tool`, form materialization | 1.5 |
+| 7 | `internal/session/aichat.go` — agent loop, inbox/outbox cases, `Query` tool exec | 2 |
+| 8 | `markdown.js` → `web/assets/`; `app.js` handlers; `kalua.css`; `shell.html` | 1.5 |
+| 9 | WASM parity — `common/brain.go` `RouteOutbox` cases + `session_wasm.go` stubs | 0.5 |
+| 10 | `registerKnown` + `api_doc.go` + `USER_GUIDE.md` + `make gen-api` | 0.5 |
+| 11 | Tests (below) | 1.5 |
+| 12 | Demo app `testdata/apps/ai_agent_demo.lua` | 0.5 |
+| **Total** | | **~12.5** |
+
+### File Changes
+
+| File | Changes |
+|------|---------|
+| `internal/ai/tools.go` | **New** — protocol types + `ExtractToolCalls` parser |
+| `internal/ai/agent.go` | **New** — `AgentRun`, `ToolExecutor`, turn bound (no `lua` import) |
+| `internal/ai/collect.go` | **New** — `_G` walk, `Proto` introspection, comment extraction |
+| `internal/common/ai.go` | **New** — `AIConfig` (plain struct; `ai` imports `host` → `bindings`, so `bindings` cannot import `ai`) |
+| `internal/bindings/aichat.go` | **New** — `k.form.ai_agent`, `k.ai.tool`, `__kai_chat` materialization |
+| `internal/session/aichat.go` | **New** — agent loop, `ai_chat_*` inbox/outbox, `Query` tool exec |
+| `internal/session/session.go` | `ResumeFormCoroWith`, new inbox types, ws event cases |
+| `internal/vm/app.go` | `PendingFormShowValue` kind |
+| `internal/bindings/bindings.go` | `Options.AIConfig`; `registerKnown["form.ai_agent"]`, `["ai.tool"]` |
+| `internal/cli/cli.go` | `runCmd` calls `resolveAI` (interactive **and** headless `--test`) |
+| `internal/common/brain.go` | `RouteOutbox` — 4 `ai_chat_*` cases (WASM parity) |
+| `internal/session/session_wasm.go` | 4 stubs |
+| `internal/web/assets/markdown.js` | **New** — copy of `builder/assets/markdown.js` |
+| `internal/web/assets/app.js` | 4 `handleMessage` cases; `showAIChat`/`aiAppend`/`aiSend` |
+| `internal/web/assets/kalua.css` | `.kalua-ai-*` styles |
+| `internal/web/templates/shell.html` | One `<script src="/static/markdown.js">` tag |
+| `internal/bindings/api_doc.go` | `k.form.ai_agent` + `k.ai.tool` entries (with params + example) |
+| `testdata/apps/ai_agent_demo.lua` | **New** — demo |
+
+### Dependencies
+
+- No new Go dependencies — reuses `internal/ai`, `gopher-lua`, existing `net/http`
+- No new JS dependencies — `markdown.js` is already zero-dep and escape-first
+
+### Tests
+
+**`internal/ai/tools_test.go`** (new)
+- `TestExtractToolCalls` — single, multiple, whitespace/newline inside the block,
+  fenced ```` ```json ````, prose passthrough, name-only (no `arguments`)
+- `TestExtractToolCallsMalformed` — bad JSON yields a tool error result, not an abort
+
+**`internal/ai/agent_test.go`** (new)
+- `TestAgentRunToolLoop` — `httptest` fake OpenAI endpoint: tool call → executor →
+  `role:"tool"` message → final prose; delta order preserved
+- `TestAgentRunTurnBound` — a model that always calls tools stops at `max_turns`
+- `TestAgentRunNoTools` — plain prose reply performs exactly one LLM round-trip
+
+**`internal/ai/collect_test.go`** (new)
+- `TestCollectSchemas` — param names from `Proto.DbgLocals`, vararg detection,
+  comment-derived description, `@param` type hint
+- `TestCollectExcludes` — `main`, `k`/`K`/`CTRL`/`ARGS`, lib members, `_`-prefixed
+
+**`internal/session/aichat_test.go`** (new, modelled on `looper_e2e_test.go`)
+- Real session: `ai_chat_send` → tool invoked with decoded args → result fed back →
+  `ai_chat_delta` sequence → `ai_chat_close` → transcript table returned to the
+  suspended coroutine
+- Tool error surfaces as a `role:"tool"` error result, not a session crash
+
+**`internal/cli/ai_test.go`** (extend)
+- `run` resolves `[AI]` INI / `KALUA_AI_*` env into `Options.AIConfig`
+
+Plus: `KALUA check testdata/apps/ai_agent_demo.lua`, `go test ./...`,
+`go vet ./...`, `node --check internal/web/assets/app.js`.
+
+### Implementation Status
+
+Not started — plan only.
+
+### Known Limitation (phase 1)
+
+**Tools are synchronous.** A tool that itself calls a blocking KALUA API
+(`k.form.show`, `k.http_request`, `k.msgbox`) will hang, because `Session.Query`
+runs the closure on the actor goroutine and cannot suspend.
+
+*Phase 2 route:* run tools in a coroutine registered in `asyncOps` with a completion
+callback, so a suspending tool parks until its own resume lands. Note this is the same
+limitation the existing `k.exec` has (`handleExec` collects return values even when
+`Resume` yields).
