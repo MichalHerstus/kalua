@@ -264,14 +264,12 @@ escape-first `markdown.js` and prior-art chat UX.
 
 ---
 
-## 19. `kalua-serve-enhancements.md` — Serve flow primitives (Node-RED-inspired)
+## 18. `kalua-serve-enhancements.md` — Serve flow primitives (Node-RED-inspired)
 
 Adopt the *useful primitives* of the Node-RED node model, plus an MQTT **client**
-(no embedded broker). Script-only. Phases 0–2 are the primitives; **Phase 3
-supersedes the original "no flow graph" decision** with a minimal LangGraph-style
-*composition* layer — a sequential state machine, not a Node-RED routing registry.
-**Phase 4** adds Zebra FX/ATR RFID reader input over the ZIOTC protocol.
-**Phase 5** adds structured logging to a self-maintained `klog.db` SQLite file
+(no embedded broker). Script-only. Phases 0–2 are the primitives. **Phase 3**
+adds Zebra FX/ATR RFID reader input over the ZIOTC protocol.
+**Phase 4** adds structured logging to a self-maintained `klog.db` SQLite file
 (off by default, flag/`KALUA.INI`-tunable, no new dependency).
 
 | Phase | Work | Status |
@@ -279,19 +277,10 @@ supersedes the original "no flow graph" decision** with a minimal LangGraph-styl
 | 0 — Serve-mode correctness | Register `registerJSON`/`registerXML`; real `k.sleep`; fix `k.exec`/`k.assign(table)`/`k.quit`; bounded worker wait + `Retry-After` instead of instant 503; enable headless-safe `registerFlow` subset | ⏳ |
 | 1 — Flow primitives | `k.timer_start`/`k.timer_stop` (inject), `k.http_request` (http request), `k.template`, `k.ws.list`/`k.ws.count`, `k.shared` TTL | ⏳ |
 | 2 — MQTT client | `k.mqtt_connect/subscribe/publish/unsubscribe/close/on` via `MQTTHub` (paho) | ⏳ |
-| 3 — `k.graph` graph workflows | G1: sequential state machine (state + per-key reducers, nodes by `k.*` name or Lua fn, static/conditional/`Send` edges, `max_steps` guard) as an `//go:embed` Lua engine. G2: file-backed run store (`resolvePath` + `writeFileAtomic`) + `g:resume` | ⏳ |
-| 4 — Zebra RFID (ZIOTC) reader input | R0: `RFIDHub` + capped ring buffer + tolerant tag parser. R1: `WSReader` transport (outbound `coder/websocket` `Dial`, no new dep) + REST control + batched `k.rfid_on`. R2: `MQTTReader` + `control-resp` correlation. R3: WS egress, `k.graph` nodes | ⏳ |
-| 5 — Structured logging to `klog.db` | Reuses the already-present `modernc.org/sqlite` driver — **no new dependency**, and `CGO_ENABLED=0` release builds stay static. One writer goroutine behind a bounded channel (drop-and-count, never blocks a request), WAL, fixed schema with a JSON `data` column, age **and** size retention, `k.log.*` + `k.log.stats`. Sink lives in a new leaf package `internal/klog` because `internal/server` already imports `bindings` (a sink there would be cyclic); `!wasm`-tagged, since WASM uses wa-sqlite | ⏳ |
+| 3 — Zebra RFID (ZIOTC) reader input | R0: `RFIDHub` + capped ring buffer + tolerant tag parser. R1: `WSReader` transport (outbound `coder/websocket` `Dial`, no new dep) + REST control + batched `k.rfid_on`. R2: `MQTTReader` + `control-resp` correlation. R3: WS egress | ⏳ |
+| 4 — Structured logging to `klog.db` | Reuses the already-present `modernc.org/sqlite` driver — **no new dependency**, and `CGO_ENABLED=0` release builds stay static. One writer goroutine behind a bounded channel (drop-and-count, never blocks a request), WAL, fixed schema with a JSON `data` column, age **and** size retention, `k.log.*` + `k.log.stats`. Sink lives in a new leaf package `internal/klog` because `internal/server` already imports `bindings` (a sink there would be cyclic); `!wasm`-tagged, since WASM uses wa-sqlite | ⏳ |
 
-Phase 3 design notes: engine is embedded Lua because the sandbox has no runtime Lua
-loading (`vm.LoadFile` is startup-only), so there is no `require`/`dofile` to
-import it by. Execution is **sequential, not Pregel/BSP** — each worker owns its own
-`LState`, so parallel super-steps would need cross-worker state that does not exist.
-No mid-node suspension, so a node doing several blocking `k.http_request` calls
-**holds its worker**; G1 graphs should stay short. Serve mode only (the engine is
-mode-agnostic, so run mode is a cheap later addition).
-
-Phase 4 design notes: the reader's WebSocket/TCP endpoints are *listeners*, so KALUA
+Phase 3 design notes: the reader's WebSocket/TCP endpoints are *listeners*, so KALUA
 must dial **out** — `internal/server/ws.go` is a server and is not reusable here;
 the WS path needs no new dependency since `coder/websocket` is already vendored.
 The ZIOTC tag payload is a JSON **array** of events nested under `data`
@@ -302,7 +291,7 @@ worker, so tag dispatch is **buffered and batched**, never per-tag; the buffer i
 hard-capped and `k.rfid_count` reports `dropped_since`. Reader-side `filter` /
 `rssiFilter` / `reportFilter` are the primary rate control.
 
-Phase 5 design notes: `bindings.Logger` is an *interface*, so `SQLLogger` satisfies it
+Phase 4 design notes: `bindings.Logger` is an *interface*, so `SQLLogger` satisfies it
 and every existing call site keeps working — the database complements stdout rather
 than replacing it, and `k.print` stays stdout-only. The `DenyFS` hardening is
 sequenced early and independently because it is a standalone fix: `k.connect_db`
@@ -311,12 +300,12 @@ deny-list there alone would look correct while leaving `klog.db` readable. The
 per-row cap is enforced in `Emit` *before* enqueueing, so the channel can never hold
 an oversized record.
 
-Net effect: serve goes from 110 to **169** `k.*` functions (59 new names, 7 newly
+Net effect: serve goes from 110 to **161** `k.*` functions (51 new names, 7 newly
 functional). Ships `--allow-net` (P0 in `kalua_security_plan.md`) *before* Phase 2
 and again before R1.
 
-> Full audit findings, design notes, the LangGraph→KALUA fidelity table, the
-> complete post-implementation `k.*` inventory, and risk register are in
+> Full audit findings, design notes, the complete post-implementation `k.*`
+> inventory, and risk register are in
 > `kalua-serve-enhancements.md`.
 
 ---
@@ -362,14 +351,14 @@ extension (Phase 5 LSP & editor).
 | `kform_builder_plan.md` | Webview builder phases 1–7, table/looper editor | 🔁 superseded; table/looper + named DBs ✅ |
 | `kforms_enhancements.md` | §§1–12 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳, §10 tab ⏳, §11 layout controls ⏳, §12 AI chat form ⏳ |
 | `kalua_security_plan.md` | Security assessment (intranet model) | ⏳ assessment complete; mitigations P0–P10 pending |
-| `kalua-serve-enhancements.md` | Serve flow primitives (Node-RED-inspired) + MQTT client + `k.graph` graph workflows + Zebra RFID (ZIOTC) reader input + structured logging to `klog.db` | ⏳ plan only; phases 0–5 not started |
+| `kalua-serve-enhancements.md` | Serve flow primitives (Node-RED-inspired) + MQTT client + Zebra RFID (ZIOTC) reader input + structured logging to `klog.db` | ⏳ plan only; phases 0–4 not started |
 | `vscode-ext.md` | Extension guide | ✅ shipped |
 
 **Top pending plan items (no code yet):** REPL mode (§8 #11) · DAP debugger (§11 B/C) ·
 codebase cleanup C/D (§13) · WASM M5 JS simplification · `k.ctrl.login` (§8) ·
 `k.ctrl.tree` (§9) · **`k.ctrl.tab` (§10) · Layout Controls: Topbar, Sidebar, Footer (§11) · Image onclick handling (§4.3)** ·
 **AI chat form `k.form.ai_agent` — auto-exposed script-function tools (§12)** ·
-**Serve flow primitives — Phase 0 correctness first, then timers/`http_request`, then MQTT, then `k.graph`, then Zebra RFID reader input, then structured logging to `klog.db` (§19)** ·
+**Serve flow primitives — Phase 0 correctness first, then timers/`http_request`, then MQTT, then Zebra RFID reader input, then structured logging to `klog.db` (§18)** ·
 **Security hardening (P0–P3: network/SQL allowlists, auth middleware, path sandbox; C7 `k.connect_db` sandbox escape is fixed in Phase 5 §8.11)**.
 
 ---

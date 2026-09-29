@@ -4,20 +4,18 @@
 
 **Scope decision**: Adopt the *useful primitives* of the Node-RED node model.
 No `k.node.*` routing registry, no visual editor, no embedded broker. Plus an MQTT
-**client**.
+**client**. **Phases 0–2 cover the core server/sensor/sync use cases** (API server,
+sensor ingestion, REST↔SQL sync); **Phases 3–4 are optional hardware/observability
+add-ons**.
 
-Phases 0–2 add the *primitives* a flow needs. **Phase 3 (`k.graph`) supersedes the
-original "no flow graph" decision** with a minimal graph *composition* layer — a
-sequential state machine, not a Node-RED routing registry. See §6.
+**Phase 3 (`k.rfid_*`)** adds hardware-specific input functions for Zebra FX/ATR
+RFID readers over the ZIOTC protocol, built on the transports above. See §6.
 
-**Phase 4 (`k.rfid_*`)** adds hardware-specific input functions for Zebra FX/ATR
-RFID readers over the ZIOTC protocol, built on the transports above. See §7.
-
-**Phase 5 (`k.log.*`)** adds structured logging to a self-maintained `klog.db`
+**Phase 4 (`k.log.*`)** adds structured logging to a self-maintained `klog.db`
 SQLite file in the working directory — off by default, enabled and tuned by flag
 (`--log-sqlite`, `--log-level`, `--log-retain`, `--log-max-mb`, `--log-max-row`),
 all also settable in `KALUA.INI [SERVE]`. It reuses the already-present
-`modernc.org/sqlite` driver, so it adds no dependency. See §8.
+`modernc.org/sqlite` driver, so it adds no dependency. See §7.
 
 **Threat model** (unchanged from `kalua_security_plan.md`): intranet deployment;
 any public exposure sits behind a hardened reverse proxy.
@@ -182,184 +180,13 @@ phase, so the new outbound channel arrives already constrained rather than after
 
 ---
 
-## 6. Phase 3 — `k.graph` declarative graph workflows
-
-**Supersedes** the original "no flow graph / no wires" scope decision. Where Phases
-0–2 add the *primitives* a flow needs, Phase 3 adds a minimal graph *composition*
-layer on top of them.
-
-### 6.1 What this is (and is not)
-
-LangGraph is a durable state machine built on message-passing execution
-(`StateGraph`): a shared `State` whose keys each have a **reducer**, **nodes**
-that map state to a partial update, and **edges** (static, conditional, or `Send`
-fan-out) deciding what runs next. Execution is Pregel/BSP super-steps, with
-checkpoints at step boundaries.
-
-KALUA adopts the *workflow* subset, not the agent framework:
-
-| LangGraph concept | KALUA `k.graph` | Fidelity |
-|---|---|---|
-| `State` with per-key reducers | `state` table + `reducers` | full |
-| Node `state → partial` | `call = "k.db_select"` or `fn = myfn` | full |
-| Static / conditional edges | `g:edge(a, b)` · `g:edge(a, fn)` | full |
-| `Send` fan-out | `k.graph.send("node", {item = "lines"})` | sequential only |
-| Checkpoint / resume | persist `{state, queue, step}` to disk | node-boundary, G2 |
-| `interrupt()` / human-in-the-loop | — | **not implemented** (needs coroutines) |
-| Pregel parallel super-steps | — | **not implemented** (needs multi-worker state) |
-
-The value is *declarative composition* — a branching flow that is readable and
-reusable. For a linear flow, plain `if`/`else` is still shorter than a graph; a
-graph earns its place when the flow branches widely, is reused with different node
-configurations, or must be inspected and resumed later.
-
-### 6.2 Why not Pregel/BSP
-
-Each worker owns a **separate `LState`**, so a `state` that is a Lua table can only
-exist inside one worker. Parallel super-steps would need state coordination across
-workers, which does not exist today. Execution is therefore **sequential**: run
-each active node in turn, merge its partial through the reducers, repeat until no
-node is active. That is exactly the suspension shape LangGraph checkpoints at,
-which is what makes G2 viable.
-
-### 6.3 API
-
-```lua
-local g = k.graph.new{
-  name = "order_flow",
-  state    = { total = 0, lines = {}, status = "new" },
-  reducers = { lines = "append", total = "add" },   -- last|append|add|merge|fn
-  max_steps = 100,                                   -- cycle guard
-}
-
--- node backed by an existing k.* binding, resolved via its sandbox global path
-g:node("load", { call = "k.db_select",
-                 args = { db = "main", sql = "SELECT * FROM lines WHERE order_id = ?" },
-                 in  = { "order_id" }, out = "lines" })
--- node backed by app Lua
-g:node("sum",  { fn = sum_amounts, in = "lines", out = "total" })
-
-g:edge("load", "sum")                                                     -- static
-g:edge("sum",  function(s) return s.total > 100 and "mail" or "audit" end) -- conditional
-g:edge("mail", k.graph.END)
-
-g:compile()
-local result = g:run{ order_id = 42 }   -- -> { state = {...}, steps = n }
-```
-
-**Input binding** `in` — `"field"` · `{"a","b"}` (multiple args) · `"*"` (whole
-state as first arg).
-**Output binding** `out` — state path the node's first return value merges into.
-**Reducers** — `last` (default) · `append` · `add` · `merge` (shallow) · or a
-function `(a, b) -> value`.
-**Node errors** — `on_error = "fail" | "<node_name>"`; `retries = n` (G2).
-
-**Node purity is enforced, not documented.** Each node receives a deep copy of the
-state and only the partial it *returns* is merged. Mutating the copy is discarded,
-so a node cannot corrupt state it was not given.
-
-Nodes are referenced **by sandbox global path** (`call = "k.db_select"`), so the
-entire post-Phase-2 `k.*` surface becomes graph-addressable with no new capability
-surface. It is also why `END` and `send` need registry entries — see §6.5.
-
-### 6.4 Engine: embedded Lua, not a Lua module
-
-There is **no runtime Lua loading** in the sandbox — no `require`, no `dofile`;
-`vm.LoadFile` (`internal/vm/loader.go:23`) is called only at startup. The engine
-therefore ships as a fixed build-time asset evaluated once per `LState`:
-
-- `internal/bindings/kgraph/graph.lua` — the engine (~200 lines), `//go:embed` +
-  `L.DoString` (`third_party/gopher-lua/auxlib.go:405`) at `SetupServe`. Same
-  trust model as the already-embedded `app.js`: a build-time asset, not a
-  code-loading surface. `//go:embed` precedent: `internal/web/server.go:29`.
-- `internal/bindings/graph.go` — registration, a `GraphStore` interface mirroring
-  `SharedStore` (`internal/bindings/serve.go:11`), and the file backend.
-
-Writing the engine in Lua keeps it readable and lets it be tested as Lua; the Go
-layer stays a thin registration and storage surface.
-
-### 6.5 Registry and docs contract
-
-The checker resolves every `k.<path>` access a script makes against
-`bindings.Known()` (`internal/checker/checker.go:112`, source
-`internal/bindings/bindings.go:444`). Nested names register as dotted strings,
-e.g. `e.register("graph.new", "graph", fn)`.
-
-`k.graph.END` and `k.graph.send` are **values**, not functions, but the checker
-still validates any script that *references* them — so they must appear in both
-`registerKnown` and `api_doc.go` or `KALUA check` fails on valid scripts.
-`internal/bindings/api_doc_test.go:11-32` enforces this **bidirectionally**, so
-both files must move together. Then `make gen-api && make check-api`.
-
-### 6.6 G2 — file-backed run store and resume
-
-G1 is complete and useful on its own; G2 adds durability, and reuses paths that
-already exist rather than opening a new filesystem surface:
-
-| Need | Reuse |
-|------|-------|
-| Path sandbox | `e.resolvePath` (`internal/bindings/files.go:536`) — cwd + `--allow-fs` roots only |
-| Durable write | `writeFileAtomic` (`internal/bindings/files.go:505`) |
-| Cross-worker locking | the `paramsMu` precedent (`internal/bindings/net.go:19`) |
-| Store shape | `GraphStore` interface mirroring `SharedStore` |
-
-Runs persist to `.kalua/runs/<run_id>.json` under `e.workdir` — the same
-"app-side file" convention as `.kalua.params.json`
-(`internal/bindings/net.go:24-30`). Persisted record:
-`{graph, state, queue, step}`.
-
-```lua
-g:resume(run_id, { approved = true })   -- re-enters the loop with the persisted queue
-k.graph.runs()                          -- list run ids
-k.graph.state(run_id)                   -- inspect
-```
-
-A resumed run re-enters the loop **in a different worker on a later request**, so a
-run is not pinned to a worker — this is why state must be a plain serialisable
-Lua table.
-
-### 6.7 Non-goals and honest limits
-
-- **Sequential only.** No intra-step parallelism.
-- **No mid-node suspension.** A node must be a fast built-in. A node making
-  several `k.http_request` calls **blocks its worker** for that duration, so G1
-  graphs should stay short; long-running flows depend on the Phase 0/1
-  concurrency work above. This is the single biggest caveat of the phase.
-- **Graph definitions live in Lua (code)** — never loaded from JSON or a
-  database, which would be a new code-adjacent attack surface.
-- Not proposed: parallel super-steps · subgraphs · visual graph editor ·
-  graph-from-JSON. G3 (scheduled runs need Phase 1 timers; true mid-run human
-  gates need a coroutine-yield execution model) is deferred.
-
-### 6.8 Tests
-
-- `internal/bindings/graph_test.go` — engine unit tests on the `serve_test.go:72`
-  fake harness: reducer semantics, node purity (mutations discarded), conditional
-  routing, `Send` fan-out, `max_steps` halt, `END`.
-- Store tests — atomic write, cross-worker mutex, `resolvePath` sandboxing.
-- `internal/server/graph_e2e_test.go` — real worker via `newTestWorker`
-  (`internal/server/worker_test.go:45`): `handle_http` → `g:run`, plus
-  resume-across-reload.
-- `testdata/apps/graph_demo.lua` — demo app; must pass `KALUA check`.
-
-### 6.9 Decisions taken
-
-| Decision | Choice | Alternative |
-|----------|--------|-------------|
-| Driver | declarative composition | durable workflows would make resume P0 |
-| Store | file-backed (G2) | in-memory `k.shared` — does not survive restart |
-| Placement | this phase, in this document | a separate spec document |
-| Mode scope | **serve only** (`SetupServe` only) | the engine is mode-agnostic, so run mode is nearly free later |
-
----
-
-## 7. Phase 4 — Zebra RFID (ZIOTC) reader input
+## 6. Phase 3 — Zebra RFID (ZIOTC) reader input
 
 Hardware-specific input functions for Zebra **FX Series** (FX7500, FX9600, FXR90)
 and **ATR Series** (ATR7000) fixed readers, speaking the **Zebra IoT Connector**
 (ZIOTC) protocol. Serve mode only.
 
-### 7.1 Scope
+### 6.1 Scope
 
 Reader input only — tag data ingestion, inventory control, and health. Tag
 *writing*, encoding, and any Zebra-specific workflow logic are out of scope.
@@ -367,7 +194,7 @@ Everything is exposed under `k.rfid_*` and is transport-blind: the hub sits abov
 `ReaderTransport` interface, so the WS and MQTT paths share one buffering and
 binding surface.
 
-### 7.2 The transport question — WS is a real ZIOTC endpoint
+### 6.2 The transport question — WS is a real ZIOTC endpoint
 
 ZIOTC exposes four endpoint types: **MQTT**, **REST** (control), **HTTP-POST**
 (data), and **WebSocket**. The reader's WS and TCP/IP endpoints are *listeners* —
@@ -398,7 +225,7 @@ type ReaderTransport interface { // internal/server/rfid.go
 `WSReader` (zero new deps) and `MQTTReader` (paho) implement it. `control-resp`
 correlation on `command_id` is the main thing MQTT adds over WS.
 
-### 7.3 Verified tag-data payload
+### 6.3 Verified tag-data payload
 
 The ZIOTC tag-data event is a **JSON array of events**, one per tag read, with
 fields nested under `data`:
@@ -426,9 +253,9 @@ Notes for the parser:
 **Parser must be tolerant**: accept both array and single-object frames, unwrap
 `data.*` with a top-level `idHex` fallback, and skip unknown keys rather than
 erroring. Fixtures should be captured from real hardware rather than transcribed
-from vendor docs — see §7.9.
+from vendor docs — see §6.9.
 
-### 7.4 Filter at the reader, not in KALUA
+### 6.4 Filter at the reader, not in KALUA
 
 Realistic throughput is roughly **120 reads/sec**; readers are tuned to stay well
 below the rate at which KALUA could absorb every tag. Reader-side filtering is
@@ -445,7 +272,7 @@ therefore the primary control, and the reason a per-tag Lua handler is untenable
 
 All settable through `k.rfid_start` / `k.rfid_set_mode`.
 
-### 7.5 Hub: bounded buffer, never per-tag dispatch
+### 6.5 Hub: bounded buffer, never per-tag dispatch
 
 `CallWS` / `CallTCP` take `w.mu.Lock()` and run a full `L.Resume` **per event**
 (`internal/server/worker.go:311-360`). At 120 tags/sec that pins one worker and
@@ -463,10 +290,10 @@ deferred: `k.rfid_count` reports `{buffered, dropped_since}` from R0 so a bad fi
 is diagnosable rather than silent. Retrofitting that later would mean guessing
 whether earlier drops were data loss.
 
-### 7.6 API
+### 6.6 API
 
 Serve only, registered as dotted `e.register("rfid.connect", …)` names so the
-checker validates them (same contract as §6.5).
+checker validates them (same contract as §6.6).
 
 ```lua
 k.rfid_connect{ url = "wss://10.0.0.5:8000/rfid" }      -- WS transport
@@ -492,19 +319,19 @@ are buffered or `every_ms` elapses, and hands the named function `{tags={…}, n
 This is the "script decides what to do with tags" surface, expressed in a way the
 worker model can survive.
 
-### 7.7 Phasing
+### 6.7 Phasing
 
 | Step | Work | Blocked by |
 |------|------|-------------|
 | **R0** | `RFIDHub` + capped ring buffer, tolerant parser, `count`/`drain`/`flush` | nothing — device-free |
 | **R1** | `WSReader` transport (`coder/websocket` `Dial`), `start`/`stop`/`set_mode`/`status` over REST, `k.rfid_on` batch dispatch | serve Phase 0+1 |
 | **R2** | `MQTTReader` transport + `control-resp` correlation on `command_id` | serve Phase 2 (paho) |
-| **R3** | WS egress to dashboards; expose readers as `k.graph` nodes | serve Phase 3 |
+| **R3** | WS egress to dashboards | nothing |
 
 R0 is fully testable with no hardware and should land first regardless of the
 transport choice.
 
-### 7.8 Security
+### 6.8 Security
 
 - **Gate every `k.rfid_*` behind `--allow-net`**, with reader addresses on the
   allowlist. This raises the priority of `--allow-net` (P0 in
@@ -517,7 +344,7 @@ transport choice.
 - Treat `epc` and the rest of the tag record as **untrusted input** — they
   originate from a device and commonly flow into `k.db_*` writes.
 
-### 7.9 Open items
+### 6.9 Open items
 
 - **Tag captures from real hardware** (one frame each from an FX and an ATR7000)
   are needed to write the parser fixtures. Firmware ≥ 3.24.X has format variants
@@ -534,13 +361,13 @@ transport choice.
 
 ---
 
-## 8. Phase 5 — Structured logging to SQLite (`klog.db`)
+## 7. Phase 4 — Structured logging to SQLite (`klog.db`)
 
 Serve emits a queryable structured log into a SQLite file the process creates and
 maintains itself. Off by default; enabled and tuned entirely by flag. This phase
 adds an *observability* surface — it changes no request handling.
 
-### 8.1 Why SQLite and not a file
+### 7.1 Why SQLite and not a file
 
 A flat text log cannot answer "which requests 5xx'd last hour" or "how long did
 p99 take". SQLite gives indexed time-range queries over a file that needs no
@@ -549,7 +376,7 @@ server, no rotation script, and no agent. Critically, **no new dependency**:
 SQLite is 3.53.3 with json1 and WAL available, and it is pure Go — so `CGO_ENABLED=0`
 release builds stay static.
 
-### 8.2 The single-writer constraint
+### 7.2 The single-writer constraint
 
 SQLite permits **one writer**. With `--workers N` there are N concurrent goroutines,
 so a naive per-worker handle produces `SQLITE_BUSY` storms. The design funnels
@@ -575,7 +402,7 @@ N workers ──► Emit() ──► truncate(16 KiB) ──► chan Record (cap
   fast rather than at the first log line. `klog_meta.schema_version` allows future
   migrations.
 
-### 8.3 Schema
+### 7.3 Schema
 
 ```sql
 PRAGMA journal_mode=WAL;        -- concurrent readers while the writer commits
@@ -587,7 +414,7 @@ CREATE TABLE IF NOT EXISTS klog (
   ts          TEXT    NOT NULL,      -- RFC3339Nano, UTC
   ts_unix_ms  INTEGER NOT NULL,      -- indexed; cheap range predicates
   level       INTEGER NOT NULL,      -- 0..4
-  category    TEXT    NOT NULL,      -- http|ws|tcp|worker|app|db|rfid|graph|lifecycle
+  category    TEXT    NOT NULL,      -- http|ws|tcp|worker|app|db|rfid|lifecycle
   worker      INTEGER,               -- worker id; NULL = process-level
   session     TEXT,                  -- WS/TCP client id
   remote_addr TEXT,
@@ -607,7 +434,7 @@ extras so `json_extract(data,'$.status') >= 500` works **without a schema migrat
 per category**. `id` is a plain rowid deliberately — the table is append-only and
 never needs a gap-free monotonic sequence.
 
-### 8.4 Per-row cap — 16 KiB
+### 7.4 Per-row cap — 16 KiB
 
 A script can log an arbitrarily large string (`k.log.info(string.rep("x", 1e7))`).
 Two consequences, so the cap is enforced in **`Emit`, before enqueueing** — one
@@ -627,7 +454,7 @@ The budget is `len(message) + len(data) <= log_max_row`:
 If `message` leaves under 64 bytes of budget, `data` is dropped entirely and the
 marker folds into `message`.
 
-### 8.5 Retention — age plus a size backstop
+### 7.5 Retention — age plus a size backstop
 
 Both run on the same hourly tick, size first:
 
@@ -642,7 +469,7 @@ write amplification; the mark means the next prune is at least 20 % of the file 
 `0` disables either bound. The size cap is the backstop for a runaway
 `category='app'` writer that the age window alone would not catch.
 
-### 8.6 API
+### 7.6 API
 
 Script-facing, for domain events that should be queryable rather than grepped:
 
@@ -658,7 +485,7 @@ a table of structured fields that becomes the `data` JSON. Registered in
 bidirectional sync, and `KALUA check` rejects any `k.*` access missing from the
 registry.
 
-### 8.7 The sink is a wrapper, not a refactor
+### 7.7 The sink is a wrapper, not a refactor
 
 `bindings.Logger` (`bindings.go:95`) is an **interface**, so `SQLLogger` satisfies it
 and **every existing call site keeps working unchanged**:
@@ -677,7 +504,7 @@ The database **complements** stdout; it never replaces it. `k.print`
 (`serve.go:56`) is deliberately **excluded** — it stays stdout-only, so a chatty
 script cannot dominate the table.
 
-### 8.8 Package layout — the import-cycle constraint
+### 7.8 Package layout — the import-cycle constraint
 
 The sink **cannot** live in `internal/server`: `server.go:18` already imports
 `internal/bindings`, so a sink there would make `k.log.*` in `bindings` cyclic.
@@ -698,7 +525,7 @@ The `!wasm` tag is required and follows the `db.go` precedent: WASM uses
 `ncruces/go-sqlite3` (wa-sqlite), not `modernc`. The pure files compile everywhere.
 The `host.Level` widening is plain Go and is safe in both builds.
 
-### 8.9 Level widening
+### 7.9 Level widening
 
 `host.Level` is currently `Error=0, Info=1, Trace=2` and is confined to `log.go:13-15`
 plus one `SetLevel` call (`smoketest.go:79`), so widening is low-risk:
@@ -717,7 +544,7 @@ const (
 `l.level >= LevelInfo` (`log.go:70`); with `LevelWarn` inserted that gate is wrong
 and must become `>= LevelWarn`, or warnings silently disappear at debug verbosity.
 
-### 8.10 Instrumented call sites
+### 7.10 Instrumented call sites
 
 Serve currently has only four logger call sites, so the structured surface is small
 and explicit:
@@ -733,7 +560,7 @@ and explicit:
 worker lease / `Reload` / pool swap | `lifecycle` | `worker, event, pid, generation` |
 named DB connect/query | `db` | `handle, op, rows, duration_ms` |
 
-### 8.11 Security — the log DB must be script-denied
+### 7.11 Security — the log DB must be script-denied
 
 `workdirOf` (`bindings.go:470`) is the **process CWD**, which is also the sandbox
 root, so `klog.db` in CWD would otherwise be readable by the very script it logs.
@@ -757,7 +584,7 @@ loop. Comparison is on the symlink-resolved absolute path, so `./klog.db`,
 `klog.db` and `sub/../klog.db` are all denied while `klog.db.bak` and `mylog.db`
 stay allowed — exact-file denial, no wildcard, no directory denial, no over-blocking.
 
-### 8.12 CLI and KALUA.INI
+### 7.12 CLI and KALUA.INI
 
 ```
 kalua serve app.lua --log-sqlite --log-level debug --log-retain 7d \
@@ -803,12 +630,12 @@ the message is wrapped as `KALUA.INI [SERVE] log-max-row="bogus": …`.
 **Path** is fixed: `filepath.Join(pwd, "klog.db")` — always that name, always the
 directory `kalua` was started from, ignoring `--ini` and the script's location.
 
-### 8.13 Shutdown
+### 7.13 Shutdown
 
 `Shutdown(ctx)` drains the channel and closes the handle on `SIGTERM`, `SIGINT`, and
 `Server.Reload()`, so a hot-reload does not leave a half-written batch behind.
 
-### 8.14 Phasing
+### 7.14 Phasing
 
 | Step | Work | Depends on |
 |---|---|---|
@@ -825,7 +652,7 @@ L8 | Docs | L7 |
 L2 is sequenced early and independently: it is a standalone security fix, and
 deferring it would leave `klog.db` readable by every app that turns logging on.
 
-### 8.15 Tests
+### 7.15 Tests
 
 - `klog/sqlite_test.go` — schema creation, batched flush, drop counter, age prune,
   size cap + low-water (assert no re-trim per tick), 16 KiB cap (message truncation,
@@ -852,19 +679,17 @@ deferring it would leave `klog.db` readable by every app that turns logging on.
 ## 9. Out of scope
 
 Node-RED `k.node.*` routing registry · link nodes · subflows · visual editor ·
-embedded MQTT broker · JSONata · cron scheduling (interval only) · parallel
-super-steps · graph-from-JSON · RFID tag writing/encoding · ATR7000 spatial
+embedded MQTT broker · JSONata · cron scheduling (interval only) · RFID tag writing/encoding · ATR7000 spatial
 modelling · RFID reader auto-discovery · log shipping/aggregation · log rotation to
 sibling files · a log viewer UI · indexing `data` JSON columns per category.
 
-The *flow graph* is **in scope** as Phase 3 (§6), *RFID reader input* as Phase 4 (§7),
-and *structured logging* as Phase 5 (§8); what remains out of scope is the
+*RFID reader input* is Phase 3 (§6), and *structured logging* is Phase 4 (§7); what remains out of scope is the
 routing/wiring paradigm Node-RED uses rather than the state-machine model LangGraph
 uses, and the log-file-management tooling an ops team would normally bolt on.
 
 ---
 
-## 10. Defaults assumed
+## 9. Defaults assumed
 
 | Decision | Default | Alternative |
 |----------|---------|-------------|
@@ -882,7 +707,7 @@ uses, and the log-file-management tooling an ops team would normally bolt on.
 
 ---
 
-## 11. Risks
+## 10. Risks
 
 - **Timer × workers** is the one genuinely subtle piece. Firing on a leased worker
   prevents races, but it must pin to a single worker or the callback runs
@@ -893,13 +718,9 @@ uses, and the log-file-management tooling an ops team would normally bolt on.
   `make gen-api && make check-api` needs to reflect serve availability.
 - **0.7 widens the serve surface** — `k.ping` and `k.net_ok` are new outbound probes.
 - **MQTT credentials in Lua source** — raises the priority of `--allow-net`.
-- **A graph run occupies its worker for its whole duration.** A single node making
-  several blocking `k.http_request` calls can pin a worker for seconds; with
-  `--workers 1` that is a stall, not a slowdown. `max_steps` guards cycles but not
-  slow nodes, and there is no timeout on a run. Both are mitigations, not fixes.
-- **6.5 registry drift is silent until `KALUA check` fails** on a *valid* script,
-  which is a confusing failure mode. Do the `api_doc.go` + `registerKnown` edits
-  together, in the same commit as the registration.
+- **Registry drift is silent until `KALUA check` fails** on a *valid* script —
+  the `api_doc.go` + `registerKnown` edits must move together in the same commit
+  for every new `k.*` namespace.
 - **RFID tag rate is a memory-safety risk, not just a performance one.** A
   misconfigured or omitted reader-side `filter` sends every tag to KALUA; the
   capped buffer bounds memory, but the drops are otherwise invisible. `k.rfid_count`
@@ -907,11 +728,11 @@ uses, and the log-file-management tooling an ops team would normally bolt on.
   whether earlier drops were data loss.
 - **RFID firmware drift** — ZIOTC payload variants across firmware ≥ 3.24.X are
   not fully enumerated by vendor docs. The tolerant parser mitigates this, but
-  fixtures must come from real captures (§7.9) or the first field mismatch will be
+  fixtures must come from real captures (§6.9) or the first field mismatch will be
   found in production.
 - **The log DB is in the sandbox root.** Putting `klog.db` in PWD means it is
   reachable by `k.file_load` unless the `DenyFS` list lands. Because `k.connect_db`
-  and `k.zip_extract` both bypass `resolvePath` (§8.11), a deny-list in
+  and `k.zip_extract` both bypass `resolvePath` (§7.11), a deny-list in
   `resolvePath` alone would look correct while leaving the file readable. Enforce
   all three points or the feature is a net information-disclosure risk.
 - **A full channel is silent data loss.** Dropping is the right call for latency, but
@@ -927,13 +748,12 @@ uses, and the log-file-management tooling an ops team would normally bolt on.
 
 ---
 
-# 12. `k.*` available in `kalua serve` after implementation
+## 11. `k.*` available in `kalua serve` after implementation
 
-**169 functions** — 110 present today, **59 new names**, **7 newly functional**.
-(Group totals sum: 18+9+8+16+6+15+17+6+10+10+7+5+5+3+6+3+8+11+6 = 169.)
+**161 functions** — 110 present today, **51 new names**, **7 newly functional**.
+(Group totals sum: 18+9+8+16+6+15+17+6+10+10+7+5+5+3+6+3+11+6 = 161.)
 
-> Phase 3 added 8 `k.graph.*` names (144 → 152); Phase 4 adds 11 `k.rfid_*` names
-> (152 → 163); Phase 5 adds 6 `k.log.*` names (163 → 169). The original sum expression
+> Phase 3 adds 11 `k.rfid_*` names (144 → 155); Phase 4 adds 6 `k.log.*` names (155 → 161). The original sum expression
 > carried a stray extra `+3` (17 terms for 16 groups); the corrected base is used above.
 
 `✓` present today · `★` new · `▲` exists but broken/stubbed, fixed by this plan
@@ -1014,29 +834,20 @@ uses, and the log-file-management tooling an ops team would normally bolt on.
 `k.mqtt_connect` `k.mqtt_subscribe` `k.mqtt_publish` `k.mqtt_unsubscribe`
 `k.mqtt_close` `k.mqtt_on`
 
-## Graph — 8 ★ (all new)
-
-`k.graph.new` `k.graph.compile` `k.graph.run` `k.graph.END` `k.graph.send`
-`k.graph.resume` `k.graph.runs` `k.graph.state`
-
-`END` and `send` are **values** (a sentinel and a constructor), not functions, but
-they are listed here because the checker validates every `k.<path>` a script
-references. See §6.5. `resume`/`runs`/`state` are G2 (file-backed store).
-
 ## RFID — 11 ★ (all new)
 
 `k.rfid_connect` `k.rfid_disconnect` `k.rfid_readers` `k.rfid_status`
 `k.rfid_set_mode` `k.rfid_start` `k.rfid_stop` `k.rfid_count` `k.rfid_drain`
 `k.rfid_flush` `k.rfid_on`
 
-Phase 4, Zebra FX/ATR readers over ZIOTC. All gated behind `--allow-net`; see §7.
+Phase 3, Zebra FX/ATR readers over ZIOTC. All gated behind `--allow-net`; see §6.
 
 ## Log — 6 ★ (all new)
 
 `k.log.info` `k.log.warn` `k.log.error` `k.log.debug` `k.log.trace` `k.log.stats`
 
-Phase 5. `k.print` is deliberately **not** in this group — it stays stdout-only
-(§8.7). Writes to the script-denied `klog.db`; see §8.
+Phase 4. `k.print` is deliberately **not** in this group — it stays stdout-only
+(§7.7). Writes to the script-denied `klog.db`; see §7.
 
 ## Debug — 3 ✓
 
