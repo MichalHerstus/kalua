@@ -1913,6 +1913,9 @@ function renderInlineFormControls() {
 const CM_CTRL_TYPES = [
   'label', 'textbox', 'button', 'combo', 'list', 'table', 'checkbox', 'radio', 'image', 'chart'
 ];
+
+/* ---------- Setup / Row Template ---------- */
+function cmRenderSetup() {
   if (CM.mode === 'looper') return renderRowTemplate();
   $('#cm-col-hint').textContent = 'Tabulator → columns array; basic table → {field: title} map.';
   const box = $('#cm-columns');
@@ -2127,10 +2130,6 @@ function onCMSetupInput(e) {
   if (k === 'sortable' || k === 'frozen') c[k] = t.checked;
   else if (k === 'width') c[k] = t.value === '' ? undefined : +t.value;
   else c[k] = t.value;
-if (CM.mode === 'table') CM.columns.push({ field: '', title: '', sortable: true, headerFilter: 'none', editor: '', width: undefined, align: '', frozen: false });
-    else if (CM.mode === 'looper') { CM.row.push(getDefaultCell('label')); CM.rowOpts = -1; }
-    cmRenderSetup();
-  });
 }
 
 /* ---------- CRUD Grid wiring ---------- */

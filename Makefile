@@ -83,7 +83,7 @@ version:
 	./KALUA version
 
 # Build and run tests (CI pipeline)
-ci: build test-race vet check-assets
+ci: build test-race vet check-assets js-check
 
 # ---- release artifacts ----------------------------------------------------
 # Cross-compiled release binaries + SHA256SUMS, for the same platform set as
@@ -130,6 +130,14 @@ sync-assets:
 
 check-assets:
 	@cmp -s internal/web/assets/kalua.css internal/builder/assets/kalua.css && echo "kalua.css in sync" || (echo "ERROR: internal/builder/assets/kalua.css out of sync - run 'make sync-assets'" && exit 1)
+
+# JS asset syntax check (node must be on PATH). Guards the embedded browser
+# clients so a broken builder.js / app.js fails CI instead of shipping a dead UI.
+js-check:
+	@for f in internal/builder/assets/builder.js internal/builder/assets/markdown.js internal/web/assets/app.js internal/cli/wasm_assets/app.minimal.js; do \
+		node --check "$$f" >/dev/null 2>&1 || (echo "ERROR: $$f failed node --check" && exit 1); \
+	done
+	@echo "JS assets parse clean"
 
 # Build VSCode extension
 ext-build:
