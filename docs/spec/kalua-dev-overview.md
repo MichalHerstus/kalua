@@ -25,7 +25,7 @@ Generated: 2026-09-28
 | 9 | Tier 2 wave — CSV/INI/YAML/XML, rows, crypto, ZIP, sockets, timers, status, params, FTP, SMTP/POP3, SOAP; file picker | ✅ |
 | 10 | Server mode (T2) — WS listener (`handle_ws`), TCP listener (`handle_tcp`) | ✅ |
 | 11 | REPL mode — `KALUA repl` with Monaco Editor, persistent actor, split-view frontend | ⏳ |
-| 12 | WASM in browser — static page + `KALUA.wasm`, wa-sqlite, relay; M0–M4 shipped, M5 pending (see §2) | 🔶 |
+| 12 | WASM in browser — static page + `KALUA.wasm`, wa-sqlite, relay; M0–M4 shipped, M5 pending (see §2) | ✅ |
 | 13 | Dynamic control/form styling — `bg/color/font/font_size/style/align`, `k.form.set_property`; Tabulator title colors deferred | ✅ |
 | 14 | Kalipso error handling — `k.on_error` + `ERRORCODE`/`ERRORMSG`, `Env.fail` | ✅ |
 
@@ -42,7 +42,7 @@ Generated: 2026-09-28
 | M2 — Browser binding profile | `k.file_*` (IndexedDB), `k.param_*` (localStorage), `http_request` (fetch), clipboard, pick_file, screen_size, locale, net_ok, ping | ✅ |
 | M3 — DB + network relay | wa-sqlite (`k.connect_sqlite`/`k.db_*`); `KALUA n` relay for MySQL/PG/MSSQL/FTP/SMTP/POP3/TCP; JS relay client | ✅ |
 | M4 — Packaging & verification | `KALUA wasm-bundle <app.lua>` → self-contained `dist/` (+`--relay`); CLI in `internal/cli/wasm_bundle.go` | ✅ |
-| M5 — JS/HTML simplification | Move message router, form HTML gen, control/event logic, component lifecycle into WASM; `app.js` ~2050 → ~300 lines | ⏳ |
+| M5 — JS/HTML simplification | Move message router, form HTML gen, control/event logic, component lifecycle into WASM; `app.js` ~2050 → ~300 lines | ✅|
 
 M5 phases: 1 Message Router (~2 d) · 2 Form HTML Gen (~3 d) · 3 Control/Event (~3 d) ·
 4 Component Lifecycle (~2 d) · 5 JS Cleanup (~1 d). Total ~11 days, not started.
@@ -172,7 +172,7 @@ lsp_complete, lsp_hover, run_scenario.
 | 2 — Client interactions | Action column, global toolbar, row click, modal form | ✅ |
 | 3 — Server CRUD | `GridInsert/Update/DeleteMany`, PK handling, async ops | ✅ |
 | 4 — Form integration | `on_save`/`on_cancel` validation hooks, grid-level events, `k.grid.*` ops | ✅ |
-| 5 — Builder integration | CRUD tab, live preview, export/import | ✅ |
+| 5 — Builder integration | CRUD tab UI + live preview + export/import | 🔶 CRUD tab UI shipped but **dead** — `grid` is not in the palette and `cmApply` never persists pk/selection/actions; the fix is tracked as Phase 1 of `kform_builder_plan.md` § "Builder Palette". |
 | 6 — Documentation & polish | api_doc, USER_GUIDE, grid e2e tests, demo app | ✅ |
 
 ## 14. `kforms_enhancements.md` — §10 Tab Control
@@ -194,15 +194,21 @@ lsp_complete, lsp_hover, run_scenario.
 
 Three layout controls forming an application shell. Topbar/Footer are fixed-position
 elements spanning the viewport; Sidebar behaves differently per form layout mode
-(grid cell, or horizontal tabs in vertical layout).
+(grid cell, or horizontal tabs in vertical layout). Build plan: see
+`kform_builder_plan.md` § "Builder Palette: Add Missing Controls" — **Phase 2**
+(runtime first, then palette).
 
 | Phase | Work | Status |
 |-------|------|--------|
 | 1 | `k.ctrl.topbar` — fixed header, branding, user info, `logout` | ⏳ |
 | 2 | `k.ctrl.sidebar` — collapsible nav (grid cell or horizontal tabs), `items[]` | ⏳ |
 | 3 | `k.ctrl.footer` — fixed bottom bar, version/copyright, `links[]` | ⏳ |
-| 4 | `render.go` renderers + `kalua.css` layout/shell styles | ⏳ |
-| 5 | Session events (`on_select`, `on_logout`), `app.js`, builder, tests, demo | ⏳ |
+| 4 | `render.go` renderers + `kalua.css` layout/shell styles (+ `#preview`-scoped positioning for the builder canvas) | ⏳ |
+| 5 | Session events (`sidebar_select`/`logout` alias `select`), `app.js` | ⏳ |
+| 6 | Builder palette + `TYPE_OPTS` + defaults + preview, api_doc/`gen-api`, tests, demo | ⏳ |
+
+> Builder side of `grid` (the *implemented* control still missing from the palette) and the
+> dead CRUD tab are tracked as Phase 1 of the same `kform_builder_plan.md` section.
 
 ## 16. `kforms_enhancements.md` — §8 Login control
 
@@ -264,53 +270,35 @@ escape-first `markdown.js` and prior-art chat UX.
 
 ---
 
-## 18. `kalua-serve-enhancements.md` — Serve flow primitives (Node-RED-inspired)
-
-Adopt the *useful primitives* of the Node-RED node model, plus an MQTT **client**
-(no embedded broker). Script-only. Phases 0–2 are the primitives. **Phase 3**
-adds Zebra FX/ATR RFID reader input over the ZIOTC protocol.
-**Phase 4** adds structured logging to a self-maintained `klog.db` SQLite file
-(off by default, flag/`KALUA.INI`-tunable, no new dependency).
+## 18. `serve-communication-plan.md` — Serve communication capabilities (REST, GraphQL, SOAP, SFTP, MQTT, WS, UDP, structured logging)
 
 | Phase | Work | Status |
 |-------|------|--------|
 | 0 — Serve-mode correctness | Register `registerJSON`/`registerXML`; real `k.sleep`; fix `k.exec`/`k.assign(table)`/`k.quit`; bounded worker wait + `Retry-After` instead of instant 503; enable headless-safe `registerFlow` subset | ⏳ |
-| 1 — Flow primitives | `k.timer_start`/`k.timer_stop` (inject), `k.http_request` (http request), `k.template`, `k.ws.list`/`k.ws.count`, `k.shared` TTL | ⏳ |
+| 1 — REST router + HTTP | `k.http_routes` (declarative), `k.http_middleware`, `k.http_response_*`, `k.http_request_parse_multipart`, `k.http_auth_middleware`, `k.http_stats()` | ⏳ |
 | 2 — MQTT client | `k.mqtt_connect/subscribe/publish/unsubscribe/close/on` via `MQTTHub` (paho) | ⏳ |
-| 3 — Zebra RFID (ZIOTC) reader input | R0: `RFIDHub` + capped ring buffer + tolerant tag parser. R1: `WSReader` transport (outbound `coder/websocket` `Dial`, no new dep) + REST control + batched `k.rfid_on`. R2: `MQTTReader` + `control-resp` correlation. R3: WS egress | ⏳ |
-| 4 — Structured logging to `klog.db` | Reuses the already-present `modernc.org/sqlite` driver — **no new dependency**, and `CGO_ENABLED=0` release builds stay static. One writer goroutine behind a bounded channel (drop-and-count, never blocks a request), WAL, fixed schema with a JSON `data` column, age **and** size retention, `k.log.*` + `k.log.stats`. Sink lives in a new leaf package `internal/klog` because `internal/server` already imports `bindings` (a sink there would be cyclic); `!wasm`-tagged, since WASM uses wa-sqlite | ⏳ |
+| 3 — GraphQL server | `k.graphql_schema` (Lua table), resolvers, context init, `/graphql` endpoint (`graphql-go/graphql`) | ⏳ |
+| 4 — SOAP server | `k.soap_operations`, raw envelope handler, custom lightweight parser | ⏳ |
+| 5 — SFTP server | `k.sftp_server_start/stop`, Ed25519/RSA host key (gen + load), password + publickey auth, upload/delete/connect/disconnect events, `k.sftp_stats()` | ⏳ |
+| 6 — WS enhancements | `k.ws_routes`, `k.ws_session_get/set`, rooms (`join/leave/broadcast/clients`), `k.ws_stats()` | ⏳ |
+| 7 — UDP server (optional) | `k.udp_server_start/stop`, handler, `k.udp_stats()` | ⏳ |
+| 8 — Structured logging to `klog.db` | `k.log.*` (info/warn/error/debug/trace/stats), single writer goroutine, WAL, 16 KiB row cap, age+size retention, `DenyFS` hardening, `--log-*` flags + INI, no new deps (reuses `modernc.org/sqlite`) | ⏳ |
 
-Phase 3 design notes: the reader's WebSocket/TCP endpoints are *listeners*, so KALUA
-must dial **out** — `internal/server/ws.go` is a server and is not reusable here;
-the WS path needs no new dependency since `coder/websocket` is already vendored.
-The ZIOTC tag payload is a JSON **array** of events nested under `data`
-(`idHex`/`peakRssi`/`antenna`/`reads`), with a `+0000` offset timestamp string — not
-the `{readerName, tags:[…]}` envelope in most online examples. Readers emit ~120
-tags/sec, and `CallWS`/`CallTCP` run a full `L.Resume` per event on one leased
-worker, so tag dispatch is **buffered and batched**, never per-tag; the buffer is
-hard-capped and `k.rfid_count` reports `dropped_since`. Reader-side `filter` /
-`rssiFilter` / `reportFilter` are the primary rate control.
-
-Phase 4 design notes: `bindings.Logger` is an *interface*, so `SQLLogger` satisfies it
-and every existing call site keeps working — the database complements stdout rather
-than replacing it, and `k.print` stays stdout-only. The `DenyFS` hardening is
-sequenced early and independently because it is a standalone fix: `k.connect_db`
-(**C7**) and `k.zip_extract` member targets both bypass `resolvePath`, so a
-deny-list there alone would look correct while leaving `klog.db` readable. The
-per-row cap is enforced in `Emit` *before* enqueueing, so the channel can never hold
-an oversized record.
-
-Net effect: serve goes from 110 to **161** `k.*` functions (51 new names, 7 newly
-functional). Ships `--allow-net` (P0 in `kalua_security_plan.md`) *before* Phase 2
-and again before R1.
-
-> Full audit findings, design notes, the complete post-implementation `k.*`
-> inventory, and risk register are in
-> `kalua-serve-enhancements.md`.
+> Supersedes `kalua-serve-enhancements.md` (renamed to `.deprecated.md`). Phase 0 correctness first, then Phases 1–6 (communication), Phase 8 (observability) parallelizable.
 
 ---
 
-## 20. `kform_builder_plan.md` — Original builder plan (webview)
+## 19. `kalua-serve-enhancements.deprecated.md` — Old serve flow primitives (Node-RED-inspired)
+
+Superseded by `serve-communication-plan.md`. The only remaining items from the old plan were:
+- Phase 3: Zebra RFID (ZIOTC) reader input (now a separate future plan)
+- Phase 4: Structured logging to `klog.db` (moved to `serve-communication-plan.md` Phase 8)
+
+The old plan's Phases 0–2 (serve correctness, flow primitives, MQTT) are now Phases 0–2 in the new plan with expanded scope (REST/GraphQL/SOAP/SFTP/WS/UDP).
+
+---
+
+## 20.
 
 | Phase | Work | Status |
 |-------|------|--------|
@@ -348,17 +336,18 @@ extension (Phase 5 LSP & editor).
 | `kalua_spec.md` | §8 build-out phases 1–14, §11 debug, §13 cleanup, §14 WASM | 🔶 REPL (11) pending; debug Tier 2/3 pending; cleanup C/D pending; WASM M5 pending |
 | `kalua_wasm_plan.md` | M0–M5 | 🔶 M0–M4 ✅, M5 ⏳ |
 | `AI_builder.md` | AI phases 1–4, agentic P0–P2 | ✅ complete |
-| `kform_builder_plan.md` | Webview builder phases 1–7, table/looper editor | 🔁 superseded; table/looper + named DBs ✅ |
+| `kform_builder_plan.md` | Webview builder phases 1–7, table/looper editor, **builder palette (grid + layout controls)** | 🔁 superseded; table/looper + named DBs ✅; palette plan → Phase 1 grid/CRUD-tab, Phase 2 layout controls |
 | `kforms_enhancements.md` | §§1–12 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳, §10 tab ⏳, §11 layout controls ⏳, §12 AI chat form ⏳ |
 | `kalua_security_plan.md` | Security assessment (intranet model) | ⏳ assessment complete; mitigations P0–P10 pending |
-| `kalua-serve-enhancements.md` | Serve flow primitives (Node-RED-inspired) + MQTT client + Zebra RFID (ZIOTC) reader input + structured logging to `klog.db` | ⏳ plan only; phases 0–4 not started |
+| `serve-communication-plan.md` | Serve: REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP + structured logging | ⏳ plan only; phases 0–8 not started |
+| `kalua-serve-enhancements.deprecated.md` | Old serve flow primitives (superseded) | 🔁 superseded |
 | `vscode-ext.md` | Extension guide | ✅ shipped |
 
 **Top pending plan items (no code yet):** REPL mode (§8 #11) · DAP debugger (§11 B/C) ·
 codebase cleanup C/D (§13) · WASM M5 JS simplification · `k.ctrl.login` (§8) ·
-`k.ctrl.tree` (§9) · **`k.ctrl.tab` (§10) · Layout Controls: Topbar, Sidebar, Footer (§11) · Image onclick handling (§4.3)** ·
+`k.ctrl.tree` (§9) · **`k.ctrl.tab` (§10) · Layout Controls: Topbar, Sidebar, Footer (§11) · Image onclick handling (§4.3) · builder palette: `grid` missing + dead CRUD tab (Phase 1 plan)** ·
 **AI chat form `k.form.ai_agent` — auto-exposed script-function tools (§12)** ·
-**Serve flow primitives — Phase 0 correctness first, then timers/`http_request`, then MQTT, then Zebra RFID reader input, then structured logging to `klog.db` (§18)** ·
+**Serve communication — Phase 0 correctness, then REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP, then structured logging to `klog.db` (§18)** ·
 **Security hardening (P0–P3: network/SQL allowlists, auth middleware, path sandbox; C7 `k.connect_db` sandbox escape is fixed in Phase 5 §8.11)**.
 
 ---

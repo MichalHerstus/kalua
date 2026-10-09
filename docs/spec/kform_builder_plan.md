@@ -588,3 +588,142 @@ Phase 1 (shared backend) → Phase 4 runtime renderer → Phase 2 (table modal) 
 Interactive looper-row controls firing host events (editable inputs/combos per row), per-row click
 handlers, grid/cell layout inside looper rows, table DB write-back / edit-in-grid, function-valued
 Tabulator column props (formatters), looper reuse of the table's drag UI.
+
+---
+
+## Builder Palette: Add Missing Controls (Grid + Layout Controls)
+
+The palette currently exposes 11 of the 12 implemented runtime controls — **`grid` is missing** —
+and none of the planned layout controls (`topbar`, `sidebar`, `footer`, plus `tab`/`login`/`tree`)
+exist in the runtime yet. This section is the plan to close that gap in two phases.
+
+**Current state (research findings):**
+
+| Control | Runtime | Builder palette | Builder Edit modal |
+|---------|---------|-----------------|--------------------|
+| `grid` | ✅ `k.ctrl.grid` (`grid.go`, `render.go` `renderGrid`) | ❌ | Edit button refuses it (`builder.js` `renderEditor` guard); **CRUD tab is built but dead** — `cmRenderCrud`/`wireCMCrud` fully wired to `CM` state, yet `cmApply` never saves `pk_field`/`selection_mode`/`row_actions`/… and `openControlModal` never loads them |
+| `topbar` / `sidebar` / `footer` | ❌ spec only (`kforms_enhancements.md` §11) | ❌ | ❌ |
+| `tab` / `login` / `tree` | ❌ spec only (§10/§8/§9) | ❌ | out of scope here |
+
+**What already works**: builder import/export is type-generic (`k.ctrl.<type>` round-trips any
+control, `lua_import.go` `importControl` has no type whitelist); `Preview()` calls
+`bindings.RenderForm` so server-side `renderGrid` HTML renders in the canvas; the grid's inner
+`.kalua-tabulator-table` is already converted by the existing `renderPreviewTabulators` fallback
+(figures: import/export `k.ctrl.grid` today already survive a round trip); `KALUA check` already
+accepts `k.ctrl.grid`; function-valued opts (`logout = function() … end`, `on_select = …`) already
+round-trip through `optsToJSON` → `Inline` → export re-emission (`lua_export.go`).
+
+### Phase 1 — Grid into the palette + wire the CRUD tab (client-only)
+
+All changes in `internal/builder/assets/builder.js` + `internal/builder/builder_test.go`.
+
+1. **Palette** (`PALETTE`): append `['grid', 'CRUD Grid']`. Palette render/click/dblclick wiring is
+   generic (`data-palette`), so no other palette code changes.
+2. **`TYPE_OPTS.grid`** (drives the generic ⚙ option editor):
+   - shared datasource keys already labelled: `db`, `query`, `count_query`, `page_size`, `where`, `order_by`;
+   - grid-specific: `columns` (json), `pk_field` (string), `selection_mode`
+     (select `none|single|multi`), `row_click_action` (select `view|edit|select|none`),
+     `column_visibility` (bool), `default_visible` (json), `row_actions` (json),
+     `global_actions` (json), `form` (string — referenced detail/edit form).
+   - add `LABELS` entries for all new keys.
+3. **`addControl`**: `case 'grid'` → defaults `{query: 'SELECT * FROM t', pk_field: 'id',
+   selection_mode: 'multi'}`.
+4. **Open the Edit modal for grid**:
+   - `renderEditor`: allow `grid` in the Edit-button guard (and tooltip).
+   - `openControlModal`: accept `grid`; treat it like the `table` mode for the shared
+     Datasource/Setup/Preview tabs (grid is always Tabulator-style columns → reuse `CM.columns`);
+     add `grid` to the `CM.mode === 'table'` branch sites (`cmApply`, `wireCMSetup`,
+     `cmRenderSetup`); hide the `tabulator` toggle row for grid; `cmModeLabel()` → `'CRUD Grid'`.
+   - Show the **CRUD tab only for `grid`** (`renderControlModal` toggles `#cm-tab-crud`
+     display); it is meaningless for `table`/`looper`.
+5. **Wire the dead CRUD tab (load ↔ save)**:
+   - Declare the missing `CM` fields (`pkField, selectionMode, columnVisibility, rowClickAction,
+     defaultVisible, rowActions, globalActions, formRef, formWidth, inlineForm, inlineTitle,
+     inlineGap, inlineControls`).
+   - `openControlModal` (grid): load from `c.opts` using runtime keys (`pk_field`,
+     `selection_mode`, `column_visibility`, `row_click_action`, `default_visible`, `row_actions`,
+     `global_actions`; `form` → string ref **or** inline `{title, controls}` → `formRef` +
+     inline-form editor path).
+   - `cmApply` (grid branch): persist each with `setOpt(c, 'pk_field', …)` … (`column_visibility`
+     as bool, `form` written back as string or inline object); save `columns` via the
+     tabulator-table array path.
+6. **Preview polish (optional)**: when the modal has `CM.lastResult`, render those sample rows for
+   a DB-linked grid instead of the bare "No data" placeholder.
+7. **Tests** (`internal/builder/builder_test.go`):
+   - `TestExportImportGridRoundTrip` — grid with `pk_field`/`selection_mode`/`row_actions`/`form`
+     survives export → import.
+   - Extend `TestPreview` — doc with a grid control → HTML contains `data-k-grid="1"` and
+     `.kalua-tabulator-table`.
+   - Existing handler-preservation tests keep passing (grid `k.form.on` statements such as
+     `grid_form_save` are already verbatim-preserved).
+8. **Verify**: `make js-check`, `go test ./...`, `KALUA check testdata/apps/grid_crud_demo.lua`,
+   headless-Chrome smoke (palette lists Grid; add; Edit modal opens with CRUD tab; Apply persists;
+   export round-trips).
+
+### Phase 2 — Layout controls `topbar` / `sidebar` / `footer` (runtime + builder)
+
+Implemented per `kforms_enhancements.md` §11 (renderer shared with the runtime so the builder
+preview is pixel-faithful). Background the runtime work, then add the palette entries.
+
+#### 2a. Runtime implementation
+
+1. **Constructors** — `internal/bindings/forms.go`: register `ctrl.topbar`, `ctrl.sidebar`,
+   `ctrl.footer` (3-line `addControl(...)` pattern each); mirror in `forms_wasm.go` (M5 parity).
+2. **Checker registry** — `internal/bindings/bindings.go`: add the three to the known-API map so
+   `KALUA check` accepts them.
+3. **Renderer** — `internal/bindings/render.go`: `renderControl` cases + `renderTopbar` /
+   `renderSidebar` / `renderFooter`:
+   - topbar: `.kalua-topbar` fixed bar — icon, title, user block (name/role/avatar), logout hook;
+   - sidebar: `.kalua-sidebar` + `data-k-sidebar` attrs (position/width/collapsed/items JSON);
+     vertical layout → horizontal tab-bar variant; grid layout → normal cell flow (`cell="sidebar"`
+     per §11.4, reuses the existing `cell`/`align` common opts);
+   - footer: `.kalua-footer` — text / auto-filled `version` (`internal/version`) / `script_name` /
+     links.
+4. **CSS** — `internal/web/assets/kalua.css`, then `make sync-assets` (copies to
+   `internal/builder/assets/kalua.css`; `make check-assets` guards it). Run mode anchors bars with
+   `position: fixed`; builder canvas needs them scoped to `#preview` (`position: absolute` inside
+   the relative-positioned preview box).
+5. **Client behavior** — `internal/web/assets/app.js`: topbar logout click → event; sidebar item
+   click → `{action, item, index}` payload; sidebar collapse toggle (session-only, resets on
+   reload, §11.6). Builder canvas is server-rendered HTML (no app.js) → static preview suffices,
+   same as charts/tables.
+6. **Session events** — `internal/session/session.go`: dispatch `logout` (topbar) and
+   `sidebar_select` (sidebar) via the `fireGridEvent` pattern. Spec §11.2 example uses event name
+   `"select"` while §11.5 says `sidebar_select` — implement `sidebar_select` as canonical, accept
+   `"select"` as an alias.
+7. **API docs** — `api_doc.go` entries with `Params` per §11 option tables; `make gen-api &&
+   make check-api` (regenerates the AI knowledge base).
+8. **Docs/status** — `docs/spec/k-ctrl-list.md` (Implemented 12 → 15).
+9. **Tests** — render tests (attrs/HTML, both layout modes), session tests (`logout` /
+   `sidebar_select` dispatch), checker test (no more unknown-`k.ctrl.topbar`).
+
+#### 2b. Builder integration
+
+1. `PALETTE` += `['topbar', 'Topbar']`, `['sidebar', 'Sidebar']`, `['footer', 'Footer']`.
+2. `TYPE_OPTS` per §11 (tables → `t: 'json'`):
+   - topbar: `icon`, `title`, `user` (json), `visible`;
+   - sidebar: `position` (select left/right), `width` (num), `collapsed_width` (num),
+     `collapsible`/`collapsed` (bool), `items` (json), `style` (json);
+   - footer: `text`, `version`, `script_name`, `links` (json), `style` (json);
+   - `LABELS` per new key.
+3. `addControl` defaults (topbar `title="My App"`; sidebar one sample item; footer `text="© …"`).
+4. **No import/export work** — function opts and `k.form.on` statements already round-trip; verify
+   preview positioning (bars anchored to `#preview`, not the viewport).
+
+### Verify (both phases)
+
+```bash
+make js-check                        # now in ci
+go test ./... && go vet ./...
+make gen-api && make check-api       # Phase 2 (api_doc changes)
+make check-assets                    # Phase 2 (kalua.css sync)
+KALUA check <demo>.lua
+```
+Plus headless-Chrome DOM checks (palette 11 → 12 after Phase 1; 15 after Phase 2) and a
+`KALUA run` visual pass of a shell app.
+
+### Sequencing & out of scope
+
+Phase 1 and Phase 2 are independent commits (grid first — client-only). Phase 2 is the large piece
+(runtime renderer + CSS + client events + session dispatch). `tab`/`login`/`tree` stay out of scope;
+the palette/`TYPE_OPTS` pattern established here makes them cheap to add if/when the runtime lands.

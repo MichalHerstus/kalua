@@ -2,6 +2,7 @@
 function main()
   k.form.new("main", {title="Test Form", layout="vertical"})
   k.ctrl.label("main", "lbl1", {text="Hello KALUA!"})
+    k.ctrl.label("main", "lbl2", {text="Hello Pavel!"})
   k.ctrl.textbox("main", "txt1", {label="Name", value="World"})
   k.ctrl.button("main", "btn1", {label="Click Me",
     onclick=function()
