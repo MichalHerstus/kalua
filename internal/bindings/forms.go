@@ -1032,6 +1032,16 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 	ctrlTbl.RawSetString("items", opts.RawGetString("items"))
 	ctrlTbl.RawSetString("hidden_value", opts.RawGetString("hidden_value"))
 
+	// Per-widget styling options (kforms_enhancements.md §10) — the same keys
+	// styleFromProps reads at form level (bg, color, font, font_size, style).
+	// k.ctrl.set_property can also update them dynamically: set_property stores
+	// the new value and the re-render reads it here.
+	ctrlTbl.RawSetString("bg", opts.RawGetString("bg"))
+	ctrlTbl.RawSetString("color", opts.RawGetString("color"))
+	ctrlTbl.RawSetString("font", opts.RawGetString("font"))
+	ctrlTbl.RawSetString("font_size", opts.RawGetString("font_size"))
+	ctrlTbl.RawSetString("style", opts.RawGetString("style"))
+
 	// Layout properties (kforms_enhancements §6): assign the control to a grid
 	// cell (cell = cell_id) and/or override alignment left|center|right.
 	ctrlTbl.RawSetString("cell", opts.RawGetString("cell"))

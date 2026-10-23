@@ -658,3 +658,74 @@ func TestStyleFromProps(t *testing.T) {
 		t.Errorf("style preset h3: %q", got3)
 	}
 }
+
+// TestPerWidgetStyling verifies §10: per-control bg/color/font/font_size/style
+// opts are stored by addControl and folded into the control's outermost
+// rendered element by mergeControlStyle. h1–h6/p presets size the text (font or
+// style), font_size px overrides the preset, and unstyled controls emit no
+// style attribute (zero regression).
+func TestPerWidgetStyling(t *testing.T) {
+	L := setupTestState(t)
+
+	html := layoutTestForm(t, L, map[string]lua.LValue{}, [][]lua.LValue{
+		// plain label with full styling
+		{str("lbl"), str("label"), str("text"), str("Hi"), str("bg"), str("#ff0"), str("color"), str("#d32f2f"), str("font"), str("h2")},
+		// multiline label: preset overridden by px font size
+		{str("ml"), str("label"), str("text"), str("Two\nLines"), str("multiline"), ltrue(), str("font"), str("h1"), str("font_size"), num(12), str("color"), str("#757575")},
+		// styled button
+		{str("btn"), str("button"), str("label"), str("Go"), str("bg"), str("#0af"), str("color"), str("#fff")},
+		// enabled=false + visible=false + styling merge into one style attr
+		{str("tx"), str("textbox"), str("label"), str("Age"), str("value"), str("9"), str("enabled"), lua.LFalse, str("visible"), lua.LFalse, str("font_size"), num(13), str("bg"), str("#eee")},
+		// no styling -> no style attribute
+		{str("plain"), str("label"), str("text"), str("x")},
+	})
+
+	for _, want := range []string{
+		`<label class="kalua-label" id="c:f:lbl" style="background:#ff0;color:#d32f2f;font-size:1.5em;font-weight:700">Hi</label>`,
+		`kalua-label-multiline" id="c:f:ml" style="color:#757575;font-size:12px">Two`,
+		`style="background:#0af;color:#fff">Go</button>`,
+		`style="display:none;background:#eee;font-size:13px"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q in rendered form:\n%s", want, html)
+		}
+	}
+
+	// A textbox wrapper should carry the styling (independent of the disabled flag
+	// that lives on the <textarea>/<input>).
+	if !strings.Contains(html, `<div class="kalua-control" style="display:none;background:#eee;font-size:13px">`) {
+		t.Errorf("textbox wrapper missing merged style:\n%s", html)
+	}
+
+	// Unstyled controls keep the old HTML shape (no style attribute).
+	if strings.Contains(html, `id="c:f:plain" style=`) {
+		t.Errorf("unstyled label must not emit a style attr:\n%s", html)
+	}
+}
+
+// TestPerWidgetStylingSetProperty verifies §10 live restyle: k.ctrl.set_property
+// stores the styling key and the re-render via renderControl reflects it, and
+// k.ctrl.get_property reads the keys back.
+func TestPerWidgetStylingSetProperty(t *testing.T) {
+	L := setupFullState(t)
+
+	src := `
+k.form.new("main", { title = "T", layout = "vertical" })
+k.ctrl.label("main", "lbl", { text = "Hi", font = "h3", bg = "#eee" })
+k.ctrl.set_property("main", "lbl", "color", "#1976d2")
+
+local function assert(c, m) if not c then error(m) end end
+assert(k.ctrl.get_property("main", "lbl", "color") == "#1976d2", "color read-back")
+assert(k.ctrl.get_property("main", "lbl", "bg") == "#eee", "bg read-back")
+assert(k.ctrl.get_property("main", "lbl", "font") == "h3", "font read-back")
+`
+	if err := L.DoString(src); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	html := renderForm(L, "main")
+	want := `style="background:#eee;color:#1976d2;font-size:1.17em;font-weight:700"`
+	if !strings.Contains(html, want) {
+		t.Errorf("re-rendered label missing merged style %q:\n%s", want, html)
+	}
+}

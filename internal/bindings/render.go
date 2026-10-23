@@ -420,6 +420,24 @@ func renderVisibility(ctrl *lua.LTable) (enabled, visible string) {
 	return
 }
 
+// mergeControlStyle folds per-widget styling options (bg, color, font, font_size,
+// style — the same keys styleFromProps reads at the form level, kforms_enhancements.md
+// §10) into the style attribute produced by renderVisibility. The styling is appended
+// after the visibility/alignment rules so display/align-self keep priority. Returns the
+// combined ` style="..."` attribute, or the visibility attribute unchanged when no
+// styling option is set.
+func mergeControlStyle(ctrl *lua.LTable, visible string) string {
+	props := styleFromProps(ctrl)
+	if props == "" {
+		return visible
+	}
+	if visible == "" {
+		return ` style="` + escAttr(props) + `"`
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(visible, ` style="`), `"`)
+	return ` style="` + escAttr(inner) + ";" + escAttr(props) + `"`
+}
+
 // renderButton renders a single button control. marginRight, when non-empty,
 // is merged into the button's style attribute.
 func renderButton(ctrl *lua.LTable, marginRight string) string {
@@ -435,6 +453,10 @@ func renderButton(ctrl *lua.LTable, marginRight string) string {
 		label = escText(lv.String())
 	}
 	enabled, visible := renderVisibility(ctrl)
+	// Per-widget styling (kforms_enhancements.md §10) merges into the button's
+	// own style attribute; renderControl already merged its copy, but renderButton
+	// recomputes visibility so the styling must fold in here too.
+	visible = mergeControlStyle(ctrl, visible)
 	if marginRight != "" {
 		if visible == "" {
 			visible = ` style="margin-right:` + marginRight + `"`
@@ -468,6 +490,11 @@ func renderControl(ctrl *lua.LTable) string {
 	id := "c:" + formName + ":" + name
 
 	enabled, visible := renderVisibility(ctrl)
+	// Per-widget styling merges into the visibility/alignment style attribute;
+	// every branch below (including the renderTable/renderGrid/renderChart/
+	// renderLooper/renderImage/renderLogin sinks and renderButton) applies the
+	// merged attribute to the control's outermost element.
+	visible = mergeControlStyle(ctrl, visible)
 	attrs := renderAttrs(formName, name)
 
 	switch ctrlType {
@@ -476,7 +503,7 @@ func renderControl(ctrl *lua.LTable) string {
 		if ctrl.RawGetString("multiline").String() == "true" {
 			return `<div class="kalua-label kalua-label-multiline" id="` + escAttr(id) + `"` + visible + `>` + label + `</div>`
 		}
-		return `<label class="kalua-label" id="` + escAttr(id) + `">` + label + `</label>`
+		return `<label class="kalua-label" id="` + escAttr(id) + `"` + visible + `>` + label + `</label>`
 	case "textbox":
 		if looperDisplay(ctrl) {
 			// Raw value (escaped exactly once below); the shared `value` var is

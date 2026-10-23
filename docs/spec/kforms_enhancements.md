@@ -3328,3 +3328,111 @@ runs the closure on the actor goroutine and cannot suspend.
 callback, so a suspending tool parks until its own resume lands. Note this is the same
 limitation the existing `k.exec` has (`handleExec` collects return values even when
 `Resume` yields).
+
+---
+
+# 10. Per-Widget Styling Options
+
+## Overview
+
+All `k.ctrl.*` control constructors accept the same optional styling keys
+(`bg`, `color`, `font`, `font_size`, `style`) that the form-level
+`k.form.new` / `k.set_property` already support. The renderer folds them into
+a CSS `style` attribute on the control's outermost rendered element, so a
+label, a button, a textbox, a table or a login panel can be styled
+individually without touching the shared `kalua.css`.
+
+The `<h1>`–`<h6>` and `<p>` heading presets can be used **instead of a pixel
+font size**: pass `font = "h2"` (or the alias `style = "h2"`) and the renderer
+emits the matching CSS `font-size` + `font-weight` (the same mapping the form
+title uses).
+
+## Shared Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `bg` | `string` | Background color, any CSS color (`#fff`, `white`, `rgb(...)`) → `background:` |
+| `color` | `string` | Text color, any CSS color → `color:` |
+| `font` | `string` | Font: an `h1`–`h6`/`p` preset **or** a raw font family (`"Open Sans"`) → `font-size:`+`font-weight:` or `font-family:` |
+| `font_size` | `number` | Font size in px (`font-size:14px;`). Overrides an `h1`–`h6`/`p` preset |
+| `style` | `string` | Alias for `font` **for the presets only**: `style = "h3"` behaves like `font = "h3"`. A non-preset value is ignored |
+
+All keys are optional and independent: setting only `bg` leaves the text styles
+untouched, and vice-versa. Rendering emits no `style` attribute at all when no
+styling option, visibility rule or alignment rule is set, so existing forms'
+HTML is unchanged (zero regression).
+
+### Preset mapping (shared with the form title)
+
+| Preset | `font-size` | `font-weight` |
+|--------|-------------|---------------|
+| `h1` | `2em` | `700` |
+| `h2` | `1.5em` | `700` |
+| `h3` | `1.17em` | `700` |
+| `h4` | `1em` | `700` |
+| `h5` | `0.83em` | `700` |
+| `h6` | `0.67em` | `700` |
+| `p` | `1em` | `400` |
+
+## Where the Style Lands
+
+The merged style is applied to each control type's outermost rendered element:
+
+| Control | Styled element |
+|---------|----------------|
+| `label` | the `<label>` / `kalua-label-multiline` `<div>` itself |
+| `textbox` | the wrapping `<div class="kalua-control">` |
+| `button` | the `<button>` element |
+| `combo` / `list` | the wrapping `<div class="kalua-control">` |
+| `checkbox` / `radio` | the wrapping `<div class="kalua-control kalua-…-item">` |
+| `table` / `looper` / `grid` | the wrapping `<div class="kalua-control">` |
+| `chart` | the wrapping `<div class="kalua-control">` |
+| `image` | the wrapper `.kalua-image-container` |
+| `login` | the panel `.kalua-login` |
+
+Sticky rules keep precedence: the styling is appended **after** any
+`display:none` / `align-self` / `margin-right` rules that `renderVisibility`
+emits, so a hidden control stays hidden and per-control `align` still wins.
+
+## Examples
+
+```lua
+-- Heading-style label using the h2 preset
+k.ctrl.label("main", "title_lbl", {
+    text = "Welcome",
+    font = "h2",
+    color = "#d32f2f",
+    bg    = "#f5f5f5",
+})
+
+-- Small muted caption via raw px font size
+k.ctrl.label("main", "caption", {
+    text      = "Updated a moment ago",
+    font_size = 12,
+    color     = "#757575",
+})
+
+-- Styled button
+k.ctrl.button("main", "save", { label = "Save", bg = "#1976d2", color = "#fff", font_size = 16 })
+
+-- Live restyling after the form is shown
+k.ctrl.set_property("main", "title_lbl", "color", "#1976d2")
+k.ctrl.set_property("main", "save", "bg", "#2e7d32")
+```
+
+`k.ctrl.get_property(form, name, prop)` reads the styling keys back.
+
+## Implementation
+
+- `addControl` (`internal/bindings/forms.go`) stores `bg`, `color`, `font`,
+  `font_size`, `style` on the control table (constructor path).
+- `mergeControlStyle` (`internal/bindings/render.go`) folds `styleFromProps`
+  (the shared form-level styling builder) into the `visible` style attribute
+  produced by `renderVisibility`; `renderControl` applies it once at the top so
+  every type branch and the `renderTable`/`renderGrid`/`renderChart`/
+  `renderLooper`/`renderImage`/`renderLogin` sinks inherit it.
+- `k.ctrl.set_property` needs no change — it stores the prop and re-renders the
+  control through `renderControl`, so styling updates live via `update_control`.
+- The builder round-trips the keys automatically (control opts are imported /
+  exported generically, `optsToJSON` ↔ `exportControl`).
+- No CSS changes: styling is inline on the control element.

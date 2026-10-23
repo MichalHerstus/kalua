@@ -725,7 +725,7 @@ k.ctrl.image("main", "logo", { src = "/img/logo.png", width = "200px", fit = "co
 ```
 
 **`k.ctrl.label(form, name, optsTable)`**  
-Adds a label control. opts: {text, multiline?:boolean, cell?, align?}. multiline renders a pre-wrap div preserving \n (kforms_enhancements.md §4.2). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6).
+Adds a label control. opts: {text, multiline?:boolean, cell?, align?, bg?, color?, font?, font_size?, style?}. multiline renders a pre-wrap div preserving \n (kforms_enhancements.md §4.2). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6). bg/color/font/font_size/style: per-widget styling (kforms_enhancements.md §10); font h1–h6/p or a font family, style an alternative h1–h6/p preset, font_size px overrides the preset.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -735,11 +735,16 @@ Adds a label control. opts: {text, multiline?:boolean, cell?, align?}. multiline
 | `optsTable.multiline` | boolean | Preserve newlines with white-space: pre-wrap. |
 | `optsTable.cell` | string | Grid cell id to place the control in. |
 | `optsTable.align` | string | Alignment override: "left", "center" or "right". |
+| `optsTable.bg` | string | Background color (any CSS color). |
+| `optsTable.color` | string | Text color (any CSS color). |
+| `optsTable.font` | string | Font: an h1–h6/p preset or a raw font family. |
+| `optsTable.font_size` | number | Font size in px (overrides the preset). |
+| `optsTable.style` | string | Alternative to font: an h1–h6/p preset. |
 
 **Example:**
 
 ```lua
-k.ctrl.label("main", "lbl", { text = "Hello\nWorld", multiline = true })
+k.ctrl.label("main", "lbl", { text = "Hello\nWorld", multiline = true, font = "h2", color = "#d32f2f" })
 ```
 
 **`k.ctrl.list(form, name, optsTable)`**  
@@ -872,19 +877,19 @@ k.ctrl.set_focus("main", "age")
 ```
 
 **`k.ctrl.set_property(form, name, prop, value)`**  
-Sets an arbitrary control property.
+Sets an arbitrary control property. Styling props (bg, color, font, font_size, style, kforms_enhancements.md §10) restyle the widget live via a re-render.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `form` | string | Parent form name. |
 | `name` | string | Control name. |
-| `prop` | string | Property name, e.g. "label", "enabled", "cell", "align". |
+| `prop` | string | Property name, e.g. "label", "enabled", "cell", "align", "bg", "color", "font", "font_size", "style". |
 | `value` | any | New property value. |
 
 **Example:**
 
 ```lua
-k.ctrl.set_property("main", "btn", "enabled", false)
+k.ctrl.set_property("main", "btn", "enabled", false)\nk.ctrl.set_property("main", "lbl", "color", "#1976d2") -- live restyle
 ```
 
 **`k.ctrl.set_selection(form, name, from, to)`**  
