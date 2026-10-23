@@ -987,7 +987,7 @@
     }
 
     function chartResize(selector, sizeJson) {
-        const el = document.querySelector(selector);
+        const el = byId(selector);
         if (el && sizeJson) {
             const size = {};
             try { Object.assign(size, JSON.parse(sizeJson)); } catch (e) {}
@@ -1220,7 +1220,7 @@
     // tabulatorUpdate replaces the data of an existing instance (or re-creates
     // the instance from scratch when the container was replaced).
     function tabulatorUpdate(selector, dataJSON) {
-        const el = document.querySelector(selector);
+        const el = byId(selector);
         if (!el) return;
         const inst = tabulatorInstances.get(selector);
         let data = [];
@@ -1242,8 +1242,7 @@
     // tabulatorDestroy destroys the instance(s) matching a selector or a form
     // scope (called on close_form / form stack pop).
     function tabulatorDestroy(selector) {
-        const el = typeof selector === 'string' && selector.charAt(0) === '#'
-            ? document.querySelector(selector) : null;
+        const el = byId(selector);
         if (el) {
             const inst = tabulatorInstances.get('#' + el.id);
             if (inst) {
@@ -1469,6 +1468,13 @@
         return document.getElementById(id);
     }
 
+    // byId resolves a DOM element by a "#c:form:ctrl" selector. The id contains
+    // colons and therefore must be looked up by id, never querySelector.
+    function byId(selector) {
+        if (typeof selector !== 'string' || selector.charAt(0) !== '#') return null;
+        return document.getElementById(selector.slice(1));
+    }
+
     // handleTreeData renders the nested tree payload from a tree_data message.
     // payload: { nodes: [{id, parent_id, label, _children:[...], ...extra}],
     //            count, error? }.
@@ -1610,7 +1616,7 @@
     }
 
     function updateControl(selector, html) {
-        const el = document.querySelector(selector);
+        const el = byId(selector);
         if (el) {
             // Destroy any Tabulator / Chart / flatpickr instance living inside
             // the replaced element.
@@ -1618,7 +1624,7 @@
             destroyCharts(el);
             destroyDatePickers(el);
             el.outerHTML = html;
-            const fresh = document.querySelector(selector);
+            const fresh = byId(selector);
             if (fresh) initGrids(fresh.parentElement || stage);
             if (fresh) initTabulators(fresh.parentElement || stage);
             if (fresh) initLoopers(fresh.parentElement || stage);
@@ -1853,7 +1859,7 @@
     // Focus control
     function handleFocusControl(form, ctrl) {
         const selector = '#c:' + form + ':' + ctrl;
-        const el = document.querySelector(selector);
+        const el = byId(selector);
         if (el) {
             el.focus();
         }
@@ -2177,7 +2183,7 @@
     // Selection handlers
     function handleSelectText(form, ctrl) {
         const selector = '#c:' + form + ':' + ctrl;
-        const el = document.querySelector(selector);
+        const el = byId(selector);
         if (!el) return;
         el.focus();
         if (typeof el.setSelectionRange === 'function') {
@@ -2188,7 +2194,7 @@
 
     function handleSelectRange(form, ctrl, data) {
         const selector = '#c:' + form + ':' + ctrl;
-        const el = document.querySelector(selector);
+        const el = byId(selector);
         if (!el) return;
         let range = { from: 0, to: 0 };
         try {
@@ -2202,7 +2208,7 @@
 
     function handleGetSelection(id, form, ctrl) {
         const selector = '#c:' + form + ':' + ctrl;
-        const el = document.querySelector(selector);
+        const el = byId(selector);
         let start = 0, end = 0, text = '';
         if (el) {
             if (typeof el.selectionStart === 'number') {

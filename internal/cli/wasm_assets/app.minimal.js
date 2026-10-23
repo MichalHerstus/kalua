@@ -1003,13 +1003,19 @@
     }
 
     // Selection ops
+    // byId resolves a DOM element by a "#c:form:ctrl" selector. The id contains
+    // colons and therefore must be looked up by id, never querySelector.
+    function byId(selector) {
+        return document.getElementById(selector.slice(1));
+    }
+
     function handleFocusControl(form, ctrl) {
-        const el = document.querySelector('#c:' + form + ':' + ctrl);
+        const el = byId('#c:' + form + ':' + ctrl);
         if (el) el.focus();
     }
 
     function handleSelectText(form, ctrl) {
-        const el = document.querySelector('#c:' + form + ':' + ctrl);
+        const el = byId('#c:' + form + ':' + ctrl);
         if (!el) return;
         el.focus();
         if (typeof el.setSelectionRange === 'function') {
@@ -1019,7 +1025,7 @@
     }
 
     function handleSelectRange(form, ctrl, data) {
-        const el = document.querySelector('#c:' + form + ':' + ctrl);
+        const el = byId('#c:' + form + ':' + ctrl);
         if (!el) return;
         let range = { from: 0, to: 0 };
         try { if (data) range = JSON.parse(data); } catch (e) {}
@@ -1030,7 +1036,7 @@
     }
 
     function handleGetSelection(id, form, ctrl) {
-        const el = document.querySelector('#c:' + form + ':' + ctrl);
+        const el = byId('#c:' + form + ':' + ctrl);
         let start = 0, end = 0, text = '';
         if (el && typeof el.selectionStart === 'number') {
             start = el.selectionStart;
