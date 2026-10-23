@@ -37,11 +37,17 @@ body {
     gap: var(--kalua-gap, 16px);
 }
 
-.kalua-form[layout="vertical"][align="center"] {
+/* Vertical layout is the default, and render.go omits the layout attribute
+   when it is "vertical" — so the explicit-attribute and attribute-less forms
+   must match the same alignment rules. (Grid forms always carry
+   layout="grid".) */
+.kalua-form[layout="vertical"][align="center"],
+.kalua-form:not([layout])[align="center"] {
     align-items: center;
 }
 
-.kalua-form[layout="vertical"][align="right"] {
+.kalua-form[layout="vertical"][align="right"],
+.kalua-form:not([layout])[align="right"] {
     align-items: flex-end;
 }
 
@@ -856,4 +862,82 @@ body {
 /* Grid modal form width support */
 .kalua-grid-form-footer[data-k-grid-width] .form-modal {
     max-width: attr(data-k-grid-width);
+}
+
+/* Login control (k.ctrl.login) — content is centered: the panel itself stays
+   a max-width card, but titles, labels, inputs and the action buttons all
+   align to the middle instead of the left edge. */
+.kalua-login {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    max-width: 360px;
+}
+
+.kalua-login-title,
+.kalua-login-subtitle,
+.kalua-login-error,
+.kalua-login > .kalua-label {
+    text-align: center;
+    width: 100%;
+}
+
+.kalua-login-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #212121;
+}
+
+.kalua-login-subtitle {
+    font-size: 13px;
+    color: #757575;
+    margin-bottom: 8px;
+}
+
+.kalua-login-input {
+    width: 100%;
+    max-width: 280px;
+    box-sizing: border-box;
+    text-align: center;
+}
+
+.kalua-login-error {
+    display: none;
+    font-size: 13px;
+    color: #c62828;
+    min-height: 18px;
+}
+
+.kalua-login-error:not(:empty) {
+    display: block;
+}
+
+.kalua-login-actions {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.kalua-login-submit {
+    background: #1976d2;
+    color: #fff;
+    border-color: #1976d2;
+}
+
+/* Login modals: center the login card vertically as well. Making the modal a
+   flex column and letting the form use margin:auto centers it on both axes,
+   and — unlike justify-content/align-items — auto margins collapse to 0 when
+   the card is taller than the modal, so the top stays reachable and the
+   modal scrolls instead of clipping. Limited to modals that actually contain
+   a .kalua-login so grid/detail modals are unaffected. */
+.form-modal:has(.kalua-login) {
+    display: flex;
+    flex-direction: column;
+}
+
+.form-modal:has(.kalua-login) > .kalua-form {
+    margin: auto;
 }

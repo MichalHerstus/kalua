@@ -175,6 +175,7 @@ var registerKnown = map[string]string{
 	"grid.insert_row":           "controls",
 	"grid.update_row":           "controls",
 	"ctrl.image":                "controls",
+	"ctrl.login":                "controls",
 	"ctrl.select_text":          "controls",
 	"ctrl.set_selection":        "controls",
 	"ctrl.get_selection":        "controls",

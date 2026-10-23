@@ -132,6 +132,29 @@ func TestFlatpickrFormat(t *testing.T) {
 	}
 }
 
+// TestRenderTextboxPassword verifies the password=true option renders
+// <input type="password">.
+func TestRenderTextboxPassword(t *testing.T) {
+	L := setupTestState(t)
+
+	pw := renderControl(ctrlTable(L, "textbox", map[string]lua.LValue{
+		"label":    str("Password"),
+		"password": ltrue(),
+		"value":    str("secret"),
+	}))
+	if !strings.Contains(pw, `type="password"`) {
+		t.Errorf("password textbox should have type=password: %s", pw)
+	}
+
+	plain := renderControl(ctrlTable(L, "textbox", map[string]lua.LValue{
+		"label": str("Name"),
+		"value": str("x"),
+	}))
+	if !strings.Contains(plain, `type="text"`) {
+		t.Errorf("plain textbox should have type=text: %s", plain)
+	}
+}
+
 // TestRenderImage verifies §4.3: image control renders an <img> with src/alt/
 // style, clickable images carry data-k-* attrs, others do not.
 func TestRenderImage(t *testing.T) {

@@ -24,7 +24,7 @@ Enhance KALUA's `k.ctrl.table` control with [Tabulator](https://github.com/tabul
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Browser (app.js)                            │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │ Tabulator.init(selector, options, data)                   │   │
+│  │ Tabulator.init(selector, options, data)                    │    │
 │  │ • Destroys old instance on update                         │   │
 │  │ • Stores instance in Map<selector, Tabulator>             │   │
 │  └──────────────────────────┬────────────────────────────────┘   │

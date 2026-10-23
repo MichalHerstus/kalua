@@ -196,7 +196,12 @@ func (s *Session) runWithTransport(ctx context.Context, transport common.Transpo
 		}
 	}()
 
-	// Start inbox reader
+	// Start inbox reader: browser events arrive via the transport, but the
+	// session's own internal posts (async completions from RunAsync, k.sleep
+	// completions, timers, inboxQuery replies) are delivered on s.inbox and must
+	// be drained here too — otherwise every async binding (k.sql, k.sleep,
+	// k.timer_start, ...) suspends its coroutine forever and scripts that touch
+	// the DB before the first k.form.show render an empty screen.
 	go func() {
 		for {
 			select {
@@ -205,6 +210,11 @@ func (s *Session) runWithTransport(ctx context.Context, transport common.Transpo
 					return
 				}
 				s.handleTransportInbox(msg, logger)
+			case msg, ok := <-s.inbox:
+				if !ok {
+					return
+				}
+				s.handleInbox(msg, logger)
 			case <-s.done:
 				return
 			case <-ctx.Done():
@@ -491,8 +501,17 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		}
 	}
 
+	// Login control events: the browser sends on_login_submit with
+	// {login, password} and on_login_cancel with no value. These are
+	// not control values, so skip the control-value update. The password
+	// must never be written into the form definition.
+	loginDispatch := false
+	if (msg.event == "on_login_submit" || msg.event == "on_login_cancel") && s.isLoginControl(msg.form, msg.ctrl) {
+		loginDispatch = true
+	}
+
 	// Update control value in form definition from browser event
-	if !looperDispatch && !chartDispatch && value != lua.LNil {
+	if !looperDispatch && !chartDispatch && !loginDispatch && value != lua.LNil {
 		s.updateControlValue(msg.form, msg.ctrl, value)
 	}
 
@@ -517,6 +536,23 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 	case chartDispatch:
 		vt := value.(*lua.LTable)
 		resumeArgs = []lua.LValue{vt.RawGetString("dataset_index"), vt.RawGetString("index"), vt.RawGetString("value")}
+	case loginDispatch && msg.event == "on_login_submit":
+		vt := value.(*lua.LTable)
+		login := vt.RawGetString("login").String()
+		password := vt.RawGetString("password").String()
+		resumeArgs = []lua.LValue{lua.LString(login), lua.LString(password)}
+		// Run on_login_submit handler synchronously, then verify credentials
+		s.handleLoginSubmit(msg.form, msg.ctrl, login, password, logger)
+		// We handled it completely here, skip the normal handler dispatch
+		return
+	case loginDispatch && msg.event == "on_login_cancel":
+		// Run on_login_cancel handler (fire-and-forget is fine for cancel)
+		resumeArgs = []lua.LValue{}
+		ran := s.runFormHandler(msg.form, ctrlKey, msg.event, resumeArgs, logger)
+		if !ran {
+			s.runFormHandler(msg.form, "@form", msg.event, []lua.LValue{}, logger)
+		}
+		return
 	}
 
 	ran := s.runFormHandler(msg.form, ctrlKey, msg.event, resumeArgs, logger)
@@ -525,6 +561,135 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 	if !ran {
 		s.runFormHandler(msg.form, "@form", msg.event, []lua.LValue{value}, logger)
 	}
+}
+
+// handleLoginSubmit runs the on_login_submit handler synchronously, then
+// verifies the credentials against the database. On success, fires on_login
+// with the user row. On failure, updates the control with error state and
+// fires on_login_error. The control's attempt counter is managed internally.
+func (s *Session) handleLoginSubmit(formName, ctrlName, login, password string, logger Logger) {
+	// 1. Run on_login_submit handler synchronously (observation hook, not a gate)
+	s.runFormHandlerSync(logger, formName, ctrlName, "on_login_submit", []lua.LValue{lua.LString(login), lua.LString(password)})
+
+	// 2. Look up user and verify password
+	ctrl := s.getControl(formName, ctrlName)
+	if ctrl == nil {
+		logger.Errorf("login control not found: %s.%s", formName, ctrlName)
+		return
+	}
+
+	row, err := bindings.LookupLoginUser(s.L, ctrl, login)
+	if err != nil {
+		logger.Errorf("login lookup error: %v", err)
+		s.handleLoginError(formName, ctrlName, ctrl, "Login error", logger)
+		return
+	}
+
+	verified := false
+	if row != nil {
+		verified = bindings.VerifyLoginPassword(s.L, ctrl, row, password)
+	}
+
+	if verified {
+		// Success: clear error/attempt, store user, fire on_login
+		ctrl.RawSetString("error", lua.LString(""))
+		ctrl.RawSetString("attempt", lua.LNumber(0))
+		ctrl.RawSetString("login_value", lua.LString(""))
+		ctrl.RawSetString("password_value", lua.LString(""))
+		userTbl := bindings.LoginUserFromRow(s.L, row)
+		ctrl.RawSetString("user", userTbl)
+
+		// Fire on_login with the user row
+		s.runFormHandler(formName, ctrlName, "on_login", []lua.LValue{userTbl}, logger)
+	} else {
+		// Failure: increment attempt, set error, re-render, fire on_login_error
+		s.handleLoginError(formName, ctrlName, ctrl, "Invalid login or password", logger)
+	}
+}
+
+// handleLoginError handles a failed login attempt: increments attempt counter,
+// sets error message, preserves login value, clears password, re-renders control,
+// and fires on_login_error event.
+func (s *Session) handleLoginError(formName, ctrlName string, ctrl *lua.LTable, defaultMsg string, logger Logger) {
+	attemptVal := ctrl.RawGetString("attempt")
+	attempt := 0
+	if attemptVal != lua.LNil {
+		attempt = int(lua.LVAsNumber(attemptVal))
+	}
+	attempt++
+
+	maxAttemptsVal := ctrl.RawGetString("attempts")
+	maxAttempts := 3
+	if maxAttemptsVal != lua.LNil {
+		maxAttempts = int(lua.LVAsNumber(maxAttemptsVal))
+	}
+
+	errorMsgVal := ctrl.RawGetString("error_message")
+	errorMsg := defaultMsg
+	if errorMsgVal != lua.LNil && errorMsgVal.String() != "" {
+		errorMsg = errorMsgVal.String()
+	}
+
+	loginVal := ctrl.RawGetString("login_value")
+	loginValue := ""
+	if loginVal != lua.LNil {
+		loginValue = loginVal.String()
+	}
+
+	ctrl.RawSetString("attempt", lua.LNumber(attempt))
+	ctrl.RawSetString("error", lua.LString(errorMsg))
+	ctrl.RawSetString("login_value", lua.LString(loginValue))
+	ctrl.RawSetString("password_value", lua.LString(""))
+
+	// If budget exhausted, reset attempt for next dialog
+	attemptsLeft := maxAttempts - attempt
+	if attempt >= maxAttempts {
+		ctrl.RawSetString("attempt", lua.LNumber(0))
+		attemptsLeft = 0
+	}
+
+	// Re-render control to show error
+	html := bindings.RenderControl(ctrl)
+	s.SendOutbox(common.OutboxMsg{
+		Type:     "update_control",
+		Form:     formName,
+		Ctrl:     ctrlName,
+		Selector: "#c:" + formName + ":" + ctrlName,
+		HTML:     html,
+	})
+	s.flushOutbox()
+
+	// Fire on_login_error with message and attempts left
+	s.runFormHandler(formName, ctrlName, "on_login_error", []lua.LValue{lua.LString(errorMsg), lua.LNumber(attemptsLeft)}, logger)
+}
+
+// getControl retrieves a control table from a form in the session's LState.
+func (s *Session) getControl(formName, ctrlName string) *lua.LTable {
+	formTbl := s.L.GetGlobal(formName)
+	if formTbl == lua.LNil {
+		return nil
+	}
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return nil
+	}
+	controls := tbl.RawGetString("controls")
+	if controls == lua.LNil {
+		return nil
+	}
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return nil
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	if ctrl == lua.LNil {
+		return nil
+	}
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return nil
+	}
+	return ctrlTbl
 }
 
 // runFormHandler looks up and runs a form event handler in a fresh coroutine.
@@ -3236,6 +3401,26 @@ func (s *Session) isChartControl(formName, ctrlName string) bool {
 		return false
 	}
 	return ctrlTbl.RawGetString("type").String() == "chart"
+}
+
+// isLoginControl reports whether (formName, ctrlName) is a login control.
+func (s *Session) isLoginControl(formName, ctrlName string) bool {
+	formTbl := s.L.GetGlobal(formName)
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	return ctrlTbl.RawGetString("type").String() == "login"
 }
 
 // updateControlValue updates a control's value in the form definition.

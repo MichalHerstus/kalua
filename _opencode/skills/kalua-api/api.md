@@ -758,6 +758,42 @@ Adds a multi-row select list. opts.items is a table of choices.
 k.ctrl.list("main", "sel", { items = {"a", "b", "c"} })
 ```
 
+**`k.ctrl.login(form, name, optsTable)`**  
+Adds a login control panel for user authentication. The control renders a login/password form with submit/cancel buttons and handles credential verification against a database. opts: {db (required), table=users, login_column=login, password_column=password, salt_column, hash=pbkdf2|sha256|plain, salt, iterations=100000, keylen=32, title, subtitle, login_label=Login, password_label=Password, login_placeholder, password_placeholder, submit_label=Sign IN, cancel_label=Cancel, error_message=Invalid login or password, attempts=3}. Events: on_login_submit(login, password) — runs before verification; on_login(user) — fired on success with user row map; on_login_error(message, attempts_left) — fired on failure; on_login_cancel() — fired when cancel clicked. k.ctrl.get_value returns the verified user map.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name within the form. |
+| `optsTable.db` | string | Required. DB handle from k.connect_db/k.connect_sqlite or --db NAME. |
+| `optsTable.table` | string | Users table name (default "users"). |
+| `optsTable.login_column` | string | Column matched against login input (default "login"). |
+| `optsTable.password_column` | string | Column holding stored hash/secret (default "password"). |
+| `optsTable.salt_column` | string | Per-user salt column (required for hash=pbkdf2). |
+| `optsTable.hash` | string | Hash algorithm: "pbkdf2" (default), "sha256", or "plain". |
+| `optsTable.salt` | string | Static salt; overrides salt_column. |
+| `optsTable.iterations` | number | pbkdf2 rounds (default 100000). |
+| `optsTable.keylen` | number | pbkdf2 key length in bytes (default 32). |
+| `optsTable.title` | string | Panel heading. |
+| `optsTable.subtitle` | string | Secondary line under heading. |
+| `optsTable.login_label` | string | Label above login input (default "Login"). |
+| `optsTable.password_label` | string | Label above password input (default "Password"). |
+| `optsTable.submit_label` | string | Submit button text (default "Sign IN"). |
+| `optsTable.cancel_label` | string | Cancel button text (default "Cancel"). |
+| `optsTable.error_message` | string | Inline error text (default "Invalid login or password"). |
+| `optsTable.attempts` | number | Wrong-password retries before control stops (default 3). |
+
+**Example:**
+
+```lua
+k.form.new("loginform", {title="Sign in", layout="vertical", align="center"})
+k.ctrl.login("loginform", "login", {db="main", table="users"})
+k.form.on("loginform", "login", "on_login", function(user)
+    k.msgbox("Welcome " .. user.name)
+end)
+k.form.show("loginform", {modal=true})
+```
+
 **`k.ctrl.looper(form, name, optsTable)`**  
 Adds a looper control (repeating row layout). DB-linked when opts carry {db,query,links,page_size?,count_query?,where?,order_by?}; db is a k.connect_db handle or a --db NAME prereregistered at startup. With opts.row (array of {type,name,property?,field?|column?,opts?} row-template control defs) rows are rendered server-side as real controls (label/textbox/image/checkbox, read-only); links can be omitted — they are derived from row.
 

@@ -462,6 +462,15 @@ func registerControls(e *Env) {
 		return 0
 	})
 
+	// k.ctrl.login(form, name, options) - Login control (§8 kforms_enhancements.md)
+	e.register("ctrl.login", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "login", opts)
+		return 0
+	})
+
 	// k.ctrl.checkbox(form, name, options)
 	e.register("ctrl.checkbox", "controls", func(L *lua.LState) int {
 		formName := L.CheckString(1)
@@ -1127,12 +1136,14 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 	}
 
 	// Textbox extended options (kforms_enhancements.md §4.1): multiline
-	// (textarea) and datetime (flatpickr) modes.
+	// (textarea) and datetime (flatpickr) modes. password option for password
+	// input type (kforms_enhancements.md §8 Login Control).
 	if ctrlType == "textbox" {
 		ctrlTbl.RawSetString("multiline", opts.RawGetString("multiline"))
 		ctrlTbl.RawSetString("rows", opts.RawGetString("rows"))
 		ctrlTbl.RawSetString("cols", opts.RawGetString("cols"))
 		ctrlTbl.RawSetString("datetime", opts.RawGetString("datetime"))
+		ctrlTbl.RawSetString("password", opts.RawGetString("password"))
 		dt := opts.RawGetString("datetime")
 		if dtTbl, ok := dt.(*lua.LTable); ok {
 			for _, k := range []string{"mode", "format", "min", "max", "step"} {
@@ -1156,6 +1167,29 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("height", opts.RawGetString("height"))
 		ctrlTbl.RawSetString("fit", opts.RawGetString("fit"))
 		ctrlTbl.RawSetString("clickable", opts.RawGetString("clickable"))
+	}
+
+	// Login control options (kforms_enhancements.md §8).
+	if ctrlType == "login" {
+		ctrlTbl.RawSetString("db", opts.RawGetString("db"))
+		ctrlTbl.RawSetString("table", opts.RawGetString("table"))
+		ctrlTbl.RawSetString("login_column", opts.RawGetString("login_column"))
+		ctrlTbl.RawSetString("password_column", opts.RawGetString("password_column"))
+		ctrlTbl.RawSetString("salt_column", opts.RawGetString("salt_column"))
+		ctrlTbl.RawSetString("hash", opts.RawGetString("hash"))
+		ctrlTbl.RawSetString("salt", opts.RawGetString("salt"))
+		ctrlTbl.RawSetString("iterations", opts.RawGetString("iterations"))
+		ctrlTbl.RawSetString("keylen", opts.RawGetString("keylen"))
+		ctrlTbl.RawSetString("title", opts.RawGetString("title"))
+		ctrlTbl.RawSetString("subtitle", opts.RawGetString("subtitle"))
+		ctrlTbl.RawSetString("login_label", opts.RawGetString("login_label"))
+		ctrlTbl.RawSetString("password_label", opts.RawGetString("password_label"))
+		ctrlTbl.RawSetString("login_placeholder", opts.RawGetString("login_placeholder"))
+		ctrlTbl.RawSetString("password_placeholder", opts.RawGetString("password_placeholder"))
+		ctrlTbl.RawSetString("submit_label", opts.RawGetString("submit_label"))
+		ctrlTbl.RawSetString("cancel_label", opts.RawGetString("cancel_label"))
+		ctrlTbl.RawSetString("error_message", opts.RawGetString("error_message"))
+		ctrlTbl.RawSetString("attempts", opts.RawGetString("attempts"))
 	}
 
 	controlsTbl.RawSetString(name, ctrlTbl)

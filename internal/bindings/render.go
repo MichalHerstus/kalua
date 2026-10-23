@@ -488,6 +488,11 @@ func renderControl(ctrl *lua.LTable) string {
 			}
 			return `<span class="kalua-looper-cell-value" id="` + escAttr(id) + `">` + escText(rawStr) + `</span>`
 		}
+		// Support password=true option for password input type
+		inputType := "text"
+		if ctrl.RawGetString("password").String() == "true" {
+			inputType = "password"
+		}
 		if ctrl.RawGetString("multiline").String() == "true" {
 			rows := 4
 			if v := ctrl.RawGetString("rows"); v != lua.LNil {
@@ -514,7 +519,7 @@ func renderControl(ctrl *lua.LTable) string {
 		}
 		return `<div class="kalua-control"` + visible + `>
 			<label class="kalua-label" for="` + escAttr(id) + `">` + label + `</label>
-			<input type="text" class="kalua-input" id="` + escAttr(id) + `" name="` + name + `" value="` + value + `"` + attrs + enabled + `>
+			<input type="` + inputType + `" class="kalua-input" id="` + escAttr(id) + `" name="` + name + `" value="` + value + `"` + attrs + enabled + `>
 		</div>`
 	case "button":
 		return renderButton(ctrl, "")
@@ -587,8 +592,15 @@ func renderControl(ctrl *lua.LTable) string {
 		return renderChart(ctrl, formName, name, id, visible)
 	case "image":
 		return renderImage(ctrl, formName, name, id, visible)
+	case "login":
+		return renderLogin(ctrl, formName, name, id, visible)
 	}
 	return `<div class="kalua-control">Unknown control: ` + escText(ctrlType) + `</div>`
+}
+
+// RenderControl renders a control to HTML. Exported for use by session package.
+func RenderControl(ctrl *lua.LTable) string {
+	return renderControl(ctrl)
 }
 
 // renderLooper renders a looper container. When the looper is DB-linked, the
@@ -767,6 +779,99 @@ func renderImage(ctrl *lua.LTable, formName, name, id, visible string) string {
 
 	return `<div class="kalua-control kalua-image-container"` + visible + `>
 		<img class="kalua-image" id="` + escAttr(id) + `" src="` + escAttr(srcTxt) + `" alt="` + escAttr(altTxt) + `" style="` + style + `"` + data + `>
+	</div>`
+}
+
+// renderLogin renders the §8 login control panel.
+// The control is shown as a modal form panel with login/password inputs,
+// error display, and submit/cancel buttons.
+func renderLogin(ctrl *lua.LTable, formName, name, id, visible string) string {
+	// Get options with defaults
+	title := ctrl.RawGetString("title")
+	titleTxt := "Sign in"
+	if title != lua.LNil && title.String() != "" {
+		titleTxt = escText(title.String())
+	}
+
+	subtitle := ctrl.RawGetString("subtitle")
+	subtitleTxt := "Enter your credentials"
+	if subtitle != lua.LNil && subtitle.String() != "" {
+		subtitleTxt = escText(subtitle.String())
+	}
+
+	loginLabel := ctrl.RawGetString("login_label")
+	loginLabelTxt := "Login"
+	if loginLabel != lua.LNil && loginLabel.String() != "" {
+		loginLabelTxt = escText(loginLabel.String())
+	}
+
+	passwordLabel := ctrl.RawGetString("password_label")
+	passwordLabelTxt := "Password"
+	if passwordLabel != lua.LNil && passwordLabel.String() != "" {
+		passwordLabelTxt = escText(passwordLabel.String())
+	}
+
+	loginPlaceholder := ctrl.RawGetString("login_placeholder")
+	loginPlaceholderTxt := ""
+	if loginPlaceholder != lua.LNil && loginPlaceholder.String() != "" {
+		loginPlaceholderTxt = ` placeholder="` + escAttr(loginPlaceholder.String()) + `"`
+	}
+
+	passwordPlaceholder := ctrl.RawGetString("password_placeholder")
+	passwordPlaceholderTxt := ""
+	if passwordPlaceholder != lua.LNil && passwordPlaceholder.String() != "" {
+		passwordPlaceholderTxt = ` placeholder="` + escAttr(passwordPlaceholder.String()) + `"`
+	}
+
+	submitLabel := ctrl.RawGetString("submit_label")
+	submitLabelTxt := "Sign IN"
+	if submitLabel != lua.LNil && submitLabel.String() != "" {
+		submitLabelTxt = escText(submitLabel.String())
+	}
+
+	cancelLabel := ctrl.RawGetString("cancel_label")
+	cancelLabelTxt := "Cancel"
+	if cancelLabel != lua.LNil && cancelLabel.String() != "" {
+		cancelLabelTxt = escText(cancelLabel.String())
+	}
+
+	errorMessage := ctrl.RawGetString("error_message")
+	errorMessageTxt := "Invalid login or password"
+	if errorMessage != lua.LNil && errorMessage.String() != "" {
+		errorMessageTxt = escText(errorMessage.String())
+	}
+
+	// Current error state and preserved login value
+	errorVal := ctrl.RawGetString("error")
+	errorTxt := ""
+	if errorVal != lua.LNil && errorVal.String() != "" {
+		errorTxt = escText(errorVal.String())
+	} else {
+		errorTxt = errorMessageTxt
+	}
+
+	loginValueVal := ctrl.RawGetString("login_value")
+	loginValueTxt := ""
+	if loginValueVal != lua.LNil && loginValueVal.String() != "" {
+		loginValueTxt = escAttr(loginValueVal.String())
+	}
+
+	// The control element itself carries data-k-login="1" so the client can identify it
+	// The two action buttons use data-k-login-submit and data-k-login-cancel
+	// The inputs carry data-k-form/data-k-ctrl so gridFormValues picks them up
+
+	return `<div class="kalua-control kalua-login" id="` + escAttr(id) + `" data-k-login="1" data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `"` + visible + `>
+		<div class="kalua-login-title">` + titleTxt + `</div>
+		<div class="kalua-login-subtitle">` + subtitleTxt + `</div>
+		<label class="kalua-label" for="` + escAttr(id) + `:login">` + loginLabelTxt + `</label>
+		<input class="kalua-input kalua-login-input" type="text" id="` + escAttr(id) + `:login" name="login" value="` + loginValueTxt + `"` + loginPlaceholderTxt + ` data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `">
+		<label class="kalua-label" for="` + escAttr(id) + `:password">` + passwordLabelTxt + `</label>
+		<input class="kalua-input kalua-login-input" type="password" id="` + escAttr(id) + `:password" name="password" value=""` + passwordPlaceholderTxt + ` data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `">
+		<div class="kalua-login-error">` + errorTxt + `</div>
+		<div class="kalua-login-actions">
+			<button type="button" class="kalua-btn" data-k-login-cancel="1" data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `">` + cancelLabelTxt + `</button>
+			<button type="button" class="kalua-btn kalua-login-submit" data-k-login-submit="1" data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `">` + submitLabelTxt + `</button>
+		</div>
 	</div>`
 }
 

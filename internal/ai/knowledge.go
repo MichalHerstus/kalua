@@ -30,6 +30,7 @@ var runModeBindings = map[string]bool{
 	"ctrl.label": true, "ctrl.textbox": true, "ctrl.button": true,
 	"ctrl.combo": true, "ctrl.list": true, "ctrl.table": true,
 	"ctrl.checkbox": true, "ctrl.radio": true, "ctrl.image": true,
+	"ctrl.login": true,
 	"ctrl.set_value": true, "ctrl.get_value": true, "ctrl.set_property": true,
 	"ctrl.get_property": true, "ctrl.set_focus": true, "ctrl.select_text": true,
 	"ctrl.get_selection": true, "ctrl.set_selection": true, "ctrl.get_item_count": true,

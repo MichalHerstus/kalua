@@ -1050,6 +1050,7 @@
                     if (msg.grid) {
                         setupGridModal(msg);
                     }
+                    setupLoginModal(document.getElementById('mf:' + msg.form));
                 } else {
                     renderForm(msg.html);
                 }
@@ -1518,6 +1519,29 @@
     // Modal form rendering (for k.form.show with modal=true)
     const modalForms = new Map(); // form name -> overlay element
 
+    // setupLoginModal focuses the login input and binds Enter-to-submit for
+    // login controls inside a modal form overlay.
+    function setupLoginModal(overlay) {
+        const loginCtrl = overlay.querySelector('[data-k-login="1"]');
+        if (!loginCtrl) return;
+
+        const loginInput = loginCtrl.querySelector('input[name="login"]');
+        if (loginInput) {
+            loginInput.focus();
+        }
+
+        // Enter key in either input submits the form
+        overlay.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                const submitBtn = loginCtrl.querySelector('[data-k-login-submit]');
+                if (submitBtn) {
+                    e.preventDefault();
+                    submitBtn.click();
+                }
+            }
+        });
+    }
+
     function renderModalForm(formName, html, gapX, gapY) {
         const overlay = document.createElement('div');
         overlay.id = 'mf:' + formName;
@@ -1858,6 +1882,27 @@
             if (overlay) overlay.remove();
             const modalName = overlay && overlay.id.indexOf('mf:') === 0 ? overlay.id.substring(3) : null;
             if (modalName) modalForms.delete(modalName);
+            return;
+        }
+
+        // Login control Submit button.
+        const loginSubmit = e.target.closest('[data-k-login-submit]');
+        if (loginSubmit) {
+            e.preventDefault();
+            const overlay = loginSubmit.closest('.form-modal-overlay');
+            const v = overlay ? gridFormValues(overlay) : {};
+            send({ type: 'event', form: loginSubmit.dataset.kForm,
+                   ctrl: loginSubmit.dataset.kCtrl, event: 'on_login_submit',
+                   value: { login: v.login || '', password: v.password || '' } });
+            return;
+        }
+
+        // Login control Cancel button.
+        const loginCancel = e.target.closest('[data-k-login-cancel]');
+        if (loginCancel) {
+            e.preventDefault();
+            send({ type: 'event', form: loginCancel.dataset.kForm,
+                   ctrl: loginCancel.dataset.kCtrl, event: 'on_login_cancel', value: null });
             return;
         }
 

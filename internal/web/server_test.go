@@ -137,6 +137,65 @@ func pumpTypes(p *wsPump, want []string, window time.Duration) []string {
 	return seen
 }
 
+// TestServer_DBAwaitBeforeFormShow guards the run-mode inbox drain: a script
+// that suspends on an async DB op (k.sql) BEFORE the first k.form.show must
+// still resume and send its form to the browser. Before the fix, the WebSocket
+// session loop only read the transport and never drained the session inbox, so
+// the async completion was dropped, main() hung at the first k.sql, and the
+// tab stayed permanently empty.
+func TestServer_DBAwaitBeforeFormShow(t *testing.T) {
+	port := freePort(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "app.lua")
+	writeScript(t, script, `
+function main()
+  local db = k.connect_sqlite(":memory:")
+  k.sql(db, "CREATE TABLE t (id INTEGER, name TEXT)")
+  k.sql(db, "INSERT INTO t VALUES (?, ?)", 1, "hello")
+  k.form.new("f", {title = "after db"})
+  k.ctrl.label("f", "lbl", {text = "rendered"})
+  k.form.show("f")
+end
+`)
+
+	s := NewServer("127.0.0.1", port, 8, bindings.Options{}, host.NewLogger(false))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- s.Run(ctx, script) }()
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	waitUp(t, base)
+
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel()
+	url := fmt.Sprintf("ws://127.0.0.1:%d/ws/ui?script=%s", port, script)
+	ws, _, err := websocket.Dial(connCtx, url, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "")
+	p := pumpStart(ws)
+
+	// The form must reach the browser even though main() suspended on the
+	// async k.sql calls before k.form.show.
+	types := pumpTypes(p, []string{"render_form"}, 5 * time.Second)
+	if !has(types, "render_form") {
+		t.Fatalf("render_form never arrived; main() hung on the async DB op before form.show (seen: %v)", types)
+	}
+
+	cancel()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not stop after cancel")
+	}
+}
+
 // TestServer_Reload broadcasts a "reload" message when the app script changes,
 // broadcasts a "status" message (keeping the old app) on a broken script, and
 // does nothing when the content is unchanged.
