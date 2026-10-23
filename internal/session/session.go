@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -350,6 +351,8 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.handleGridUpdateRow(msg, logger)
 	case inboxGridUpdateRowResp:
 		s.handleGridUpdateRowResp(msg, logger)
+	case inboxTreeDataRequest:
+		s.handleTreeDataRequest(msg, logger)
 	}
 }
 
@@ -460,6 +463,8 @@ func (s *Session) handleTransportInbox(msg common.InboxMsg, logger Logger) {
 	case "grid_update_row":
 		imsg.typ = inboxGridUpdateRow
 		imsg.raw = msg.Value
+	case "tree_data_request":
+		imsg.typ = inboxTreeDataRequest
 	default:
 		logger.Warnf("unknown inbox message type: %s", msg.Type)
 		return
@@ -510,8 +515,20 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		loginDispatch = true
 	}
 
+	// Tree control events: the browser sends on_click/on_select with a value
+	// table {node=<row map>} and on_expand with {node_id, expanded}. The node
+	// map is not a set of control values, so skip the generic control-value
+	// update; on_select stores the node as the control's value so
+	// k.ctrl.get_value returns the selected node (§9).
+	treeDispatch := false
+	if (msg.event == "on_click" || msg.event == "on_select" || msg.event == "on_expand") && s.isTreeControl(msg.form, msg.ctrl) {
+		if vt, ok := value.(*lua.LTable); ok {
+			treeDispatch = vt.RawGetString("node") != lua.LNil || vt.RawGetString("node_id") != lua.LNil
+		}
+	}
+
 	// Update control value in form definition from browser event
-	if !looperDispatch && !chartDispatch && !loginDispatch && value != lua.LNil {
+	if !looperDispatch && !chartDispatch && !loginDispatch && !treeDispatch && value != lua.LNil {
 		s.updateControlValue(msg.form, msg.ctrl, value)
 	}
 
@@ -553,6 +570,22 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 			s.runFormHandler(msg.form, "@form", msg.event, []lua.LValue{}, logger)
 		}
 		return
+	case treeDispatch && msg.event == "on_expand":
+		vt := value.(*lua.LTable)
+		resumeArgs = []lua.LValue{vt.RawGetString("node_id"), vt.RawGetString("expanded")}
+	case treeDispatch && msg.event == "on_select":
+		vt := value.(*lua.LTable)
+		node := vt.RawGetString("node")
+		// Store the selected node so k.ctrl.get_value returns it (§9).
+		if node != lua.LNil {
+			if ctrl := s.controlTable(msg.form, msg.ctrl); ctrl != nil {
+				ctrl.RawSetString("value", node)
+			}
+		}
+		resumeArgs = []lua.LValue{node}
+	case treeDispatch:
+		vt := value.(*lua.LTable)
+		resumeArgs = []lua.LValue{vt.RawGetString("node")}
 	}
 
 	ran := s.runFormHandler(msg.form, ctrlKey, msg.event, resumeArgs, logger)
@@ -2051,6 +2084,68 @@ func (s *Session) dispatchDBLooperPage(ctrl *lua.LTable, link *bindings.LooperDB
 	s.flushOutbox()
 }
 
+// handleTreeDataRequest fetches the full tree for a DB-linked tree control and
+// sends it to the browser as a tree_data outbox message. The payload is
+// {nodes:[{id,parent_id,label,_children:[...],...extra}], count:n} — the client
+// renders it locally for cheap expand/collapse. Errors surface as an on_error
+// event plus an empty-state payload; they never crash the session.
+func (s *Session) handleTreeDataRequest(msg inboxMsg, logger Logger) {
+	ctrl := s.controlTable(msg.form, msg.ctrl)
+	if ctrl == nil {
+		s.sendTreeError(msg, "tree control not found: "+msg.ctrl, logger)
+		return
+	}
+	link, ok := bindings.TreeLinkFromControl(ctrl)
+	if !ok {
+		s.sendTreeError(msg, "tree control requires db, table and label_field", logger)
+		return
+	}
+	page, err := bindings.FetchTreeRows(s.L, link)
+	if err != nil {
+		s.sendTreeError(msg, err.Error(), logger)
+		return
+	}
+	roots, count, err := bindings.BuildTree(s.L, link, page.Rows)
+	if err != nil {
+		s.sendTreeError(msg, err.Error(), logger)
+		return
+	}
+
+	payload := s.L.NewTable()
+	payload.RawSetString("nodes", roots)
+	payload.RawSetString("count", lua.LNumber(count))
+	data, err := bindings.JSONStringifyLua(s.L, payload, lua.LNil)
+	if err != nil {
+		s.sendTreeError(msg, "tree serialization error: "+err.Error(), logger)
+		return
+	}
+
+	s.SendOutbox(common.OutboxMsg{
+		Type:     "tree_data",
+		Form:     msg.form,
+		Ctrl:     msg.ctrl,
+		Selector: "#c:" + msg.form + ":" + msg.ctrl,
+		Data:     data,
+	})
+	s.flushOutbox()
+}
+
+// sendTreeError fires the tree control's on_error(message) handler (when
+// registered) and pushes an empty-state tree_data payload so the client renders
+// the error message instead of a stuck "Loading…".
+func (s *Session) sendTreeError(msg inboxMsg, message string, logger Logger) {
+	logger.Errorf("tree data error (%s.%s): %s", msg.form, msg.ctrl, message)
+	s.runFormHandler(msg.form, msg.ctrl, "on_error", []lua.LValue{lua.LString(message)}, logger)
+	s.SendOutbox(common.OutboxMsg{
+		Type:     "tree_data",
+		Form:     msg.form,
+		Ctrl:     msg.ctrl,
+		Selector: "#c:" + msg.form + ":" + msg.ctrl,
+		Data:     `{"nodes":[],"count":0,"error":` + strconv.Quote(message) + `}`,
+	})
+	s.flushOutbox()
+}
+
 // looperBatchPayload is the looper_db_batch wire format sent to the browser:
 // {rows:[{index,data}], has_more, last_page}.
 type looperBatchPayload struct {
@@ -2754,6 +2849,15 @@ func (s *Session) PostLooperRefreshRequest(form, ctrl string) {
 	}
 }
 
+// PostTreeDataRequest forwards the browser's tree_data_request (a full-load
+// ask for a DB-linked tree control) to the actor inbox.
+func (s *Session) PostTreeDataRequest(form, ctrl string) {
+	select {
+	case s.inbox <- inboxMsg{typ: inboxTreeDataRequest, form: form, ctrl: ctrl}:
+	case <-s.done:
+	}
+}
+
 // PostGridFormOpen forwards a grid detail/edit/new modal request. The value is
 // a JSON-decoded object {mode, pk, row}.
 func (s *Session) PostGridFormOpen(form, ctrl string, value interface{}) {
@@ -3421,6 +3525,26 @@ func (s *Session) isLoginControl(formName, ctrlName string) bool {
 		return false
 	}
 	return ctrlTbl.RawGetString("type").String() == "login"
+}
+
+// isTreeControl reports whether (formName, ctrlName) is a tree control.
+func (s *Session) isTreeControl(formName, ctrlName string) bool {
+	formTbl := s.L.GetGlobal(formName)
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	return ctrlTbl.RawGetString("type").String() == "tree"
 }
 
 // updateControlValue updates a control's value in the form definition.

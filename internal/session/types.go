@@ -57,6 +57,7 @@ const (
 	inboxGridInsertRowResp                   // k.grid.insert_row response
 	inboxGridUpdateRow                       // k.grid.update_row request
 	inboxGridUpdateRowResp                   // k.grid.update_row response
+	inboxTreeDataRequest                     // browser asked for the full tree data
 )
 
 // inboxMsg is a typed message delivered to the session actor's inbox.

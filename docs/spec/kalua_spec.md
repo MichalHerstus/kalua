@@ -294,6 +294,7 @@ re-attaching listeners on each inject.
 | Table (Grid) | `k.ctrl.table(...)` | `<table>` | `cell_value_modified`, `column_header_click`, `selection_change` |
 | Check Box | `k.ctrl.checkbox(...)` | `<input type="checkbox">` | `check`, `uncheck` |
 | Radio Button | `k.ctrl.radio(...)` | `<input type="radio" name="...">` group | `selection_change` |
+| Tree | `k.ctrl.tree(form,name,{db,table,label_field,...})` | `<div class="kalua-tree">` (client-rendered nodes) | `on_click(node)`, `on_select(node)`, `on_expand(node_id, expanded)`, `on_loaded(node_count)`, `on_error(message)` |
 
 Excluded (D8): Draw, Image, Shape, Chart, HTML Viewer, Media Player, Looper, Scroll Area, Tab.
 

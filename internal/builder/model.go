@@ -29,10 +29,10 @@ const DocVersion = 3
 // builder documents vs raw Lua sources.
 const FormFileExt = ".kalua-form.json"
 
-// Types are the 11 runtime control types understood by the builder.
+// Types are the 12 runtime control types understood by the builder.
 var Types = []string{
 	"label", "textbox", "button", "combo", "list", "table",
-	"checkbox", "radio", "looper", "chart", "image",
+	"checkbox", "radio", "looper", "chart", "image", "tree",
 }
 
 var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

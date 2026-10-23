@@ -673,6 +673,77 @@ body {
     margin-bottom: 0;
 }
 
+/* Tree control (k.ctrl.tree §9): DB-linked expandable tree. The container is
+   a scrollable box; nodes are rendered client-side from the nested JSON
+   payload, so expand/collapse never round-trips. */
+.kalua-tree {
+    display: block;
+    max-height: 360px;
+    overflow-y: auto;
+    font-size: 14px;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background: #fff;
+    padding: 4px 0;
+}
+
+.kalua-tree ul {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 0 14px;
+}
+
+.kalua-tree-root {
+    padding-left: 0 !important;
+}
+
+.kalua-tree-node {
+    line-height: 1.7;
+    white-space: nowrap;
+}
+
+.kalua-tree-node.selected > .kalua-tree-label {
+    background: #e3edff;
+    box-shadow: inset 3px 0 0 #2f6fdd;
+    border-radius: 3px;
+}
+
+.kalua-tree-toggle {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    margin-right: 2px;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    color: #555;
+    vertical-align: middle;
+}
+
+.kalua-tree-toggle:hover {
+    color: #1976d2;
+}
+
+.kalua-tree-label {
+    cursor: pointer;
+    padding: 1px 6px;
+    border-radius: 3px;
+    vertical-align: middle;
+}
+
+.kalua-tree-label:hover {
+    background: #f0f4fa;
+}
+
+.kalua-tree-empty {
+    padding: 10px 12px;
+    color: #888;
+    font-style: italic;
+}
+
 /* Chart control (Chart.js) */
 .kalua-chart-container {
     position: relative;

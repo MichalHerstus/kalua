@@ -9,7 +9,7 @@ const PALETTE = [
   ['label', 'Label'], ['textbox', 'Text Box'], ['button', 'Button'],
   ['combo', 'Combo Box'], ['list', 'List'], ['table', 'Table'],
   ['checkbox', 'Check Box'], ['radio', 'Radio'], ['looper', 'Looper'],
-  ['chart', 'Chart'], ['image', 'Image'],
+  ['chart', 'Chart'], ['image', 'Image'], ['tree', 'Tree'],
 ];
 
 /* Option schemas: type = string|number|bool|select|json|items|dt|cell|align */
@@ -39,6 +39,12 @@ const TYPE_OPTS = {
              height: { t: 'string' },
              fit: { t: 'select', opts: ['contain', 'cover', 'fill', 'scale-down', 'none'] },
              clickable: { t: 'bool' } },
+  tree:    { db: { t: 'string' }, table: { t: 'string' }, where: { t: 'string' },
+             order_by: { t: 'string' }, id_field: { t: 'string' },
+             parent_field: { t: 'string' }, label_field: { t: 'string' },
+             expand_all: { t: 'bool' },
+             selection: { t: 'select', opts: ['single', 'none'] },
+             max_nodes: { t: 'number' } },
 };
 const COMMON_OPTS = {
   label: { t: 'string' }, value: { t: 'string' }, enabled: { t: 'bool' },
@@ -58,6 +64,9 @@ const LABELS = {
   hidden_value: 'Hidden value', src: 'Src', alt: 'Alt', fit: 'Fit', clickable: 'Clickable',
   enabled: 'Enabled', visible: 'Visible', class: 'CSS class', cell: 'Grid cell',
   align: 'Align', checked: 'Checked', selected: 'Selected',
+  table: 'Table', where: 'Where', order_by: 'Order by', id_field: 'ID field',
+  parent_field: 'Parent field', label_field: 'Label field', expand_all: 'Expand all',
+  selection: 'Selection', max_nodes: 'Max nodes',
 };
 
 const state = {
@@ -598,6 +607,7 @@ function addControl(type) {
     case 'table': case 'looper': c.opts.query = 'SELECT * FROM t'; break;
     case 'chart': c.opts.type = 'line'; c.opts.labels = ['A', 'B', 'C']; c.opts.datasets = [{ label: 'Series', data: [1, 2, 3] }]; break;
     case 'image': c.opts.src = 'https://placehold.co/320x120'; break;
+    case 'tree': c.opts.table = 'categories'; c.opts.label_field = 'name'; c.opts.id_field = 'id'; c.opts.parent_field = 'parent_id'; break;
   }
   f.controls.push(c);
   selectControl(f.controls.length - 1);

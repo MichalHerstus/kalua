@@ -471,6 +471,18 @@ func registerControls(e *Env) {
 		return 0
 	})
 
+	// k.ctrl.tree(form, name, options) - Tree control (§9 kforms_enhancements.md)
+	// DB-linked expandable tree: displays a field from a table as an adjacency
+	// list (id_field/parent_field). Full load — the host fetches all rows in one
+	// query and the client expands/collapses locally.
+	e.register("ctrl.tree", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "tree", opts)
+		return 0
+	})
+
 	// k.ctrl.checkbox(form, name, options)
 	e.register("ctrl.checkbox", "controls", func(L *lua.LState) int {
 		formName := L.CheckString(1)
@@ -698,6 +710,10 @@ func registerControls(e *Env) {
 		if ctrl == nil {
 			return 0
 		}
+		// Tree nodes come from the DB; set_value is ignored (§9).
+		if ctrl.RawGetString("type").String() == "tree" {
+			return 0
+		}
 		ctrl.RawSetString("value", value)
 		if ctrl.RawGetString("type").String() == "image" {
 			ctrl.RawSetString("src", value)
@@ -731,6 +747,8 @@ func registerControls(e *Env) {
 				return 1
 			}
 		}
+		// Tree: the currently selected node map (set by the session on
+		// on_select), or nil (§9).
 		L.Push(ctrl.RawGetString("value"))
 		return 1
 	})
@@ -1200,6 +1218,23 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("cancel_label", opts.RawGetString("cancel_label"))
 		ctrlTbl.RawSetString("error_message", opts.RawGetString("error_message"))
 		ctrlTbl.RawSetString("attempts", opts.RawGetString("attempts"))
+	}
+
+	// Tree control options (kforms_enhancements.md §9). DB-linked adjacency
+	// list: db/table/label_field required; id_field/parent_field default to
+	// id/parent_id; where/order_by pass through verbatim; expand_all seeds the
+	// client's initial expansion; max_nodes caps the full load.
+	if ctrlType == "tree" {
+		ctrlTbl.RawSetString("db", opts.RawGetString("db"))
+		ctrlTbl.RawSetString("table", opts.RawGetString("table"))
+		ctrlTbl.RawSetString("where", opts.RawGetString("where"))
+		ctrlTbl.RawSetString("order_by", opts.RawGetString("order_by"))
+		ctrlTbl.RawSetString("id_field", opts.RawGetString("id_field"))
+		ctrlTbl.RawSetString("parent_field", opts.RawGetString("parent_field"))
+		ctrlTbl.RawSetString("label_field", opts.RawGetString("label_field"))
+		ctrlTbl.RawSetString("expand_all", opts.RawGetString("expand_all"))
+		ctrlTbl.RawSetString("selection", opts.RawGetString("selection"))
+		ctrlTbl.RawSetString("max_nodes", opts.RawGetString("max_nodes"))
 	}
 
 	controlsTbl.RawSetString(name, ctrlTbl)

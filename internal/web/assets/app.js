@@ -1133,6 +1133,9 @@
             case 'looper_refresh':
                 looperRefresh(msg.selector || ('#c:' + msg.form + ':' + msg.ctrl));
                 break;
+            case 'tree_data':
+                handleTreeData(msg);
+                break;
             case 'chart_update':
                 chartUpdate(msg.selector, msg.data);
                 break;
@@ -1443,6 +1446,130 @@
         sendEvent(form, ctrl, 'onclick', { ctrl_name: ctrlName, line_idx: lineIdx });
     }
 
+    // Trees — DB-linked expandable tree lists (k.ctrl.tree §9).
+    // The container carries the DB-link config as data-k-tree-* attributes; the
+    // client issues a single tree_data_request and renders the nested JSON
+    // payload locally (full load — expand/collapse never round-trips).
+
+    // initTrees scans a DOM scope for .kalua-tree containers and primes each
+    // that is not already managed, requesting the full tree data once.
+    function initTrees(scope) {
+        scope.querySelectorAll('.kalua-tree:not([data-k-tree-ready])').forEach(function(el) {
+            el.setAttribute('data-k-tree-ready', 'true');
+            const form = el.dataset.kForm || '';
+            const ctrl = el.dataset.kCtrl || '';
+            send({ type: 'tree_data_request', form: form, ctrl: ctrl });
+        });
+    }
+
+    // treeById resolves a tree element. The tree id is "c:form:ctrl", which
+    // contains colons and therefore must be looked up by id, never querySelector.
+    function treeById(form, ctrl, selector) {
+        const id = (selector || ('#c:' + form + ':' + ctrl)).replace(/^#/, '');
+        return document.getElementById(id);
+    }
+
+    // handleTreeData renders the nested tree payload from a tree_data message.
+    // payload: { nodes: [{id, parent_id, label, _children:[...], ...extra}],
+    //            count, error? }.
+    function handleTreeData(msg) {
+        const el = treeById(msg.form, msg.ctrl, msg.selector);
+        if (!el) return;
+        const payload = {};
+        try { Object.assign(payload, JSON.parse(msg.data || '{}')); } catch (e) {}
+        const nodes = payload.nodes || [];
+        const count = payload.count || 0;
+
+        if (payload.error) {
+            el.innerHTML = '<div class="kalua-tree-empty">' + escapeHtml(String(payload.error)) + '</div>';
+            return;
+        }
+        if (count === 0) {
+            el.innerHTML = '<div class="kalua-tree-empty">No data</div>';
+            return;
+        }
+
+        const expandAll = el.getAttribute('data-k-tree-expand-all') === 'true';
+        el.innerHTML = '<ul class="kalua-tree-root">' + renderTreeNodes(nodes, 0, expandAll) + '</ul>';
+    }
+
+    // renderTreeNodes renders a list of nodes recursively. Each node embeds its
+    // full row map as data-k-node JSON so click events echo the whole record
+    // back to the host (on_click/on_select receive the row map).
+    function renderTreeNodes(list, depth, expandAll) {
+        return list.map(function(n) {
+            const hasKids = n._children && n._children.length > 0;
+            const toggle = hasKids
+                ? '<button type="button" class="kalua-tree-toggle" data-k-tree-toggle="1" aria-expanded="' + (expandAll ? 'true' : 'false') + '">' + (expandAll ? '\u25be' : '\u25b8') + '</button>'
+                : '';
+            const kids = hasKids
+                ? '<ul class="kalua-tree-children"' + (expandAll ? '' : ' style="display:none"') + '>' + renderTreeNodes(n._children, depth + 1, expandAll) + '</ul>'
+                : '';
+            return '<li class="kalua-tree-node" data-k-node-id="' + escapeAttr(String(n.id)) + '"' +
+                ' data-k-node="' + escapeAttr(JSON.stringify(n)) + '" style="padding-left:' + (depth * 14) + 'px">' +
+                toggle +
+                '<span class="kalua-tree-label" data-k-tree-label="1">' + escapeHtml(String(n.label)) + '</span>' +
+                kids + '</li>';
+        }).join('');
+    }
+
+    // treeChildrenOf returns the direct child <ul> of a tree node <li>.
+    function treeChildrenOf(li) {
+        for (let i = 0; i < li.children.length; i++) {
+            if (li.children[i].classList.contains('kalua-tree-children')) return li.children[i];
+        }
+        return null;
+    }
+
+    // handleTreeToggle expands/collapses a node locally and reports on_expand
+    // to the host with {node_id, expanded}.
+    function handleTreeToggle(e) {
+        const toggle = e.target.closest('[data-k-tree-toggle]');
+        if (!toggle) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const li = toggle.closest('.kalua-tree-node');
+        if (!li) return;
+        const kids = treeChildrenOf(li);
+        const expanded = !kids || kids.style.display === 'none';
+        if (kids) {
+            kids.style.display = expanded ? '' : 'none';
+        }
+        toggle.textContent = expanded ? '\u25be' : '\u25b8';
+        toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        const tree = toggle.closest('.kalua-tree');
+        sendEvent(tree.dataset.kForm || '', tree.dataset.kCtrl || '', 'on_expand', {
+            node_id: li.getAttribute('data-k-node-id'),
+            expanded: expanded
+        });
+    }
+
+    // handleTreeLabelClick reports on_click (and on_select when selection is
+    // enabled) with the node's full row map.
+    function handleTreeLabelClick(e) {
+        const label = e.target.closest('[data-k-tree-label]');
+        if (!label) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const li = label.closest('.kalua-tree-node');
+        if (!li) return;
+        const tree = label.closest('.kalua-tree');
+        let node = null;
+        try { node = JSON.parse(li.getAttribute('data-k-node') || 'null'); } catch (err) {}
+        if (!node) return;
+        const form = tree.dataset.kForm || '';
+        const ctrl = tree.dataset.kCtrl || '';
+        sendEvent(form, ctrl, 'on_click', { node: node });
+        const selection = tree.getAttribute('data-k-tree-selection') || 'single';
+        if (selection !== 'none') {
+            tree.querySelectorAll('.kalua-tree-node.selected').forEach(function(n) {
+                n.classList.remove('selected');
+            });
+            li.classList.add('selected');
+            sendEvent(form, ctrl, 'on_select', { node: node });
+        }
+    }
+
     // tabulatorGetData answers k.table.get_data requests with all current row data.
     function tabulatorGetData(id, selector, form, ctrl) {
         const inst = selector && tabulatorInstances.get(selector);
@@ -1472,6 +1599,7 @@
         initGrids(stage);
         initTabulators(stage);
         initLoopers(stage);
+        initTrees(stage);
         initCharts(stage);
         initDatePickers(stage);
         // Focus first focusable element
@@ -1494,6 +1622,7 @@
             if (fresh) initGrids(fresh.parentElement || stage);
             if (fresh) initTabulators(fresh.parentElement || stage);
             if (fresh) initLoopers(fresh.parentElement || stage);
+            if (fresh) initTrees(fresh.parentElement || stage);
             if (fresh) initCharts(fresh.parentElement || stage);
             if (fresh) initDatePickers(fresh.parentElement || stage);
         }
@@ -1564,6 +1693,7 @@
         initGrids(overlay);
         initTabulators(overlay);
         initLoopers(overlay);
+        initTrees(overlay);
         initCharts(overlay);
         initDatePickers(overlay);
 
@@ -1775,6 +1905,18 @@
         const loopEl = e.target.closest('.kalua-looper');
         if (loopEl) {
             selectLooperRow(loopEl, e.target.closest('.kalua-looper-row'), e.target);
+            return;
+        }
+
+        // Tree node toggle (expand/collapse) and label click (on_click/on_select).
+        const treeToggle = e.target.closest('[data-k-tree-toggle]');
+        if (treeToggle) {
+            handleTreeToggle(e);
+            return;
+        }
+        const treeLabel = e.target.closest('[data-k-tree-label]');
+        if (treeLabel) {
+            handleTreeLabelClick(e);
             return;
         }
 
@@ -2019,6 +2161,17 @@
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // escapeAttr escapes a string for safe use inside a double-quoted HTML
+    // attribute (including single quotes, which escapeHtml leaves alone).
+    function escapeAttr(text) {
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     // Selection handlers

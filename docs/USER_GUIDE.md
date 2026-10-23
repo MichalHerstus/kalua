@@ -3924,6 +3924,56 @@ local yml  = k.yaml_string({orders = rows})
 
 ---
 
+## 6.8 Tree Control — `tree_demo.lua`
+
+The **Tree control** (`k.ctrl.tree`) displays a field from a database table as an expandable tree. The hierarchy is an adjacency list: each row has a unique-ID column and a parent-reference column (`parent_id`). The host fetches all matching rows in one query and builds the tree server-side; the client expands/collapses locally (full load, good to ~5k nodes).
+
+```lua
+function main()
+  local db = k.connect_sqlite(":memory:")
+  k.sql(db, "CREATE TABLE categories (id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT)")
+  k.sql(db, "INSERT INTO categories VALUES (1, NULL, 'Electronics')")
+  k.sql(db, "INSERT INTO categories VALUES (2, 1, 'Laptops')")
+  k.sql(db, "INSERT INTO categories VALUES (3, 1, 'Phones')")
+
+  k.form.new("main", { title = "Categories" })
+  k.ctrl.tree("main", "tree", {
+    db          = db,                 -- k.connect_db handle or --db NAME
+    table       = "categories",       -- source table (required)
+    label_field = "name",              -- column rendered as the node label (required)
+    id_field    = "id",                -- default "id"
+    parent_field = "parent_id",        -- default "parent_id"
+    order_by    = "name ASC",          -- deterministic sibling order
+    expand_all  = true,                -- render roots expanded
+    max_nodes   = 5000,                -- safety cap on the full load
+  })
+
+  k.form.on("main", "tree", "on_click", function(node)
+    k.print("clicked " .. node.name .. " (id=" .. tostr(node.id) .. ")")
+  end)
+  k.form.on("main", "tree", "on_select", function(node)
+    k.ctrl.set_value("main", "detail", node.name)   -- feed a sibling control
+  end)
+  k.form.on("main", "tree", "on_expand", function(node_id, expanded)
+    k.print("node " .. tostr(node_id) .. (expanded and " expanded" or " collapsed"))
+  end)
+  k.form.on("main", "tree", "on_loaded", function(node_count)
+    k.print("tree loaded: " .. tostr(node_count) .. " nodes")
+  end)
+  k.form.on("main", "tree", "on_error", function(message)
+    k.print("tree error: " .. message)
+  end)
+
+  k.form.show("main")
+end
+```
+
+- **Events**: `on_click(node)`, `on_select(node)` (click while `selection="single"`), `on_expand(node_id, expanded)`, `on_loaded(node_count)`, `on_error(message)`. The `node` payload is the full row map (`{id, parent_id, [label_field], ...extra columns}`).
+- **Reading values**: `k.ctrl.get_value(form, "tree")` returns the currently selected node map (or `nil`); `k.ctrl.set_value` on a tree control is ignored (nodes come from the DB).
+- **Safety**: `where` passes through verbatim (same contract as looper/table); `table`/`id_field`/`parent_field`/`label_field` are identifier-guarded; orphan children (a parent reference outside the loaded set) are surfaced as root-level nodes so no row is lost; `max_nodes` fails fast on pathological tables.
+
+---
+
 # 7. KALUA Builder
 
 The **KALUA Builder** is a design-time visual editor for forms. It never executes the app; it renders the **real Go renderer** in-process, so the preview is pixel-accurate (the builder embeds the same runtime stylesheet that `KALUA run` serves). A file may contain **many forms** plus non-form code (helpers, `main()`, DB setup, AI chat) — the builder edits any form without touching what it does not own.

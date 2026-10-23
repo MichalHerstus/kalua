@@ -621,6 +621,8 @@ func renderControl(ctrl *lua.LTable) string {
 		return renderImage(ctrl, formName, name, id, visible)
 	case "login":
 		return renderLogin(ctrl, formName, name, id, visible)
+	case "tree":
+		return renderTree(ctrl, formName, name, id, visible)
 	}
 	return `<div class="kalua-control">Unknown control: ` + escText(ctrlType) + `</div>`
 }
@@ -898,6 +900,35 @@ func renderLogin(ctrl *lua.LTable, formName, name, id, visible string) string {
 		<div class="kalua-login-actions">
 			<button type="button" class="kalua-btn" data-k-login-cancel="1" data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `">` + cancelLabelTxt + `</button>
 			<button type="button" class="kalua-btn kalua-login-submit" data-k-login-submit="1" data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `">` + submitLabelTxt + `</button>
+		</div>
+	</div>`
+}
+
+// renderTree renders a tree control container (kforms_enhancements.md §9). The
+// Go side does not render nodes — the container carries the DB-link config as
+// data-k-tree-* attributes and the client issues a single tree_data_request,
+// then renders the nested JSON payload locally for cheap expand/collapse.
+func renderTree(ctrl *lua.LTable, formName, name, id, visible string) string {
+	expandAll := "false"
+	if v := ctrl.RawGetString("expand_all"); v != lua.LNil && v.String() == "true" {
+		expandAll = "true"
+	}
+	selection := "single"
+	if v := ctrl.RawGetString("selection"); v != lua.LNil && v.String() != "" {
+		selection = escAttr(v.String())
+	}
+	errorTxt := ""
+	if v := ctrl.RawGetString("error"); v != lua.LNil {
+		errorTxt = escAttr(v.String())
+	}
+
+	return `<div class="kalua-control kalua-tree-control"` + visible + `>
+		<div class="kalua-tree" id="` + escAttr(id) + `"
+		     data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `"
+		     data-k-tree-expand-all="` + expandAll + `"
+		     data-k-tree-selection="` + selection + `"
+		     data-k-tree-error="` + errorTxt + `">
+			<div class="kalua-tree-empty">Loading…</div>
 		</div>
 	</div>`
 }

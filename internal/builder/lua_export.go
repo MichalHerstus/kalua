@@ -131,6 +131,8 @@ func defaultEventsForControl(c *Control) []string {
 		return []string{"onselect", "onclick"}
 	case "chart":
 		return []string{"chart_click", "chart_legend_click"}
+	case "tree":
+		return []string{"on_click", "on_select", "on_expand", "on_loaded", "on_error"}
 	case "button":
 		return []string{"click"}
 	case "textbox", "combo", "list", "checkbox", "radio", "table":

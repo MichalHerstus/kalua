@@ -964,6 +964,37 @@ Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolea
 k.ctrl.textbox("main", "age", { label = "Age", datetime = { mode = "date", format = "Y-m-d" } })
 ```
 
+**`k.ctrl.tree(form, name, optsTable)`**  
+Adds a DB-linked expandable tree control (kforms_enhancements.md §9): displays a field from a table as an adjacency list. opts: {db (required), table (required), label_field (required), id_field=id, parent_field=parent_id, where?, order_by?, expand_all=false, selection=single, max_nodes=5000}. The host fetches all matching rows in one query and builds the tree server-side; the client expands/collapses locally. Events via k.form.on: on_click(node), on_select(node), on_expand(node_id, expanded), on_loaded(node_count), on_error(message). k.ctrl.get_value returns the currently selected node map (or nil); set_value is ignored.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.db` | string | Required. DB handle from k.connect_db/k.connect_sqlite or --db NAME. |
+| `optsTable.table` | string | Required. Source table holding the adjacency list. |
+| `optsTable.label_field` | string | Required. Column rendered as the node label. |
+| `optsTable.id_field` | string | Unique-ID column (default "id"). |
+| `optsTable.parent_field` | string | Parent-reference column (default "parent_id"). |
+| `optsTable.where` | string | Extra WHERE clause (passed through verbatim). |
+| `optsTable.order_by` | string | Deterministic sibling order, e.g. "name ASC". |
+| `optsTable.expand_all` | boolean | Render roots expanded (default false). |
+| `optsTable.selection` | string | "single" (default) or "none" — enables on_select. |
+| `optsTable.max_nodes` | number | Safety cap on the full load (default 5000). |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="Categories"})
+k.ctrl.tree("main", "tree", {
+  db = "main", table = "categories", label_field = "name",
+  order_by = "name ASC",
+})
+k.form.on("main", "tree", "on_click", function(node)
+  k.print("clicked " .. node.name .. " (id=" .. tostr(node.id) .. ")")
+end)
+```
+
 **`k.grid`**  
 Grid control operations: k.grid.refresh/set_db_source/...
 
