@@ -1618,12 +1618,16 @@
     function updateControl(selector, html) {
         const el = byId(selector);
         if (el) {
-            // Destroy any Tabulator / Chart / flatpickr instance living inside
-            // the replaced element.
-            destroyTabulators(el);
-            destroyCharts(el);
-            destroyDatePickers(el);
-            el.outerHTML = html;
+            // The id selector resolves to the inner field (input/select/img)
+            // that carries the id attribute. The renderable unit is the outer
+            // .kalua-control wrapper, so replace that — otherwise repeated
+            // k.ctrl.set_value / update_control calls nest the control inside
+            // itself and duplicate its label/field on every trigger.
+            const wrapper = el.closest('.kalua-control') || el;
+            destroyTabulators(wrapper);
+            destroyCharts(wrapper);
+            destroyDatePickers(wrapper);
+            wrapper.outerHTML = html;
             const fresh = byId(selector);
             if (fresh) initGrids(fresh.parentElement || stage);
             if (fresh) initTabulators(fresh.parentElement || stage);

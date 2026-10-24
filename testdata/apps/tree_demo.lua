@@ -32,7 +32,6 @@ function main()
 
     k.form.on("main", "tree", "on_click", function(node)
         k.print("clicked " .. node.name .. " (id=" .. tostr(node.id) .. ")")
-        k.ctrl.set_value("main", "detail", node.name .. " — " .. (node.note or ""))
     end)
 
     k.form.on("main", "tree", "on_select", function(node)
@@ -52,4 +51,6 @@ function main()
     end)
 
     k.form.show("main")
+
+   -- k.form.show("main")
 end
