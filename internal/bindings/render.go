@@ -282,6 +282,7 @@ func renderGridForm(tbl *lua.LTable) string {
 	// Backward compat: no cells defined → single auto "main" cell.
 	if len(cells) == 0 {
 		cells = []cellDef{{id: "main", width: 12}}
+		cellIDs["main"] = true
 	}
 	// Auto-create "main" when controls reference it but it was not defined.
 	if len(buckets["main"]) > 0 && !cellIDs["main"] {

@@ -251,6 +251,20 @@ Logs a script-side trace anchor when verbose tracing is enabled.
 
 ### Forms
 
+**`k.form.ai_agent([optsTable]) → transcriptTable`**  
+Opens a modal AI chat form. The script blocks until the user closes the chat; the return value is the full transcript as an array of {role, content, name?} message tables. Every script global function is auto-exposed as a tool the agent can call (descriptions from comments above the function, param names from debug info). Use k.ai.tool(name, schema, fn) to override or register a tool explicitly. opts: {title, welcome, system, max_turns, tools, api_key, base_url, model}. Requires AI configuration ([AI] in KALUA.INI or KALUA_AI_* env vars), or pass api_key explicitly. §12
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `opts` | table | Optional options: {title='AI Assistant', welcome, system, max_turns=8, tools, api_key, base_url, model}. |
+
+**Example:**
+
+```lua
+local transcript = k.form.ai_agent{ title = "Support assistant", welcome = "How can I help?", max_turns = 6, api_key = "sk-..." }
+for _, m in ipairs(transcript) do print(m.role, m.content) end
+```
+
 **`k.form.clear(name)`**  
 Clears a form's control values.
 

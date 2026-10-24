@@ -41,6 +41,10 @@ type Options struct {
 	// Used to auto-fill the footer control's `script_name` (§11.3) when the
 	// script omits it. Empty in headless/unknown contexts.
 	ScriptName string
+
+	// AIConfig configures the LLM for k.form.ai_agent. Nil means the chat form
+	// will fail with a clear error.
+	AIConfig *common.AIConfig
 }
 
 // DefaultMaxFileSize bounds k.file_load/k.json_load reads unless Options
@@ -81,6 +85,9 @@ type Env struct {
 	// scriptName is the running script's base name (Options.ScriptName); the
 	// footer control auto-fills its script_name from it (§11.3).
 	scriptName string
+
+	// aiConfig configures k.form.ai_agent.
+	aiConfig *common.AIConfig
 
 	// onErr is the script-registered k.on_error(fn) hook (or nil). When a
 	// binding fails it is invoked with (ERRORCODE, ERRORMSG) so the script can
@@ -204,6 +211,8 @@ var registerKnown = map[string]string{
 	"ctrl.get_selection":        "controls",
 	"ctrl.get_item_count":       "controls",
 	"ctrl.execute_event":        "controls",
+	"form.ai_agent":             "forms",
+	"ai.tool":                   "ai",
 	"chart.set_data":            "controls",
 	"chart.add_dataset":         "controls",
 	"chart.remove_dataset":      "controls",

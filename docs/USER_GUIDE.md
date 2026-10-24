@@ -776,6 +776,20 @@ Logs a script-side trace anchor when verbose tracing is enabled.
 
 #### Forms
 
+**`k.form.ai_agent([optsTable]) → transcriptTable`**  
+Opens a modal AI chat form. The script blocks until the user closes the chat; the return value is the full transcript as an array of {role, content, name?} message tables. Every script global function is auto-exposed as a tool the agent can call (descriptions from comments above the function, param names from debug info). Use k.ai.tool(name, schema, fn) to override or register a tool explicitly. opts: {title, welcome, system, max_turns, tools, api_key, base_url, model}. Requires AI configuration ([AI] in KALUA.INI or KALUA_AI_* env vars), or pass api_key explicitly. §12
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `opts` | table | Optional options: {title='AI Assistant', welcome, system, max_turns=8, tools, api_key, base_url, model}. |
+
+**Example:**
+
+```lua
+local transcript = k.form.ai_agent{ title = "Support assistant", welcome = "How can I help?", max_turns = 6, api_key = "sk-..." }
+for _, m in ipairs(transcript) do print(m.role, m.content) end
+```
+
 **`k.form.clear(name)`**  
 Clears a form's control values.
 
@@ -1142,6 +1156,32 @@ Fires a control's event handler as if the user triggered it (e.g., "onclick"). R
 k.ctrl.execute_event("main", "btn_ok", "onclick")
 ```
 
+**`k.ctrl.footer(form, name, optsTable)`**  
+Adds a fixed footer (kforms_enhancements.md §11.3) at the bottom of the viewport with copyright text, optional links, and auto-populated version + script name. opts: {text, version (auto-filled from the KALUA binary when omitted), script_name (auto-filled from the running script), links=[{label, url}], visible, style={bg, height, ...}}. No events.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.text` | string | Copyright/description text. |
+| `optsTable.version` | string | App version (auto-filled from KALUA if omitted). |
+| `optsTable.script_name` | string | Running script name (auto-filled). |
+| `optsTable.links` | list | Array of {label, url} link definitions. |
+| `optsTable.visible` | boolean | Show/hide the footer (default true). |
+| `optsTable.style` | table | CSS style overrides: {bg=..., height=...}. |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="App", layout="vertical"})
+k.ctrl.footer("main", "foot", {
+  text = "© 2024 My Company",
+  version = "1.0.0",
+  links = { { label = "Privacy", url = "/privacy" }, { label = "Terms", url = "/terms" } },
+})
+k.form.show("main")
+```
+
 **`k.ctrl.get_item_count(form, name)`**  
 Returns the number of items/rows in a combo, list, radio, or table control.
 
@@ -1250,7 +1290,7 @@ k.ctrl.image("main", "logo", { src = "/img/logo.png", width = "200px", fit = "co
 ```
 
 **`k.ctrl.label(form, name, optsTable)`**  
-Adds a label control. opts: {text, multiline?:boolean, cell?, align?}. multiline renders a pre-wrap div preserving \n (kforms_enhancements.md §4.2). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6).
+Adds a label control. opts: {text, multiline?:boolean, cell?, align?, bg?, color?, font?, font_size?, style?}. multiline renders a pre-wrap div preserving \n (kforms_enhancements.md §4.2). cell/align: grid layout assignment + alignment (kforms_enhancements.md §6). bg/color/font/font_size/style: per-widget styling (kforms_enhancements.md §10); font h1–h6/p or a font family, style an alternative h1–h6/p preset, font_size px overrides the preset.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -1260,11 +1300,16 @@ Adds a label control. opts: {text, multiline?:boolean, cell?, align?}. multiline
 | `optsTable.multiline` | boolean | Preserve newlines with white-space: pre-wrap. |
 | `optsTable.cell` | string | Grid cell id to place the control in. |
 | `optsTable.align` | string | Alignment override: "left", "center" or "right". |
+| `optsTable.bg` | string | Background color (any CSS color). |
+| `optsTable.color` | string | Text color (any CSS color). |
+| `optsTable.font` | string | Font: an h1–h6/p preset or a raw font family. |
+| `optsTable.font_size` | number | Font size in px (overrides the preset). |
+| `optsTable.style` | string | Alternative to font: an h1–h6/p preset. |
 
 **Example:**
 
 ```lua
-k.ctrl.label("main", "lbl", { text = "Hello\nWorld", multiline = true })
+k.ctrl.label("main", "lbl", { text = "Hello\nWorld", multiline = true, font = "h2", color = "#d32f2f" })
 ```
 
 **`k.ctrl.list(form, name, optsTable)`**  
@@ -1281,6 +1326,42 @@ Adds a multi-row select list. opts.items is a table of choices.
 
 ```lua
 k.ctrl.list("main", "sel", { items = {"a", "b", "c"} })
+```
+
+**`k.ctrl.login(form, name, optsTable)`**  
+Adds a login control panel for user authentication. The control renders a login/password form with submit/cancel buttons and handles credential verification against a database. opts: {db (required), table=users, login_column=login, password_column=password, salt_column, hash=pbkdf2|sha256|plain, salt, iterations=100000, keylen=32, title, subtitle, login_label=Login, password_label=Password, login_placeholder, password_placeholder, submit_label=Sign IN, cancel_label=Cancel, error_message=Invalid login or password, attempts=3}. Events: on_login_submit(login, password) — runs before verification; on_login(user) — fired on success with user row map; on_login_error(message, attempts_left) — fired on failure; on_login_cancel() — fired when cancel clicked. k.ctrl.get_value returns the verified user map.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name within the form. |
+| `optsTable.db` | string | Required. DB handle from k.connect_db/k.connect_sqlite or --db NAME. |
+| `optsTable.table` | string | Users table name (default "users"). |
+| `optsTable.login_column` | string | Column matched against login input (default "login"). |
+| `optsTable.password_column` | string | Column holding stored hash/secret (default "password"). |
+| `optsTable.salt_column` | string | Per-user salt column (required for hash=pbkdf2). |
+| `optsTable.hash` | string | Hash algorithm: "pbkdf2" (default), "sha256", or "plain". |
+| `optsTable.salt` | string | Static salt; overrides salt_column. |
+| `optsTable.iterations` | number | pbkdf2 rounds (default 100000). |
+| `optsTable.keylen` | number | pbkdf2 key length in bytes (default 32). |
+| `optsTable.title` | string | Panel heading. |
+| `optsTable.subtitle` | string | Secondary line under heading. |
+| `optsTable.login_label` | string | Label above login input (default "Login"). |
+| `optsTable.password_label` | string | Label above password input (default "Password"). |
+| `optsTable.submit_label` | string | Submit button text (default "Sign IN"). |
+| `optsTable.cancel_label` | string | Cancel button text (default "Cancel"). |
+| `optsTable.error_message` | string | Inline error text (default "Invalid login or password"). |
+| `optsTable.attempts` | number | Wrong-password retries before control stops (default 3). |
+
+**Example:**
+
+```lua
+k.form.new("loginform", {title="Sign in", layout="vertical", align="center"})
+k.ctrl.login("loginform", "login", {db="main", table="users"})
+k.form.on("loginform", "login", "on_login", function(user)
+    k.msgbox("Welcome " .. user.name)
+end)
+k.form.show("loginform", {modal=true})
 ```
 
 **`k.ctrl.looper(form, name, optsTable)`**  
@@ -1361,19 +1442,19 @@ k.ctrl.set_focus("main", "age")
 ```
 
 **`k.ctrl.set_property(form, name, prop, value)`**  
-Sets an arbitrary control property.
+Sets an arbitrary control property. Styling props (bg, color, font, font_size, style, kforms_enhancements.md §10) restyle the widget live via a re-render.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `form` | string | Parent form name. |
 | `name` | string | Control name. |
-| `prop` | string | Property name, e.g. "label", "enabled", "cell", "align". |
+| `prop` | string | Property name, e.g. "label", "enabled", "cell", "align", "bg", "color", "font", "font_size", "style". |
 | `value` | any | New property value. |
 
 **Example:**
 
 ```lua
-k.ctrl.set_property("main", "btn", "enabled", false)
+k.ctrl.set_property("main", "btn", "enabled", false)\nk.ctrl.set_property("main", "lbl", "color", "#1976d2") -- live restyle
 ```
 
 **`k.ctrl.set_selection(form, name, from, to)`**  
@@ -1405,6 +1486,71 @@ Sets a control's value and re-renders it.
 
 ```lua
 k.ctrl.set_value("main", "age", 31)
+```
+
+**`k.ctrl.sidebar(form, name, optsTable)`**  
+Adds a fixed navigation sidebar (kforms_enhancements.md §11.2) anchored to the viewport's left or right edge (position), outside the form flow — like the topbar and footer. On the run page a form with a sidebar fills the whole remaining viewport area between the fixed bars (topbar/footer/sidebar) with an ~3px gap on every side; the sidebar is collapsible to an icon-only strip (session-only, resets on reload, the form frame follows the strip width). opts: {position="left"|"right", width, collapsed_width, collapsible, collapsed, items=[{label, icon, action, badge} | {type="separator"}], on_select (global handler called with the clicked item), visible, style={bg, border_right, ...}}. Clicking an item fires the "sidebar_select" event with (action, item, index) — payload {action, item, index}.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.position` | string | "left" (default) or "right" — which viewport edge the fixed sidebar anchors to. |
+| `optsTable.width` | number | Expanded width in pixels (default 280). |
+| `optsTable.collapsed_width` | number | Collapsed width in pixels (default 64). |
+| `optsTable.collapsible` | boolean | Allow the user to collapse/expand (default true). |
+| `optsTable.collapsed` | boolean | Initial collapsed state (default false; session only). |
+| `optsTable.items` | list | Array of item definitions (see below). |
+| `optsTable.on_select` | function | Global selection handler invoked with the clicked item (optional). |
+| `optsTable.visible` | boolean | Show/hide the sidebar (default true). |
+| `optsTable.style` | table | CSS style overrides, e.g. {bg=..., border_right=...}. |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="App", layout="grid"})
+k.ctrl.sidebar("main", "side", {
+  position = "left",
+  items = {
+    { label = "Dashboard", icon = "assets/home.png", action = "nav_dashboard" },
+    { type = "separator" },
+    { label = "Settings", icon = "assets/settings.png", action = "nav_settings", badge = 5 },
+  },
+})
+k.form.on("main", "side", "sidebar_select", function(action, item, index)
+  k.print("selected", action)
+end)
+k.form.show("main")
+```
+
+**`k.ctrl.tab(form, name, optsTable)`**  
+Adds a tab control (kforms_enhancements.md §10) that organizes content into multiple tabs showing only the active tab's panel at a time. Users switch tabs by clicking headers; k.tab.* switches programmatically. opts: {tabs (required array of {title, icon?}), tab_position="top"|"bottom" (default "top"), swipable=?boolean (default true), cell?, align?}. Events via k.form.on(form, ctrl, "onchange", function(new_idx, old_idx) ... end). k.tab.get_tab returns the active tab index (1-based).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.tabs` | list | Required. Array of tab definitions: {title=..., icon=...}. |
+| `optsTable.tab_position` | string | "top" (default) or "bottom". |
+| `optsTable.swipable` | boolean | Enable swipe navigation on content (default true). |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="Tab Demo", layout="vertical"})
+k.ctrl.tab("main", "tabs", {
+  tabs = {
+    {title = "Dashboard", icon = "📊"},
+    {title = "Reports", icon = "📈"},
+    {title = "Settings", icon = "⚙️"}
+  },
+  tab_position = "top",
+  swipable = true,
+})
+k.form.on("main", "tabs", "onchange", function(new_idx, old_idx)
+  k.print("Switched from tab " .. old_idx .. " to " .. new_idx)
+end)
+k.form.show("main")
 ```
 
 **`k.ctrl.table(form, name, optsTable)`**  
@@ -1446,6 +1592,63 @@ Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolea
 
 ```lua
 k.ctrl.textbox("main", "age", { label = "Age", datetime = { mode = "date", format = "Y-m-d" } })
+```
+
+**`k.ctrl.topbar(form, name, optsTable)`**  
+Adds a fixed topbar (kforms_enhancements.md §11.1) spanning the viewport width with app branding, optional user info and a logout affordance. opts: {icon (image path), title, user={name, role, avatar}, logout (function called when the user block is clicked), visible}. Clicking the user block fires the "logout" event — the function passed to `logout` is registered as that handler, and k.form.on(form, ctrl, "logout", fn) overrides it.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.icon` | string | Image path (JPG/PNG/SVG) shown at the left of the bar. |
+| `optsTable.title` | string | App name. |
+| `optsTable.user` | table | User info: {name=..., role=..., avatar=<image path>}. |
+| `optsTable.logout` | function | Called when the user clicks the avatar/name (direct logout call). |
+| `optsTable.visible` | boolean | Show/hide the topbar (default true). |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="App", layout="vertical"})
+k.ctrl.topbar("main", "bar", {
+  icon = "assets/logo.png",
+  title = "My App",
+  user = { name = "John Doe", role = "admin", avatar = "assets/avatar.png" },
+  logout = function() k.quit() end,
+})
+k.form.show("main")
+```
+
+**`k.ctrl.tree(form, name, optsTable)`**  
+Adds a DB-linked expandable tree control (kforms_enhancements.md §9): displays a field from a table as an adjacency list. opts: {db (required), table (required), label_field (required), id_field=id, parent_field=parent_id, where?, order_by?, expand_all=false, selection=single, max_nodes=5000}. The host fetches all matching rows in one query and builds the tree server-side; the client expands/collapses locally. Events via k.form.on: on_click(node), on_select(node), on_expand(node_id, expanded), on_loaded(node_count), on_error(message). k.ctrl.get_value returns the currently selected node map (or nil); set_value is ignored.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.db` | string | Required. DB handle from k.connect_db/k.connect_sqlite or --db NAME. |
+| `optsTable.table` | string | Required. Source table holding the adjacency list. |
+| `optsTable.label_field` | string | Required. Column rendered as the node label. |
+| `optsTable.id_field` | string | Unique-ID column (default "id"). |
+| `optsTable.parent_field` | string | Parent-reference column (default "parent_id"). |
+| `optsTable.where` | string | Extra WHERE clause (passed through verbatim). |
+| `optsTable.order_by` | string | Deterministic sibling order, e.g. "name ASC". |
+| `optsTable.expand_all` | boolean | Render roots expanded (default false). |
+| `optsTable.selection` | string | "single" (default) or "none" — enables on_select. |
+| `optsTable.max_nodes` | number | Safety cap on the full load (default 5000). |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="Categories"})
+k.ctrl.tree("main", "tree", {
+  db = "main", table = "categories", label_field = "name",
+  order_by = "name ASC",
+})
+k.form.on("main", "tree", "on_click", function(node)
+  k.print("clicked " .. node.name .. " (id=" .. tostr(node.id) .. ")")
+end)
 ```
 
 **`k.grid`**  
@@ -1670,6 +1873,130 @@ Raises a runtime error on DB-linked loopers (rows come from the linked query).
 
 ```lua
 k.looper.set_line("main", "rows", 1, { name = "x" })
+```
+
+**`k.tab`**  
+Tab control operations: k.tab.set_tab/get_tab/add_tab/remove_tab/...
+
+**`k.tab.add_tab(form, name, {title, icon?})`**  
+Appends a new tab at the end and re-renders headers/panels.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `tab` | table | Tab definition: {title=..., icon=...}. |
+
+**Example:**
+
+```lua
+k.tab.add_tab("main", "tabs", { title = "Help", icon = "❓" })
+```
+
+**`k.tab.get_tab(form, name)`**  
+Returns the active tab index (1-based) or nil when the tab control is not found.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+
+**Example:**
+
+```lua
+local idx = k.tab.get_tab("main", "tabs")
+```
+
+**`k.tab.get_tab_count(form, name)`**  
+Returns the number of tabs or nil when the tab control is not found.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+
+**Example:**
+
+```lua
+local n = k.tab.get_tab_count("main", "tabs")
+```
+
+**`k.tab.insert_tab(form, name, index, {title, icon?})`**  
+Inserts a new tab at the 1-based position and re-renders headers/panels.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based insert position. |
+| `tab` | table | Tab definition: {title=..., icon=...}. |
+
+**Example:**
+
+```lua
+k.tab.insert_tab("main", "tabs", 1, { title = "First", icon = "🔝" })
+```
+
+**`k.tab.remove_tab(form, name, index)`**  
+Removes the tab at the 1-based position and re-renders headers/panels.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based tab index to remove. |
+
+**Example:**
+
+```lua
+k.tab.remove_tab("main", "tabs", 3)
+```
+
+**`k.tab.set_tab(form, name, index)`**  
+Programmatically switch to the tab at 1-based index. Sends a tab_set_tab message so the browser activates the tab.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based tab index to activate. |
+
+**Example:**
+
+```lua
+k.tab.set_tab("main", "tabs", 2)
+```
+
+**`k.tab.set_tab_icon(form, name, index, icon)`**  
+Updates the tab icon at the 1-based position and re-renders headers.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based tab index. |
+| `icon` | string | New tab icon (emoji or text). |
+
+**Example:**
+
+```lua
+k.tab.set_tab_icon("main", "tabs", 2, "📉")
+```
+
+**`k.tab.set_tab_title(form, name, index, title)`**  
+Updates the tab title at the 1-based position and re-renders headers.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based tab index. |
+| `title` | string | New tab title. |
+
+**Example:**
+
+```lua
+k.tab.set_tab_title("main", "tabs", 1, "Overview")
 ```
 
 **`k.table.add_line(form, name, valuesTable)`**  
@@ -3913,7 +4240,79 @@ k.ctrl.grid("main", "users", {
 
 ---
 
-## 6.7 Data round-trips in one breath
+## 6.8 Login Control — `login_demo.lua`
+
+The **Login control** (`k.ctrl.login`) renders a self-contained login/password panel that verifies credentials against a database table. It is ideal for sign-in screens shown as a modal form. The control handles credential verification server-side (pbkdf2, sha256, or plain-text hash) and fires events so the script can react to success, failure, or cancel.
+
+```lua
+function main()
+  -- A SQLite DB with a users table: login, password, salt columns.
+  local db = k.connect_sqlite(":memory:")
+  k.sql(db, "CREATE TABLE users (id INTEGER PRIMARY KEY, login TEXT, password TEXT, salt TEXT)")
+  -- Store a pbkdf2 hash for alice / secret123 (static salt for the demo).
+  k.sql(db, "INSERT INTO users VALUES (1, 'alice', 'pbkdf2_hash_here', 'staticsalt')")
+
+  k.form.new("loginform", {
+    title = "Sign in",
+    layout = "vertical",
+    align = "center",
+  })
+
+  k.ctrl.login("loginform", "login", {
+    db            = db,                 -- named handle or k.connect_db/k.connect_sqlite id (required)
+    table         = "users",            -- users table (default "users")
+    login_column  = "login",            -- column matched against input (default "login")
+    password_column = "password",       -- column holding the stored secret (default "password")
+    salt_column   = "salt",             -- per-user salt (required for hash = pbkdf2)
+    hash          = "pbkdf2",           -- pbkdf2 (default) | sha256 | plain
+    iterations    = 100000,             -- pbkdf2 rounds
+    keylen        = 32,                 -- derived key length
+    salt          = "staticsalt",       -- static salt; overrides salt_column
+    attempts      = 3,                  -- wrong-password retries before lockout
+    error_message = "Invalid login or password",
+    title         = "Welcome back",
+    subtitle      = "Please enter your credentials",
+  })
+
+  -- on_login_submit(login, password) — runs before verification (e.g. rate-limit)
+  k.form.on("loginform", "login", "on_login_submit", function(login, password)
+    k.print("submit attempt: " .. login)
+  end)
+
+  -- on_login(user) — fired on success with the full user row map
+  k.form.on("loginform", "login", "on_login", function(user)
+    k.msgbox{title="Welcome", message="Hello " .. (user.login or "user") .. "!", type="info"}
+    k.form.close("loginform")
+  end)
+
+  -- on_login_error(message, attempts_left) — fired on each failed attempt
+  k.form.on("loginform", "login", "on_login_error", function(message, attempts_left)
+    k.print(message .. " (" .. tostr(attempts_left) .. " left)")
+  end)
+
+  -- on_login_cancel() — fired when the user clicks Cancel
+  k.form.on("loginform", "login", "on_login_cancel", function()
+    k.print("login cancelled")
+    k.quit()
+  end)
+
+  -- k.ctrl.get_value("loginform", "login") returns the verified user map after on_login
+  k.form.show("loginform", {modal=true})
+end
+```
+
+- **Required opts**: `db` (a `k.connect_db`/`k.connect_sqlite` handle or a `--db NAME` prereregistered at startup). All other opts have sensible defaults.
+- **Hash algorithms**: `pbkdf2` (default, requires `salt` or `salt_column`), `sha256` (optional `salt`), `plain` (direct comparison).
+- **Events** (via `k.form.on(form, ctrl, event, fn)`):
+  - `on_login_submit(login, password)` — before verification; return nothing special.
+  - `on_login(user)` — on success; `user` is the full row map from the DB.
+  - `on_login_error(message, attempts_left)` — on each failed attempt.
+  - `on_login_cancel()` — when the user clicks Cancel.
+- **Reading the result**: after `on_login` fires, `k.ctrl.get_value(form, "login")` returns the verified user map (or `nil` before verification).
+
+---
+
+## 6.9 Data round-trips in one breath
 
 ```lua
 local rows = k.sql(db, "SELECT * FROM orders")
@@ -3924,7 +4323,7 @@ local yml  = k.yaml_string({orders = rows})
 
 ---
 
-## 6.8 Tree Control — `tree_demo.lua`
+## 6.10 Tree Control — `tree_demo.lua`
 
 The **Tree control** (`k.ctrl.tree`) displays a field from a database table as an expandable tree. The hierarchy is an adjacency list: each row has a unique-ID column and a parent-reference column (`parent_id`). The host fetches all matching rows in one query and builds the tree server-side; the client expands/collapses locally (full load, good to ~5k nodes).
 
@@ -3974,7 +4373,7 @@ end
 
 ---
 
-## 6.9 Tab Control — `tab_demo.lua`
+## 6.11 Tab Control — `tab_demo.lua`
 
 The **Tab control** (`k.ctrl.tab`) organizes content into multiple tabs, showing only the active tab's panel at a time. Users switch tabs by clicking a header (or, on touch, swiping the content area). The script can also switch tabs programmatically with `k.tab.*`.
 
@@ -4012,7 +4411,7 @@ end
 
 ---
 
-## 6.10 Layout Controls — `shell_demo.lua`
+## 6.12 Layout Controls — `shell_demo.lua`
 
 The **Layout controls** (`k.ctrl.topbar`, `k.ctrl.sidebar`, `k.ctrl.footer`) provide a complete application shell on top of any form (§11 of `kforms_enhancements.md`). The topbar and footer are fixed-position bars spanning the full viewport width; the sidebar is a fixed panel anchored to the viewport's left or right edge, outside the form flow — all three render outside the ordinary form layout.
 
@@ -4061,6 +4460,68 @@ end
 - **Sidebar** (`k.ctrl.sidebar`): opts `position` (`"left"`|`"right"` — the viewport edge the fixed panel anchors to), `width`, `collapsed_width`, `collapsible`, `collapsed` (session-only), `items`, `on_select` (global handler → `(item)`), `visible`, `style` (`{bg, border_right, ...}`). Item click fires `sidebar_select` → `(action, item, index)`. Collapse is session-only (resets on reload); the form body padding follows the sidebar width on its side.
 - **Footer** (`k.ctrl.footer`): opts `text`, `version` (auto-filled from the KALUA binary when omitted), `script_name` (auto-filled from the running script), `links = {{label, url}}`, `visible`, `style`. No events. Fixed 40px height.
 - **Layout integration**: all three render outside the normal control flow (`position: fixed`) and never occupy a grid cell. On the run page a form with a sidebar **fills the whole remaining viewport area between the topbar, sidebar and footer** with an ~3px gap on every side — there is no empty band on the right. Collapsing the sidebar slides the frame to the collapsed strip (still ~3px away). Forms with a topbar/footer but no sidebar keep the plain full-width padding.
+
+---
+
+## 6.13 Widget Styling
+
+Every form and control supports dynamic styling through the same set of properties. Styling can be set at construction time (via the options table) or changed at runtime with `k.set_property(form, prop, value)` (form-level) or `k.ctrl.set_property(form, name, prop, value)` (control-level). A styling change triggers an automatic re-render of the affected form or control.
+
+### Form-level styling (`k.set_property`)
+
+| Prop | Meaning | Example |
+|------|---------|---------|
+| `title` | Form header text | `k.set_property("main", "title", "Dashboard")` |
+| `align` | Control alignment: `left` (default), `center`, `right` | `k.set_property("main", "align", "center")` |
+| `gap` | Gap between controls/cells in px | `k.set_property("main", "gap", 16)` |
+| `bg` | Background color (CSS color) | `k.set_property("main", "bg", "#1e3a5f")` |
+| `color` | Text color (CSS color) | `k.set_property("main", "color", "#fff")` |
+| `font` | CSS font-family, or a text preset: `h1`–`h6`, `p` | `k.set_property("main", "font", "h2")` |
+| `font_size` | Explicit font size in px (overrides preset) | `k.set_property("main", "font_size", 18)` |
+| `style` | Text preset: `h1`–`h6`, `p` | `k.set_property("main", "style", "h1")` |
+
+The reserved form keys `name`, `controls`, `handlers` and `order` cannot be set via `k.set_property`.
+
+### Per-control styling (options table)
+
+Most controls accept the same styling keys in their options table:
+
+| Opt | Meaning | Example |
+|-----|---------|---------|
+| `bg` | Background color | `{ bg = "#f5f5f5" }` |
+| `color` | Text color | `{ color = "#d00" }` |
+| `font` | Font-family or preset (`h1`–`h6`, `p`) | `{ font = "h3" }` |
+| `font_size` | Font size in px | `{ font_size = 14 }` |
+| `style` | Text preset (`h1`–`h6`, `p`) | `{ style = "h1" }` |
+| `cell` | Grid cell id to place the control in | `{ cell = "main" }` |
+| `align` | Alignment override: `left`, `center`, `right` | `{ align = "center" }` |
+
+`font` accepts either a CSS font-family string (`"Arial, sans-serif"`) or a preset (`h1`–`h6` or `p`). An explicit `font_size` wins over the preset's em-based size. The `style` opt is the same preset list.
+
+The `style` table (a nested opts sub-table) maps friendly keys to CSS properties: `bg` → `background`, `bg_color` → `background-color`, `text_color` → `color`, and any `snake_case` or `camelCase` key is converted to kebab-case (e.g. `border_right` → `border-right`).
+
+```lua
+k.ctrl.label("main", "warning", {
+  text  = "Action required",
+  style = { bg = "#ffe5e5", color = "#900", font_size = 14 },
+  align = "center",
+})
+```
+
+### Runtime restyling
+
+Because `k.set_property` / `k.ctrl.set_property` re-render the target, you can restyle on interaction:
+
+```lua
+k.ctrl.button("main", "btn_theme", {
+  label = "Dark mode",
+  onclick = function()
+    k.set_property("main", "bg", "#222")
+    k.set_property("main", "color", "#eee")
+    k.ctrl.set_property("main", "btn_theme", "bg", "#444")
+  end
+})
+```
 
 ---
 

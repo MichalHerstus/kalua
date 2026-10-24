@@ -436,6 +436,16 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		ctrl := getString(msg, "ctrl")
 		value := msg["value"]
 		sess.PostGridBatchDelete(form, ctrl, value)
+	case "ai_chat_send":
+		form := getString(msg, "form")
+		value := map[string]interface{}{
+			"text":    getString(msg, "text"),
+			"api_key": getString(msg, "api_key"),
+		}
+		sess.PostEventAny(form, "__kai_chat", "ai_chat_send", value)
+	case "ai_chat_close":
+		form := getString(msg, "form")
+		sess.PostEventAny(form, "__kai_chat", "ai_chat_close", nil)
 	case "chart_image_resp":
 		id := getString(msg, "id")
 		value := getString(msg, "value")

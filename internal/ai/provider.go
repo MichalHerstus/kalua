@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"kalua/internal/common"
 )
 
 // ProviderConfig holds the LLM connection settings.
@@ -41,17 +43,11 @@ func EnvConfig() ProviderConfig {
 
 // ChatRequest represents an OpenAI-compatible chat completion request.
 type ChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Stream      bool          `json:"stream,omitempty"`
-	Temperature float64       `json:"temperature,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-}
-
-// ChatMessage represents a single message in the conversation.
-type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Model       string            `json:"model"`
+	Messages    []common.ChatMessage `json:"messages"`
+	Stream      bool              `json:"stream,omitempty"`
+	Temperature float64           `json:"temperature,omitempty"`
+	MaxTokens   int               `json:"max_tokens,omitempty"`
 }
 
 // ChatResponse represents an OpenAI-compatible chat completion response.
@@ -61,8 +57,8 @@ type ChatResponse struct {
 
 // ChatChoice represents a single completion choice.
 type ChatChoice struct {
-	Message      ChatMessage `json:"message"`
-	FinishReason string      `json:"finish_reason"`
+	Message      common.ChatMessage `json:"message"`
+	FinishReason string             `json:"finish_reason"`
 }
 
 // StreamChoice represents a single streaming choice.
@@ -104,7 +100,7 @@ func NewClientFromEnv() *Client {
 }
 
 // Completion sends a non-streaming chat completion request and returns the assistant's message content.
-func (c *Client) Completion(ctx context.Context, messages []ChatMessage) (string, error) {
+func (c *Client) Completion(ctx context.Context, messages []common.ChatMessage) (string, error) {
 	req := ChatRequest{
 		Model:    c.model,
 		Messages: messages,
@@ -150,7 +146,7 @@ func (c *Client) Completion(ctx context.Context, messages []ChatMessage) (string
 // of content deltas. The channel is closed when the stream ends. Chromium-style
 // OpenAI servers (LM Studio, OpenAI, OpenRouter) only SSE-stream when the
 // request body carries "stream": true — the Accept header alone is not enough.
-func (c *Client) CompletionStream(ctx context.Context, messages []ChatMessage) (<-chan string, error) {
+func (c *Client) CompletionStream(ctx context.Context, messages []common.ChatMessage) (<-chan string, error) {
 	req := ChatRequest{
 		Model:    c.model,
 		Messages: messages,

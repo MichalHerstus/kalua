@@ -20,6 +20,7 @@ const (
 	PendingSleep
 	PendingFormShow
 	PendingDBQuery
+	PendingFormShowValue
 )
 
 // DBOperation represents a database operation to execute asynchronously

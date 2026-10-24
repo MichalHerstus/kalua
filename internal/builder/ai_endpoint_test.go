@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"kalua/internal/ai"
+	"kalua/internal/common"
 )
 
 // mockAIProvider creates an httptest server that acts as an OpenAI-compatible
@@ -33,7 +34,7 @@ func mockAIProvider(t *testing.T, responseFn func(body string) string) *httptest
 		}
 		resp := ai.ChatResponse{
 			Choices: []ai.ChatChoice{{
-				Message: ai.ChatMessage{Role: "assistant", Content: responseFn(fmt.Sprintf("%+v", req))},
+				Message: common.ChatMessage{Role: "assistant", Content: responseFn(fmt.Sprintf("%+v", req))},
 			}},
 		}
 		w.Header().Set("Content-Type", "application/json")

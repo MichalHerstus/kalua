@@ -558,8 +558,16 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		layoutDispatch = true
 	}
 
+	// AI chat events (kforms_enhancements.md §12): ai_chat_send and
+	// ai_chat_close target the AI chat form directly; they are not control
+	// values and skip the generic control-value update.
+	aiChatDispatch := false
+	if (msg.event == "ai_chat_send" || msg.event == "ai_chat_close") && s.aiChatDispatch(msg) {
+		aiChatDispatch = true
+	}
+
 	// Update control value in form definition from browser event
-	if !looperDispatch && !chartDispatch && !loginDispatch && !treeDispatch && !tabDispatch && !layoutDispatch && value != lua.LNil {
+	if !looperDispatch && !chartDispatch && !loginDispatch && !treeDispatch && !tabDispatch && !layoutDispatch && !aiChatDispatch && value != lua.LNil {
 		s.updateControlValue(msg.form, msg.ctrl, value)
 	}
 
@@ -643,6 +651,18 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 			}
 		}
 		resumeArgs = []lua.LValue{vt.RawGetString("action"), item, vt.RawGetString("index")}
+	case aiChatDispatch && msg.event == "ai_chat_send":
+		vt := value.(*lua.LTable)
+		text := vt.RawGetString("text").String()
+		apiKey := ""
+		if ak := vt.RawGetString("api_key"); ak != lua.LNil {
+			apiKey = ak.String()
+		}
+		s.handleAIChatSend(msg.form, text, apiKey, logger)
+		return
+	case aiChatDispatch && msg.event == "ai_chat_close":
+		s.handleAIChatClose(msg.form)
+		return
 	}
 
 	ran := s.runFormHandler(msg.form, ctrlKey, msg.event, resumeArgs, logger)
@@ -3722,6 +3742,15 @@ func (s *Session) StoreFormCoro(name string, co *lua.LState) {
 
 // ResumeFormCoro resumes the suspended coroutine for a form show operation.
 func (s *Session) ResumeFormCoro(name string) bool {
+	return s.ResumeFormCoroWith(name, lua.LNil)
+}
+
+// ResumeFormCoroWith resumes the suspended coroutine for a form show operation
+// with a custom return value.
+func (s *Session) ResumeFormCoroWith(name string, val lua.LValue) bool {
+	if val == nil {
+		val = lua.LNil
+	}
 	s.formCoroMu.Lock()
 	co, exists := s.formCoros[name]
 	if exists {
@@ -3733,8 +3762,7 @@ func (s *Session) ResumeFormCoro(name string) bool {
 		return false
 	}
 
-	// Resume the coroutine with nil (form.show returns nil)
-	st, err, _ := s.L.Resume(co, nil, lua.LNil)
+	st, err, _ := s.L.Resume(co, nil, val)
 	if st == lua.ResumeError {
 		if s.env != nil && s.env.Logger != nil {
 			s.env.Logger.Errorf("form show resume error: %v", err)

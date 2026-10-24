@@ -14,7 +14,7 @@ import (
 // SetupWasm configures the Lua state for WASM mode (browser).
 // This registers only the bindings that work in the browser environment.
 func SetupWasm(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterface, logger Logger) *Env {
-	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize, Sess: sess, Logger: logger, verbose: opts.Verbose, scriptName: opts.ScriptName}
+	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize, Sess: sess, Logger: logger, verbose: opts.Verbose, scriptName: opts.ScriptName, aiConfig: opts.AIConfig}
 	if e.maxFileSize <= 0 {
 		e.maxFileSize = DefaultMaxFileSize
 	}

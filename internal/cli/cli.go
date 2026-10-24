@@ -16,6 +16,7 @@ import (
 	"kalua/internal/bindings"
 	"kalua/internal/builder"
 	"kalua/internal/checker"
+	"kalua/internal/common"
 	"kalua/internal/config"
 	"kalua/internal/host"
 	"kalua/internal/lsp"
@@ -131,6 +132,9 @@ func runCmd(args []string) int {
 		debugMode    = fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
 		watch        = fs.Bool("watch", false, "Reload the app automatically when the script changes on disk")
 		iniFlag      = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
+		aiBaseURL    = fs.String("ai-base-url", "", "AI base URL (overrides KALUA_AI_BASE_URL)")
+		aiModel      = fs.String("ai-model", "", "AI model (overrides KALUA_AI_MODEL)")
+		aiKeyEnv     = fs.String("ai-api-key-env", "KALUA_AI_API_KEY", "Env var holding the AI API key")
 		dbFlag       = multiFlag{}
 		argFlag      = multiFlag{}
 		allowFSFlag  = multiFlag{}
@@ -167,6 +171,15 @@ func runCmd(args []string) int {
 		return int(host.ExitUsage)
 	}
 
+	// Resolve AI config for k.form.ai_agent (flags > KALUA.INI > env > defaults).
+	var aiKeyOverride string
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "ai-api-key-env" {
+			aiKeyOverride = os.Getenv(*aiKeyEnv)
+		}
+	})
+	aiCfg := resolveAI(ini, aiOptions{BaseURL: *aiBaseURL, Model: *aiModel, APIKey: aiKeyOverride})
+
 	if *testMode {
 		// Run in headless mode for tests
 		cfg := host.RunConfig{
@@ -197,7 +210,11 @@ func runCmd(args []string) int {
 	}
 
 	server := web.NewServer("127.0.0.1", *port, *sessionLimit,
-		bindings.Options{AllowFS: allowFSFlag.values, Verbose: *verbose}, host.NewLogger(*verbose))
+		bindings.Options{AllowFS: allowFSFlag.values, Verbose: *verbose, AIConfig: &common.AIConfig{
+			BaseURL: aiCfg.BaseURL,
+			APIKey:  aiCfg.APIKey,
+			Model:   aiCfg.Model,
+		}}, host.NewLogger(*verbose))
 
 	// SIGHUP triggers a hot reload (same path as the --watch file watcher).
 	hup := make(chan os.Signal, 1)

@@ -143,6 +143,14 @@ k.print(res.status, res.body)`},
 	"assign": {Name: "assign", Group: "flow", Signature: "k.assign(target, kind, value)", Docs: "Sets a global variable or control value with type coercion. target: string (global name) or table {form=, ctrl=}. kind: \"numeric\"|\"string\"|\"boolean\"|\"date\". Returns the coerced value."},
 	"set":    {Name: "set", Group: "flow", Signature: "k.set(name, fn)", Docs: "Stores a function in the action registry for later execution via k.exec."},
 	"exec":   {Name: "exec", Group: "flow", Signature: "k.exec(name, ...)", Docs: "Executes a previously stored function (via k.set) asynchronously with the given arguments. Returns the function's result(s)."},
+	"ai.tool": {Name: "ai.tool", Group: "ai", Signature: "k.ai.tool(name, schemaTable, fn)",
+		Docs: "Registers or overrides an AI tool for k.form.ai_agent. name: tool name the model calls. schemaTable: {desc=string, params={{name=,type=,required=,desc=},...}}. fn: optional implementation function; omitted defaults to the global function of the same name. §12",
+		Params: []Param{
+			P("name", "string", "Tool name."),
+			P("schema", "table", "Tool schema: {desc=string, params=...}."),
+			P("fn", "function", "Optional implementation; defaults to the global function of the same name."),
+		},
+		Example: `k.ai.tool("get_customer", { desc = "Look up a customer by id", params = { {name="id", type="number", required=true} } }, get_customer)`},
 
 	// debug
 	"debug":        {Name: "debug", Group: "debug", Signature: "k.debug", Docs: "Runtime introspection helpers: stack/locals/trace."},
@@ -193,6 +201,13 @@ k.form.show("custom", {modal=true, gap={x=15, y=5}})`},
 		Docs:    "Re-renders and pushes the form to the browser.",
 		Params:  []Param{P("name", "string", "Form name to re-render.")},
 		Example: `k.form.refresh("main")`},
+	"form.ai_agent": {Name: "form.ai_agent", Group: "forms", Signature: "k.form.ai_agent([optsTable]) → transcriptTable",
+		Docs: "Opens a modal AI chat form. The script blocks until the user closes the chat; the return value is the full transcript as an array of {role, content, name?} message tables. Every script global function is auto-exposed as a tool the agent can call (descriptions from comments above the function, param names from debug info). Use k.ai.tool(name, schema, fn) to override or register a tool explicitly. opts: {title, welcome, system, max_turns, tools, api_key, base_url, model}. Requires AI configuration ([AI] in KALUA.INI or KALUA_AI_* env vars), or pass api_key explicitly. §12",
+		Params: []Param{
+			P("opts", "table", "Optional options: {title='AI Assistant', welcome, system, max_turns=8, tools, api_key, base_url, model}."),
+		},
+		Example: `local transcript = k.form.ai_agent{ title = "Support assistant", welcome = "How can I help?", max_turns = 6, api_key = "sk-..." }
+for _, m in ipairs(transcript) do print(m.role, m.content) end`},
 	"form.on": {Name: "form.on", Group: "forms", Signature: "k.form.on(form, ctrl, event, fn) | k.form.on(name, event, fn) | k.form.on(name, \"on_idle\", ms, fn)",
 		Docs: "Registers an event handler. 4-arg form: control handler (form, ctrl, event, fn) for control events (e.g. \"onclick\"). 3-arg form: form-level handler (name, event, fn) for events like open_form, after_open_form, close_form, key_pressed (used as fallback when no control handler exists). 4-arg form with a number: k.form.on(name, \"on_idle\", ms, fn) sets a periodic idle callback (ms interval, default 1000) — only the topmost form receives idle events.",
 		Params: []Param{

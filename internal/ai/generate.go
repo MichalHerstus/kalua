@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"kalua/internal/checker"
+	"kalua/internal/common"
 	"kalua/internal/host"
 )
 
@@ -27,7 +28,7 @@ type GenerateRequest struct {
 	// conversation can refine a request across multiple generations. Each
 	// ChatMessage must be Role "user" or "assistant"; the current Request is
 	// appended as the final user turn.
-	History []ChatMessage
+	History []common.ChatMessage
 }
 
 // GenerateResult holds the output of Generate.
@@ -56,7 +57,7 @@ func modeFor(req GenerateRequest) string {
 // generate runs the single LLM generation then the validation→fix loop.
 // messages are pre-assembled (system + user) so streaming and non-streaming
 // share the same pipeline.
-func generate(ctx context.Context, client *Client, messages []ChatMessage, req GenerateRequest) (*GenerateResult, error) {
+func generate(ctx context.Context, client *Client, messages []common.ChatMessage, req GenerateRequest) (*GenerateResult, error) {
 	script, err := client.Completion(ctx, messages)
 	if err != nil {
 		return nil, fmt.Errorf("initial generation: %w", err)
@@ -176,7 +177,7 @@ func fix(client *Client, script string, errors []string, mode string) (string, e
 	if mode == ModeServe {
 		appendix = KaluaServePrompt()
 	}
-	messages := []ChatMessage{
+	messages := []common.ChatMessage{
 		{Role: "system", Content: BuildSystemPromptFor(mode, false) + appendix},
 		{Role: "user", Content: prompt},
 	}

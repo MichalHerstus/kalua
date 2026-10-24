@@ -1,6 +1,10 @@
 package ai
 
-import "strings"
+import (
+	"strings"
+
+	"kalua/internal/common"
+)
 
 // KaluaComponentPrompt returns the OpenUI-style "component library" for KALUA
 // run-mode forms. OpenUI generates its system prompt from a component library;
@@ -135,7 +139,7 @@ Ctrl-C (ng) friendly: never block in a handler beyond the request.
 // the compact mode subset is the default (it fits local-model context); the
 // full API reference is opt-in via --full-doc / the FullDoc flag. req.Mode
 // selects run vs serve shape (empty = run).
-func buildMessages(req GenerateRequest) []ChatMessage {
+func buildMessages(req GenerateRequest) []common.ChatMessage {
 	full := req.FullDoc
 	system := BuildSystemPrompt(full)
 	if req.Mode == ModeServe {
@@ -143,12 +147,12 @@ func buildMessages(req GenerateRequest) []ChatMessage {
 	} else {
 		system = system + KaluaComponentPrompt()
 	}
-	messages := []ChatMessage{
+	messages := []common.ChatMessage{
 		{Role: "system", Content: system},
 	}
 	for _, h := range req.History {
 		messages = append(messages, h)
 	}
-	messages = append(messages, ChatMessage{Role: "user", Content: buildPrompt(req)})
+	messages = append(messages, common.ChatMessage{Role: "user", Content: buildPrompt(req)})
 	return messages
 }

@@ -13,6 +13,7 @@ import (
 
 	"kalua/internal/bindings"
 	"kalua/internal/checker"
+	"kalua/internal/common"
 )
 
 // mockChatServer creates an httptest server that returns a fixed completion.
@@ -81,7 +82,7 @@ func TestProviderCompletion(t *testing.T) {
 		BaseURL: srv.URL,
 		Model:   "test-model",
 	})
-	got, err := c.Completion(context.Background(), []ChatMessage{
+	got, err := c.Completion(context.Background(), []common.ChatMessage{
 		{Role: "user", Content: "test"},
 	})
 	if err != nil {
@@ -299,7 +300,7 @@ func TestGenerateStreamMock(t *testing.T) {
 func TestBuildMessagesHistory(t *testing.T) {
 	req := GenerateRequest{
 		Request: "make the button green",
-		History: []ChatMessage{
+		History: []common.ChatMessage{
 			{Role: "user", Content: "a login form with a button"},
 			{Role: "assistant", Content: "function main() ... end"},
 		},
@@ -347,7 +348,7 @@ func mockOpenAIStreamProvider(t *testing.T, response string) *httptest.Server {
 		if !req.Stream {
 			// Server requires "stream":true in the body; it answers JSON.
 			b, _ := json.Marshal(ChatResponse{Choices: []ChatChoice{{
-				Message: ChatMessage{Role: "assistant", Content: "NOT-STREAMED"},
+				Message: common.ChatMessage{Role: "assistant", Content: "NOT-STREAMED"},
 			}}})
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(b)
@@ -369,7 +370,7 @@ func TestCompletionStreamSendsStreamTrue(t *testing.T) {
 	srv := mockOpenAIStreamProvider(t, "function main() end")
 	defer srv.Close()
 	c := NewClient(ProviderConfig{BaseURL: srv.URL, Model: "m"})
-	ch, err := c.CompletionStream(context.Background(), []ChatMessage{{Role: "user", Content: "x"}})
+	ch, err := c.CompletionStream(context.Background(), []common.ChatMessage{{Role: "user", Content: "x"}})
 	if err != nil {
 		t.Fatalf("CompletionStream: %v", err)
 	}
@@ -398,7 +399,7 @@ func TestCompletionStreamErrorStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(ProviderConfig{BaseURL: srv.URL, Model: "m"})
-	ch, err := c.CompletionStream(context.Background(), []ChatMessage{{Role: "user", Content: "x"}})
+	ch, err := c.CompletionStream(context.Background(), []common.ChatMessage{{Role: "user", Content: "x"}})
 	if err == nil {
 		t.Fatal("expected error for HTTP 400, got nil")
 	}
@@ -431,7 +432,7 @@ func mockFencedProvider(t *testing.T, response string) *httptest.Server {
 			return
 		}
 		b, _ := json.Marshal(ChatResponse{Choices: []ChatChoice{{
-			Message: ChatMessage{Role: "assistant", Content: fenced},
+			Message: common.ChatMessage{Role: "assistant", Content: fenced},
 		}}})
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(b)

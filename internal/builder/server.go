@@ -21,6 +21,7 @@ import (
 	"kalua/internal/ai"
 	"kalua/internal/bindings"
 	"kalua/internal/checker"
+	"kalua/internal/common"
 	"kalua/internal/web"
 
 	lua "github.com/yuin/gopher-lua"
@@ -610,7 +611,7 @@ func (s *Server) handleAIStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	client := ai.NewClient(s.aiCfg)
-	_, err := client.Completion(ctx, []ai.ChatMessage{{Role: "user", Content: "Reply with OK."}})
+	_, err := client.Completion(ctx, []common.ChatMessage{{Role: "user", Content: "Reply with OK."}})
 	if err == nil {
 		status.Reachable = true
 	} else {
@@ -623,7 +624,7 @@ func (s *Server) handleAIStatus(w http.ResponseWriter, r *http.Request) {
 type AIGenerateRequest struct {
 	Request string           `json:"request"`
 	Script  string           `json:"script,omitempty"`
-	History []ai.ChatMessage `json:"history,omitempty"`
+	History []common.ChatMessage `json:"history,omitempty"`
 }
 
 // AIGenerateResponse is the JSON response for /api/ai/generate.
@@ -674,7 +675,7 @@ func (s *Server) handleAIGenerate(w http.ResponseWriter, r *http.Request) {
 type AIFixRequest struct {
 	Request string           `json:"request,omitempty"`
 	Script  string           `json:"script"`
-	History []ai.ChatMessage `json:"history,omitempty"`
+	History []common.ChatMessage `json:"history,omitempty"`
 }
 
 // AIFixResponse is the JSON response for /api/ai/fix.

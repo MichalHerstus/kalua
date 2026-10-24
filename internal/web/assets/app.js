@@ -1166,6 +1166,18 @@
             case 'get_selection':
                 handleGetSelection(msg.id, msg.form, msg.ctrl);
                 break;
+            case 'ai_chat_open':
+                showAIChat(msg.form, msg.html);
+                break;
+            case 'ai_chat_delta':
+                aiAppendDelta(msg.form, msg.text);
+                break;
+            case 'ai_chat_status':
+                aiStatus(msg.form, msg.text);
+                break;
+            case 'ai_chat_done':
+                aiDone(msg.form);
+                break;
         }
     }
 
@@ -1903,6 +1915,63 @@
         }
     }
 
+    // AI chat modal
+    function showAIChat(formName, html) {
+        const overlay = document.createElement('div');
+        overlay.id = 'aichat:' + formName;
+        overlay.className = 'msgbox-overlay';
+        overlay.innerHTML = html;
+        modals.appendChild(overlay);
+
+        // Focus the input
+        const input = overlay.querySelector('.kalua-ai-input');
+        if (input) {
+            input.focus();
+        }
+
+        // Trap focus
+        overlay.addEventListener('keydown', function(e) {
+            if (e.key === 'Tab') {
+                trapFocus(e, overlay);
+            }
+        });
+    }
+
+    function closeAIChat(formName) {
+        const overlay = document.getElementById('aichat:' + formName);
+        if (overlay) {
+            overlay.remove();
+        }
+    }
+
+    function aiAppendDelta(formName, text) {
+        const transcript = document.getElementById(formName + '-ai-transcript');
+        if (!transcript) return;
+        // Append to the last assistant bubble or create a new one.
+        let bubble = transcript.lastElementChild;
+        if (!bubble || !bubble.classList.contains('kalua-ai-bubble-assistant')) {
+            bubble = document.createElement('div');
+            bubble.className = 'kalua-ai-bubble kalua-ai-bubble-assistant';
+            transcript.appendChild(bubble);
+        }
+        bubble.textContent += text;
+        transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    function aiStatus(formName, text) {
+        const statusEl = document.getElementById(formName + '-ai-status');
+        if (!statusEl) return;
+        statusEl.textContent = text;
+        statusEl.style.display = text ? 'block' : 'none';
+    }
+
+    function aiDone(formName) {
+        const statusEl = document.getElementById(formName + '-ai-status');
+        if (statusEl) {
+            statusEl.style.display = 'none';
+        }
+    }
+
     // Popup (multilevel menu modal)
     function showPopup(id, html) {
         const overlay = document.createElement('div');
@@ -2245,6 +2314,35 @@
             return;
         }
 
+        // AI chat close button.
+        const aiClose = e.target.closest('[data-k-ai-close]');
+        if (aiClose) {
+            e.preventDefault();
+            const form = aiClose.dataset.kForm;
+            send({ type: 'ai_chat_close', form: form });
+            closeAIChat(form);
+            return;
+        }
+
+        // AI chat send button.
+        const aiSend = e.target.closest('[data-k-ai-send]');
+        if (aiSend) {
+            e.preventDefault();
+            const form = aiSend.dataset.kForm;
+            const chat = document.getElementById(form + '-ai-chat');
+            const input = document.getElementById(form + '-ai-input');
+            const apikeyInput = chat ? chat.querySelector('[data-k-ai-apikey]') : null;
+            const text = input ? input.value : '';
+            if (text.trim() === '') return;
+            const msg = { type: 'ai_chat_send', form: form, text: text };
+            if (apikeyInput && apikeyInput.value.trim() !== '') {
+                msg.api_key = apikeyInput.value.trim();
+            }
+            send(msg);
+            input.value = '';
+            return;
+        }
+
         const target = e.target.closest('[data-k-form][data-k-ctrl]');
         if (!target) return;
 
@@ -2310,6 +2408,24 @@
     }
 
     function handleKeydown(e) {
+        // AI chat input: Enter sends the message.
+        const aiInput = e.target.closest('[data-k-ai-input]');
+        if (aiInput && e.key === 'Enter') {
+            e.preventDefault();
+            const form = aiInput.closest('.kalua-ai-chat').dataset.kForm;
+            const chat = document.getElementById(form + '-ai-chat');
+            const apikeyInput = chat ? chat.querySelector('[data-k-ai-apikey]') : null;
+            const text = aiInput.value;
+            if (text.trim() === '') return;
+            const msg = { type: 'ai_chat_send', form: form, text: text };
+            if (apikeyInput && apikeyInput.value.trim() !== '') {
+                msg.api_key = apikeyInput.value.trim();
+            }
+            send(msg);
+            aiInput.value = '';
+            return;
+        }
+
         const target = e.target.closest('[data-k-form][data-k-ctrl]');
         if (!target) return;
 
