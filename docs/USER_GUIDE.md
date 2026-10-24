@@ -3974,6 +3974,44 @@ end
 
 ---
 
+## 6.9 Tab Control — `tab_demo.lua`
+
+The **Tab control** (`k.ctrl.tab`) organizes content into multiple tabs, showing only the active tab's panel at a time. Users switch tabs by clicking a header (or, on touch, swiping the content area). The script can also switch tabs programmatically with `k.tab.*`.
+
+```lua
+function main()
+  k.form.new("main", { title = "Tab Demo" })
+
+  k.ctrl.tab("main", "tabs", {
+    tabs = {
+      { title = "Dashboard", icon = "📊" },
+      { title = "Reports",   icon = "📈" },
+      { title = "Settings",  icon = "⚙️" },
+    },
+    tab_position = "top",      -- "top" (default) or "bottom"
+    swipable = true,           -- allow swipe navigation on content
+  })
+
+  -- Fired whenever the user (or k.tab.set_tab) switches tabs.
+  k.form.on("main", "tabs", "onchange", function(new_idx, old_idx)
+    k.print("Switched from tab " .. old_idx .. " to " .. new_idx)
+  end)
+
+  k.ctrl.button("main", "btn_goto_3", { label = "Go to Settings", onclick = function()
+    k.tab.set_tab("main", "tabs", 3)   -- programmatic switch (1-based)
+  end })
+
+  k.form.show("main")
+end
+```
+
+- **Options**: `tabs` (required array of `{title, icon?}`), `tab_position` (`"top"`|`"bottom"`), `swipable` (default `true`), plus the shared layout/styling opts (`cell`, `align`, `bg`, `color`, `font`, ...).
+- **Events**: `onchange(new_idx, old_idx)` — fired by `k.form.on(form, ctrl, "onchange", fn)` when the active tab changes (user click or `k.tab.set_tab`).
+- **Operations** (`k.tab.*`): `set_tab(form, name, index)`, `get_tab(form, name)` → active index, `get_tab_count(form, name)`, `add_tab(form, name, {title, icon?})`, `insert_tab(form, name, index, {title, icon?})`, `remove_tab(form, name, index)`, `set_tab_title(form, name, index, title)`, `set_tab_icon(form, name, index, icon)`. All indexes are 1-based.
+- **State sync**: the active tab is stored on the control (`current_tab`), so `k.tab.get_tab` always reports the tab the browser is showing — programmatic switches and user clicks both keep it in sync.
+
+---
+
 # 7. KALUA Builder
 
 The **KALUA Builder** is a design-time visual editor for forms. It never executes the app; it renders the **real Go renderer** in-process, so the preview is pixel-accurate (the builder embeds the same runtime stylesheet that `KALUA run` serves). A file may contain **many forms** plus non-form code (helpers, `main()`, DB setup, AI chat) — the builder edits any form without touching what it does not own.

@@ -58,6 +58,7 @@ const (
 	inboxGridUpdateRow                       // k.grid.update_row request
 	inboxGridUpdateRowResp                   // k.grid.update_row response
 	inboxTreeDataRequest                     // browser asked for the full tree data
+	inboxTabChange                           // browser reported a tab switch (tab_change)
 )
 
 // inboxMsg is a typed message delivered to the session actor's inbox.

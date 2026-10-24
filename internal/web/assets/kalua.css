@@ -744,6 +744,73 @@ body {
     font-style: italic;
 }
 
+/* Tab control (k.ctrl.tab §10): headers + panels showing only the active
+   tab's panel at a time. Tab position top|bottom flips the flex order. */
+.kalua-tab {
+    display: flex;
+    flex-direction: column;
+}
+.kalua-tab[data-k-tab-position="bottom"] {
+    flex-direction: column-reverse;
+}
+.kalua-tab-headers {
+    display: flex;
+    border-bottom: 1px solid #ddd;
+    background: #fafafa;
+    overflow-x: auto;
+}
+.kalua-tab[data-k-tab-position="bottom"] .kalua-tab-headers {
+    border-top: 1px solid #ddd;
+    border-bottom: none;
+}
+.kalua-tab-btn {
+    flex: 0 0 auto;
+    min-width: 40px;
+    padding: 8px 14px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font: inherit;
+    color: #666;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -1px;
+}
+.kalua-tab[data-k-tab-position="bottom"] .kalua-tab-btn {
+    border-top: 3px solid transparent;
+    margin-top: -1px;
+}
+.kalua-tab-btn[aria-selected="true"] {
+    color: #2f6fdd;
+    border-bottom-color: #2f6fdd;
+    font-weight: 600;
+}
+.kalua-tab[data-k-tab-position="bottom"] .kalua-tab-btn[aria-selected="true"] {
+    border-top-color: #2f6fdd;
+}
+.kalua-tab-btn:focus-visible {
+    outline: 2px solid #2f6fdd;
+}
+.kalua-tab-panels {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    min-height: 120px;
+}
+.kalua-tab-panel {
+    display: none;
+    height: 100%;
+    overflow: auto;
+}
+.kalua-tab-panel[aria-hidden="false"] {
+    display: block;
+}
+.kalua-tab[data-k-tab-swipable="true"] .kalua-tab-panels {
+    touch-action: pan-y;
+}
+
 /* Chart control (Chart.js) */
 .kalua-chart-container {
     position: relative;

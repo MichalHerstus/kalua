@@ -623,6 +623,8 @@ func renderControl(ctrl *lua.LTable) string {
 		return renderLogin(ctrl, formName, name, id, visible)
 	case "tree":
 		return renderTree(ctrl, formName, name, id, visible)
+	case "tab":
+		return renderTab(ctrl, formName, name, id, visible)
 	}
 	return `<div class="kalua-control">Unknown control: ` + escText(ctrlType) + `</div>`
 }
@@ -929,6 +931,73 @@ func renderTree(ctrl *lua.LTable, formName, name, id, visible string) string {
 		     data-k-tree-selection="` + selection + `"
 		     data-k-tree-error="` + errorTxt + `">
 			<div class="kalua-tree-empty">Loading…</div>
+		</div>
+	</div>`
+}
+
+// renderTab renders a tab control (kforms_enhancements.md §10). The control
+// organizes content into tabs showing only the active tab's panel at a time.
+// The container carries data-k-tab-* attributes; the client (app.js) handles
+// click/swipe switching and sends tab_change events to the host.
+func renderTab(ctrl *lua.LTable, formName, name, id, visible string) string {
+	position := "top"
+	if v := ctrl.RawGetString("tab_position"); v != lua.LNil && v.String() != "" {
+		position = escAttr(v.String())
+	}
+	swipable := "true"
+	if v := ctrl.RawGetString("swipable"); v != lua.LNil && v.String() == "false" {
+		swipable = "false"
+	}
+	currentTab := 1
+	if v := ctrl.RawGetString("current_tab"); v != lua.LNil {
+		if n := int(lua.LVAsNumber(v)); n > 0 {
+			currentTab = n
+		}
+	}
+
+	tabs := ctrl.RawGetString("tabs")
+	var tabsHtml, panelsHtml string
+	if tabsTbl, ok := tabs.(*lua.LTable); ok {
+		tabsTbl.ForEach(func(k, v lua.LValue) {
+			tab, ok := v.(*lua.LTable)
+			if !ok {
+				return
+			}
+			idx := k.String()
+			title := ""
+			if tv := tab.RawGetString("title"); tv != lua.LNil {
+				title = escText(tv.String())
+			}
+			icon := ""
+			if iv := tab.RawGetString("icon"); iv != lua.LNil {
+				icon = escText(iv.String()) + " "
+			}
+			selected := idx == strconv.Itoa(currentTab)
+			ariaSelected := "false"
+			if selected {
+				ariaSelected = "true"
+			}
+			tabsHtml += `<button type="button" class="kalua-tab-btn" data-k-tab-btn="` + idx + `"
+				aria-selected="` + ariaSelected + `">` + icon + title + `</button>`
+			ariaHidden := "true"
+			if selected {
+				ariaHidden = "false"
+			}
+			panelsHtml += `<div class="kalua-tab-panel" data-k-tab-panel="` + idx + `"
+				aria-hidden="` + ariaHidden + `"></div>`
+		})
+	}
+
+	return `<div class="kalua-tab"` + visible + `>
+		<div class="kalua-tab-headers" id="` + escAttr(id) + `-headers"
+		     data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `"
+		     data-k-tab-position="` + position + `"
+		     data-k-tab-swipable="` + swipable + `"
+		     data-k-tab-current-tab="` + strconv.Itoa(currentTab) + `">
+			` + tabsHtml + `
+		</div>
+		<div class="kalua-tab-panels" id="` + escAttr(id) + `-panels">
+			` + panelsHtml + `
 		</div>
 	</div>`
 }

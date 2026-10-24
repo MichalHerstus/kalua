@@ -923,6 +923,36 @@ Sets a control's value and re-renders it.
 k.ctrl.set_value("main", "age", 31)
 ```
 
+**`k.ctrl.tab(form, name, optsTable)`**  
+Adds a tab control (kforms_enhancements.md §10) that organizes content into multiple tabs showing only the active tab's panel at a time. Users switch tabs by clicking headers; k.tab.* switches programmatically. opts: {tabs (required array of {title, icon?}), tab_position="top"|"bottom" (default "top"), swipable=?boolean (default true), cell?, align?}. Events via k.form.on(form, ctrl, "onchange", function(new_idx, old_idx) ... end). k.tab.get_tab returns the active tab index (1-based).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.tabs` | list | Required. Array of tab definitions: {title=..., icon=...}. |
+| `optsTable.tab_position` | string | "top" (default) or "bottom". |
+| `optsTable.swipable` | boolean | Enable swipe navigation on content (default true). |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="Tab Demo", layout="vertical"})
+k.ctrl.tab("main", "tabs", {
+  tabs = {
+    {title = "Dashboard", icon = "📊"},
+    {title = "Reports", icon = "📈"},
+    {title = "Settings", icon = "⚙️"}
+  },
+  tab_position = "top",
+  swipable = true,
+})
+k.form.on("main", "tabs", "onchange", function(new_idx, old_idx)
+  k.print("Switched from tab " .. old_idx .. " to " .. new_idx)
+end)
+k.form.show("main")
+```
+
 **`k.ctrl.table(form, name, optsTable)`**  
 Adds a table control; rows manipulated via k.table.*. With opts {db, query, ...} the table is DB-linked (Tabulator mode). db is a k.connect_db handle or a --db NAME prereregistered at startup.
 
@@ -1217,6 +1247,130 @@ Raises a runtime error on DB-linked loopers (rows come from the linked query).
 
 ```lua
 k.looper.set_line("main", "rows", 1, { name = "x" })
+```
+
+**`k.tab`**  
+Tab control operations: k.tab.set_tab/get_tab/add_tab/remove_tab/...
+
+**`k.tab.add_tab(form, name, {title, icon?})`**  
+Appends a new tab at the end and re-renders headers/panels.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `tab` | table | Tab definition: {title=..., icon=...}. |
+
+**Example:**
+
+```lua
+k.tab.add_tab("main", "tabs", { title = "Help", icon = "❓" })
+```
+
+**`k.tab.get_tab(form, name)`**  
+Returns the active tab index (1-based) or nil when the tab control is not found.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+
+**Example:**
+
+```lua
+local idx = k.tab.get_tab("main", "tabs")
+```
+
+**`k.tab.get_tab_count(form, name)`**  
+Returns the number of tabs or nil when the tab control is not found.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+
+**Example:**
+
+```lua
+local n = k.tab.get_tab_count("main", "tabs")
+```
+
+**`k.tab.insert_tab(form, name, index, {title, icon?})`**  
+Inserts a new tab at the 1-based position and re-renders headers/panels.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based insert position. |
+| `tab` | table | Tab definition: {title=..., icon=...}. |
+
+**Example:**
+
+```lua
+k.tab.insert_tab("main", "tabs", 1, { title = "First", icon = "🔝" })
+```
+
+**`k.tab.remove_tab(form, name, index)`**  
+Removes the tab at the 1-based position and re-renders headers/panels.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based tab index to remove. |
+
+**Example:**
+
+```lua
+k.tab.remove_tab("main", "tabs", 3)
+```
+
+**`k.tab.set_tab(form, name, index)`**  
+Programmatically switch to the tab at 1-based index. Sends a tab_set_tab message so the browser activates the tab.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based tab index to activate. |
+
+**Example:**
+
+```lua
+k.tab.set_tab("main", "tabs", 2)
+```
+
+**`k.tab.set_tab_icon(form, name, index, icon)`**  
+Updates the tab icon at the 1-based position and re-renders headers.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based tab index. |
+| `icon` | string | New tab icon (emoji or text). |
+
+**Example:**
+
+```lua
+k.tab.set_tab_icon("main", "tabs", 2, "📉")
+```
+
+**`k.tab.set_tab_title(form, name, index, title)`**  
+Updates the tab title at the 1-based position and re-renders headers.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Tab control name. |
+| `index` | number | 1-based tab index. |
+| `title` | string | New tab title. |
+
+**Example:**
+
+```lua
+k.tab.set_tab_title("main", "tabs", 1, "Overview")
 ```
 
 **`k.table.add_line(form, name, valuesTable)`**  

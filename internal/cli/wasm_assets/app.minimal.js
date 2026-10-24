@@ -1072,9 +1072,65 @@
         return values;
     }
 
+    // ---- Tab control (k.ctrl.tab §10) ----
+    // Visibility is CSS-driven (aria-hidden), so the client only needs click
+    // handling + programmatic updates from k.tab.* / brain component commands.
+
+    function tabActivate(widget, index) {
+        if (!widget) return;
+        const headers = widget.querySelector('.kalua-tab-headers');
+        const panels = widget.querySelector('.kalua-tab-panels');
+        if (headers) {
+            headers.querySelectorAll('.kalua-tab-btn').forEach(function(btn) {
+                btn.setAttribute('aria-selected', btn.getAttribute('data-k-tab-btn') === String(index) ? 'true' : 'false');
+            });
+        }
+        if (panels) {
+            panels.querySelectorAll('.kalua-tab-panel').forEach(function(panel) {
+                panel.setAttribute('aria-hidden', panel.getAttribute('data-k-tab-panel') === String(index) ? 'false' : 'true');
+            });
+        }
+        if (headers) headers.setAttribute('data-k-tab-current-tab', String(index));
+    }
+
+    function tabRebuild(headers, dataJSON) {
+        let payload = {};
+        try { Object.assign(payload, JSON.parse(dataJSON || '{}')); } catch (e) {}
+        const tabs = payload.tabs || [];
+        const current = payload.current_tab || 1;
+        const widget = headers.closest('.kalua-tab');
+        let headersHtml = '';
+        let panelsHtml = '';
+        tabs.forEach(function(t, i) {
+            const idx = i + 1;
+            const selected = idx === current;
+            const icon = t && t.icon ? escapeHtml(String(t.icon)) + ' ' : '';
+            const title = t && t.title ? escapeHtml(String(t.title)) : '';
+            headersHtml += '<button type="button" class="kalua-tab-btn" data-k-tab-btn="' + idx + '"' +
+                ' aria-selected="' + (selected ? 'true' : 'false') + '">' + icon + title + '</button>';
+            panelsHtml += '<div class="kalua-tab-panel" data-k-tab-panel="' + idx + '"' +
+                ' aria-hidden="' + (selected ? 'false' : 'true') + '"></div>';
+        });
+        headers.innerHTML = headersHtml;
+        headers.setAttribute('data-k-tab-current-tab', String(current));
+        const panels = widget ? widget.querySelector('.kalua-tab-panels') : null;
+        if (panels) panels.innerHTML = panelsHtml;
+    }
+
     function handleClick(e) {
-        const popupItem = e.target.closest('[data-k-popup-id]');
-        if (popupItem) {
+        // Tab header click: switch tab locally + report onchange {index}.
+        const tabBtn = e.target.closest('[data-k-tab-btn]');
+        if (tabBtn) {
+            e.preventDefault();
+            const headers = tabBtn.closest('.kalua-tab-headers');
+            if (!headers) return;
+            const index = parseInt(tabBtn.getAttribute('data-k-tab-btn') || '1', 10);
+            tabActivate(headers.closest('.kalua-tab'), index);
+            reportDOMEvent(headers.dataset.kForm || '', headers.dataset.kCtrl || '', 'onchange', { index: index });
+            return;
+        }
+
+        const popupItem = e.target.closest('[data-k-popup-id]');        if (popupItem) {
             const id = popupItem.dataset.kPopupId;
             if (popupItem.dataset.kSubmenu !== undefined) {
                 e.preventDefault();
@@ -1237,6 +1293,17 @@
             switch (op) {
                 case 'batch': handleLooperDBBatch(msg); break;
                 case 'refresh': looperRefresh(selector); break;
+            }
+        }
+        if (kind === 'tab') {
+            const headers = document.getElementById(String(selector || '').replace(/^#/, '') + '-headers');
+            if (!headers) return;
+            if (op === 'set_tab') {
+                let payload = {};
+                try { Object.assign(payload, JSON.parse(msg.data || '{}')); } catch (e) {}
+                tabActivate(headers.closest('.kalua-tab'), payload.index || 1);
+            } else if (op === 'update') {
+                tabRebuild(headers, msg.data);
             }
         }
     }

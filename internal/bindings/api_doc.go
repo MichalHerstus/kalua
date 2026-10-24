@@ -422,6 +422,91 @@ k.ctrl.tree("main", "tree", {
 k.form.on("main", "tree", "on_click", function(node)
   k.print("clicked " .. node.name .. " (id=" .. tostr(node.id) .. ")")
 end)`},
+	"ctrl.tab": {Name: "ctrl.tab", Group: "controls", Signature: "k.ctrl.tab(form, name, optsTable)",
+		Docs: "Adds a tab control (kforms_enhancements.md §10) that organizes content into multiple tabs showing only the active tab's panel at a time. Users switch tabs by clicking headers; k.tab.* switches programmatically. opts: {tabs (required array of {title, icon?}), tab_position=\"top\"|\"bottom\" (default \"top\"), swipable=?boolean (default true), cell?, align?}. Events via k.form.on(form, ctrl, \"onchange\", function(new_idx, old_idx) ... end). k.tab.get_tab returns the active tab index (1-based).",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Unique control name."),
+			P("optsTable.tabs", "list", "Required. Array of tab definitions: {title=..., icon=...}."),
+			P("optsTable.tab_position", "string", "\"top\" (default) or \"bottom\"."),
+			P("optsTable.swipable", "boolean", "Enable swipe navigation on content (default true)."),
+		},
+		Example: `k.form.new("main", {title="Tab Demo", layout="vertical"})
+k.ctrl.tab("main", "tabs", {
+  tabs = {
+    {title = "Dashboard", icon = "📊"},
+    {title = "Reports", icon = "📈"},
+    {title = "Settings", icon = "⚙️"}
+  },
+  tab_position = "top",
+  swipable = true,
+})
+k.form.on("main", "tabs", "onchange", function(new_idx, old_idx)
+  k.print("Switched from tab " .. old_idx .. " to " .. new_idx)
+end)
+k.form.show("main")`},
+
+	// tab operations (kforms_enhancements.md §10)
+	"tab": {Name: "tab", Group: "controls", Signature: "k.tab", Docs: "Tab control operations: k.tab.set_tab/get_tab/add_tab/remove_tab/..."},
+	"tab.set_tab": {Name: "tab.set_tab", Group: "controls", Signature: "k.tab.set_tab(form, name, index)",
+		Docs: "Programmatically switch to the tab at 1-based index. Sends a tab_set_tab message so the browser activates the tab.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Tab control name."),
+			P("index", "number", "1-based tab index to activate."),
+		},
+		Example: `k.tab.set_tab("main", "tabs", 2)`},
+	"tab.get_tab": {Name: "tab.get_tab", Group: "controls", Signature: "k.tab.get_tab(form, name)",
+		Docs: "Returns the active tab index (1-based) or nil when the tab control is not found.",
+		Params: []Param{P("form", "string", "Parent form name."), P("name", "string", "Tab control name.")},
+		Example: `local idx = k.tab.get_tab("main", "tabs")`},
+	"tab.get_tab_count": {Name: "tab.get_tab_count", Group: "controls", Signature: "k.tab.get_tab_count(form, name)",
+		Docs: "Returns the number of tabs or nil when the tab control is not found.",
+		Params: []Param{P("form", "string", "Parent form name."), P("name", "string", "Tab control name.")},
+		Example: `local n = k.tab.get_tab_count("main", "tabs")`},
+	"tab.add_tab": {Name: "tab.add_tab", Group: "controls", Signature: "k.tab.add_tab(form, name, {title, icon?})",
+		Docs: "Appends a new tab at the end and re-renders headers/panels.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Tab control name."),
+			P("tab", "table", "Tab definition: {title=..., icon=...}."),
+		},
+		Example: `k.tab.add_tab("main", "tabs", { title = "Help", icon = "❓" })`},
+	"tab.insert_tab": {Name: "tab.insert_tab", Group: "controls", Signature: "k.tab.insert_tab(form, name, index, {title, icon?})",
+		Docs: "Inserts a new tab at the 1-based position and re-renders headers/panels.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Tab control name."),
+			P("index", "number", "1-based insert position."),
+			P("tab", "table", "Tab definition: {title=..., icon=...}."),
+		},
+		Example: `k.tab.insert_tab("main", "tabs", 1, { title = "First", icon = "🔝" })`},
+	"tab.remove_tab": {Name: "tab.remove_tab", Group: "controls", Signature: "k.tab.remove_tab(form, name, index)",
+		Docs: "Removes the tab at the 1-based position and re-renders headers/panels.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Tab control name."),
+			P("index", "number", "1-based tab index to remove."),
+		},
+		Example: `k.tab.remove_tab("main", "tabs", 3)`},
+	"tab.set_tab_title": {Name: "tab.set_tab_title", Group: "controls", Signature: "k.tab.set_tab_title(form, name, index, title)",
+		Docs: "Updates the tab title at the 1-based position and re-renders headers.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Tab control name."),
+			P("index", "number", "1-based tab index."),
+			P("title", "string", "New tab title."),
+		},
+		Example: `k.tab.set_tab_title("main", "tabs", 1, "Overview")`},
+	"tab.set_tab_icon": {Name: "tab.set_tab_icon", Group: "controls", Signature: "k.tab.set_tab_icon(form, name, index, icon)",
+		Docs: "Updates the tab icon at the 1-based position and re-renders headers.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Tab control name."),
+			P("index", "number", "1-based tab index."),
+			P("icon", "string", "New tab icon (emoji or text)."),
+		},
+		Example: `k.tab.set_tab_icon("main", "tabs", 2, "📉")`},
 	"ctrl.select_text": {Name: "ctrl.select_text", Group: "controls", Signature: "k.ctrl.select_text(form, name)",
 		Docs:    "Selects all text in a textbox or textarea control.",
 		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Control name.")},
@@ -1060,7 +1145,7 @@ var Globals = []string{"ARGS", "CTRL", "ERRORCODE", "ERRORMSG", "main"}
 
 // namespaceNames are registry entries that are pure namespaces with no
 // implementation of their own; the sync test exempts them from Info.
-var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true, "looper": true, "chart": true, "grid": true, "shared": true, "ws": true, "tcp": true, "xml": true}
+var namespaceNames = map[string]bool{"form": true, "ctrl": true, "table": true, "looper": true, "chart": true, "grid": true, "tab": true, "shared": true, "ws": true, "tcp": true, "xml": true}
 
 // Docs returns a copy of the k.* documentation map (name → Info).
 func Docs() map[string]Info {

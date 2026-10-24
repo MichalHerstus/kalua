@@ -34,7 +34,11 @@ var runModeBindings = map[string]bool{
 	"ctrl.set_value": true, "ctrl.get_value": true, "ctrl.set_property": true,
 	"ctrl.get_property": true, "ctrl.set_focus": true, "ctrl.select_text": true,
 	"ctrl.get_selection": true, "ctrl.set_selection": true, "ctrl.get_item_count": true,
-	"ctrl.execute_event": true, "ctrl.chart": true, "ctrl.tree": true,
+	"ctrl.execute_event": true, "ctrl.chart": true, "ctrl.tree": true, "ctrl.tab": true,
+	// tab operations
+	"tab.set_tab": true, "tab.get_tab": true, "tab.get_tab_count": true,
+	"tab.add_tab": true, "tab.insert_tab": true, "tab.remove_tab": true,
+	"tab.set_tab_title": true, "tab.set_tab_icon": true,
 	// table & looper
 	"table.find": true, "table.add_line": true, "table.delete_line": true,
 	"table.set_column_value": true, "table.get_column_value": true,

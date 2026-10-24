@@ -208,6 +208,10 @@ func RouteOutbox(msg OutboxMsg) []WasmCmd {
 		cmds = append(cmds, componentCmd("chart", "destroy", msg.Selector, "", "", msg.Form, msg.Ctrl))
 	case "chart_get_image":
 		cmds = append(cmds, componentCmd("chart", "get_image", msg.Selector, "", msg.ID, msg.Form, msg.Ctrl))
+	case "tab_set_tab":
+		cmds = append(cmds, componentCmd("tab", "set_tab", msg.Selector, msg.Data, "", msg.Form, msg.Ctrl))
+	case "tab_update":
+		cmds = append(cmds, componentCmd("tab", "update", msg.Selector, msg.Data, "", msg.Form, msg.Ctrl))
 
 	case "msgbox":
 		cmds = append(cmds, map[string]interface{}{

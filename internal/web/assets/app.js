@@ -1136,6 +1136,12 @@
             case 'tree_data':
                 handleTreeData(msg);
                 break;
+            case 'tab_set_tab':
+                tabSetTab(msg);
+                break;
+            case 'tab_update':
+                tabUpdateWidget(msg);
+                break;
             case 'chart_update':
                 chartUpdate(msg.selector, msg.data);
                 break;
@@ -1576,6 +1582,103 @@
         }
     }
 
+    // Tabs — content containers with selectable headers (k.ctrl.tab §10).
+    // The Go renderer emits .kalua-tab-headers (with data-k-tab-* attributes
+    // and .kalua-tab-btn buttons) and .kalua-tab-panels (with .kalua-tab-panel
+    // children). Visibility is CSS-driven via aria-hidden, so the client only
+    // needs click handling + programmatic updates from k.tab.*.
+
+    // tabWidgetOf resolves the outermost .kalua-tab wrapper for a header/panel.
+    function tabWidgetOf(el) {
+        return el.closest('.kalua-tab');
+    }
+
+    // tabHeadersOf returns the .kalua-tab-headers element of a tab widget.
+    function tabHeadersOf(widget) {
+        return widget.querySelector('.kalua-tab-headers');
+    }
+
+    // tabActivate switches the active tab locally (no round-trip): sets
+    // aria-selected on the header buttons and aria-hidden on the panels.
+    function tabActivate(widget, index) {
+        if (!widget) return;
+        const headers = widget.querySelector('.kalua-tab-headers');
+        const panels = widget.querySelector('.kalua-tab-panels');
+        if (headers) {
+            headers.querySelectorAll('.kalua-tab-btn').forEach(function(btn) {
+                const selected = btn.getAttribute('data-k-tab-btn') === String(index);
+                btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+            });
+        }
+        if (panels) {
+            panels.querySelectorAll('.kalua-tab-panel').forEach(function(panel) {
+                const selected = panel.getAttribute('data-k-tab-panel') === String(index);
+                panel.setAttribute('aria-hidden', selected ? 'false' : 'true');
+            });
+        }
+        if (headers) headers.setAttribute('data-k-tab-current-tab', String(index));
+    }
+
+    // handleTabHeaderClick activates the clicked tab locally and reports
+    // onchange {index} to the host (§10).
+    function handleTabHeaderClick(e) {
+        const btn = e.target.closest('[data-k-tab-btn]');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const headers = btn.closest('.kalua-tab-headers');
+        if (!headers) return;
+        const widget = tabWidgetOf(headers);
+        const index = parseInt(btn.getAttribute('data-k-tab-btn') || '1', 10);
+        tabActivate(widget, index);
+        const form = headers.dataset.kForm || '';
+        const ctrl = headers.dataset.kCtrl || '';
+        sendEvent(form, ctrl, 'onchange', { index: index });
+    }
+
+    // tabSetTab handles a Go→Browser tab_set_tab message (programmatic switch
+    // from k.tab.set_tab): activate the target tab locally. The host already
+    // fired the onchange handler, so nothing is echoed back.
+    function tabSetTab(msg) {
+        let payload = {};
+        try { Object.assign(payload, JSON.parse(msg.data || '{}')); } catch (e) {}
+        const index = payload.index || 1;
+        const headersEl = byId((msg.selector || ('#c:' + msg.form + ':' + msg.ctrl)) + '-headers');
+        if (!headersEl) return;
+        tabActivate(tabWidgetOf(headersEl), index);
+    }
+
+    // tabUpdateWidget handles a Go→Browser tab_update message (from k.tab.add/
+    // remove/insert/set_tab_title/set_tab_icon): rebuild headers + panels in
+    // place from the full {tabs, current_tab} payload.
+    function tabUpdateWidget(msg) {
+        let payload = {};
+        try { Object.assign(payload, JSON.parse(msg.data || '{}')); } catch (e) {}
+        const tabs = payload.tabs || [];
+        const current = payload.current_tab || 1;
+        const headersEl = byId((msg.selector || ('#c:' + msg.form + ':' + msg.ctrl)) + '-headers');
+        if (!headersEl) return;
+        const widget = tabWidgetOf(headersEl);
+
+        let headersHtml = '';
+        let panelsHtml = '';
+        for (let i = 0; i < tabs.length; i++) {
+            const idx = i + 1;
+            const t = tabs[i] || {};
+            const selected = idx === current;
+            const icon = t.icon ? escapeHtml(String(t.icon)) + ' ' : '';
+            const title = t.title ? escapeHtml(String(t.title)) : '';
+            headersHtml += '<button type="button" class="kalua-tab-btn" data-k-tab-btn="' + idx + '"' +
+                ' aria-selected="' + (selected ? 'true' : 'false') + '">' + icon + title + '</button>';
+            panelsHtml += '<div class="kalua-tab-panel" data-k-tab-panel="' + idx + '"' +
+                ' aria-hidden="' + (selected ? 'false' : 'true') + '"></div>';
+        }
+        headersEl.innerHTML = headersHtml;
+        headersEl.setAttribute('data-k-tab-current-tab', String(current));
+        const panelsEl = widget ? widget.querySelector('.kalua-tab-panels') : null;
+        if (panelsEl) panelsEl.innerHTML = panelsHtml;
+    }
+
     // tabulatorGetData answers k.table.get_data requests with all current row data.
     function tabulatorGetData(id, selector, form, ctrl) {
         const inst = selector && tabulatorInstances.get(selector);
@@ -1927,6 +2030,13 @@
         const treeLabel = e.target.closest('[data-k-tree-label]');
         if (treeLabel) {
             handleTreeLabelClick(e);
+            return;
+        }
+
+        // Tab header click (k.ctrl.tab §10): switch tab locally + report onchange.
+        const tabBtn = e.target.closest('[data-k-tab-btn]');
+        if (tabBtn) {
+            handleTabHeaderClick(e);
             return;
         }
 

@@ -570,10 +570,49 @@ end`
 	}
 }
 
+// TestTabConfigRoundTrip verifies the builder imports/exports a k.ctrl.tab
+// control (tabs array, tab_position, swipable) and the preview renders headers.
+func TestTabConfigRoundTrip(t *testing.T) {
+	src := `function main()
+  k.form.new("c", {title = "C"})
+  k.ctrl.tab("c", "tabs", {tabs = {{title = "A", icon = "a"}, {title = "B"}}, tab_position = "bottom", swipable = false})
+  k.form.show("c")
+end`
+	d, err := Import(src, "c.lua")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb := findCtrl(firstForm(d), "tabs")
+	tabs, ok := tb.Opts["tabs"].([]any)
+	if !ok || len(tabs) != 2 {
+		t.Fatalf("tabs not array: %#v", tb.Opts["tabs"])
+	}
+	t0 := tabs[0].(map[string]any)
+	if t0["title"] != "A" || t0["icon"] != "a" {
+		t.Errorf("tab[0]=%v", t0)
+	}
+	if tb.Opts["tab_position"] != "bottom" {
+		t.Errorf("tab_position=%v", tb.Opts["tab_position"])
+	}
+	if tb.Opts["swipable"] != false {
+		t.Errorf("swipable=%v", tb.Opts["swipable"])
+	}
+	lua := ExportLua(d)
+	if !strings.Contains(lua, `tabs = {{`) || !strings.Contains(lua, `title = "A"`) || !strings.Contains(lua, `tab_position = "bottom"`) {
+		t.Errorf("tab export wrong:\n%s", lua)
+	}
+	html, err := Preview(d)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if !strings.Contains(html, "kalua-tab") || !strings.Contains(html, "kalua-tab-btn") {
+		t.Error("preview should render tab headers and buttons")
+	}
+}
+
 const handlerLua = `-- handler preservation fixture
 function main()
-  k.form.new("main", {title = "Login"})
-  k.ctrl.label("main", "lbl", {text = "Hi"})
+  k.form.new("main", {title = "Login"})  k.ctrl.label("main", "lbl", {text = "Hi"})
   k.ctrl.button("main", "save", {
     label = "Save",
     onclick = function()

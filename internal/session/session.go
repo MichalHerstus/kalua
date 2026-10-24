@@ -465,6 +465,9 @@ func (s *Session) handleTransportInbox(msg common.InboxMsg, logger Logger) {
 		imsg.raw = msg.Value
 	case "tree_data_request":
 		imsg.typ = inboxTreeDataRequest
+	case "tab_change":
+		imsg.typ = inboxWSEvent
+		imsg.raw = msg.Value
 	default:
 		logger.Warnf("unknown inbox message type: %s", msg.Type)
 		return
@@ -527,8 +530,19 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		}
 	}
 
+	// Tab control events: the browser sends onchange with a value table
+	// {index}. The value is a tab index, not a set of control values, so skip
+	// the generic control-value update; the current_tab on the control is
+	// updated here and k.tab.get_tab reflects it (§10).
+	tabDispatch := false
+	if msg.event == "onchange" && s.isTabControl(msg.form, msg.ctrl) {
+		if vt, ok := value.(*lua.LTable); ok {
+			tabDispatch = vt.RawGetString("index") != lua.LNil
+		}
+	}
+
 	// Update control value in form definition from browser event
-	if !looperDispatch && !chartDispatch && !loginDispatch && !treeDispatch && value != lua.LNil {
+	if !looperDispatch && !chartDispatch && !loginDispatch && !treeDispatch && !tabDispatch && value != lua.LNil {
 		s.updateControlValue(msg.form, msg.ctrl, value)
 	}
 
@@ -553,6 +567,17 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 	case chartDispatch:
 		vt := value.(*lua.LTable)
 		resumeArgs = []lua.LValue{vt.RawGetString("dataset_index"), vt.RawGetString("index"), vt.RawGetString("value")}
+	case tabDispatch:
+		vt := value.(*lua.LTable)
+		newIdx := int(lua.LVAsNumber(vt.RawGetString("index")))
+		oldIdx := 1
+		if ctrl := s.controlTable(msg.form, msg.ctrl); ctrl != nil {
+			if v := ctrl.RawGetString("current_tab"); v != lua.LNil {
+				oldIdx = int(lua.LVAsNumber(v))
+			}
+			ctrl.RawSetString("current_tab", lua.LNumber(newIdx))
+		}
+		resumeArgs = []lua.LValue{lua.LNumber(newIdx), lua.LNumber(oldIdx)}
 	case loginDispatch && msg.event == "on_login_submit":
 		vt := value.(*lua.LTable)
 		login := vt.RawGetString("login").String()
@@ -3545,6 +3570,25 @@ func (s *Session) isTreeControl(formName, ctrlName string) bool {
 		return false
 	}
 	return ctrlTbl.RawGetString("type").String() == "tree"
+}
+
+func (s *Session) isTabControl(formName, ctrlName string) bool {
+	formTbl := s.L.GetGlobal(formName)
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	return ctrlTbl.RawGetString("type").String() == "tab"
 }
 
 // updateControlValue updates a control's value in the form definition.

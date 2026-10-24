@@ -483,6 +483,19 @@ func registerControls(e *Env) {
 		return 0
 	})
 
+	// k.ctrl.tab(form, name, options) - Tab control (§10 kforms_enhancements.md)
+	// Organizes content into multiple tabs showing only one tab's content at a
+	// time. Users switch tabs by clicking headers; k.tab.set_tab switches
+	// programmatically. opts: {tabs (required array of {title, icon?}),
+	// tab_position=top|bottom, swipable=true, cell?, align?}.
+	e.register("ctrl.tab", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "tab", opts)
+		return 0
+	})
+
 	// k.ctrl.checkbox(form, name, options)
 	e.register("ctrl.checkbox", "controls", func(L *lua.LState) int {
 		formName := L.CheckString(1)
@@ -983,6 +996,9 @@ func registerControls(e *Env) {
 
 	// CRUD grid data operations (Tabulator + forms)
 	registerGridOps(e)
+
+	// Tab control operations (kforms_enhancements §10)
+	registerTabOps(e)
 }
 
 // addControl adds a control to a form definition.
@@ -1235,6 +1251,16 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("expand_all", opts.RawGetString("expand_all"))
 		ctrlTbl.RawSetString("selection", opts.RawGetString("selection"))
 		ctrlTbl.RawSetString("max_nodes", opts.RawGetString("max_nodes"))
+	}
+
+	// Tab control options (kforms_enhancements.md §10). tabs is a required
+	// array of {title, icon?}; tab_position top|bottom; swipable boolean.
+	if ctrlType == "tab" {
+		ctrlTbl.RawSetString("tabs", opts.RawGetString("tabs"))
+		ctrlTbl.RawSetString("tab_position", opts.RawGetString("tab_position"))
+		ctrlTbl.RawSetString("swipable", opts.RawGetString("swipable"))
+		// Current active tab index (1-based), synced client↔server.
+		ctrlTbl.RawSetString("current_tab", lua.LNumber(1))
 	}
 
 	controlsTbl.RawSetString(name, ctrlTbl)

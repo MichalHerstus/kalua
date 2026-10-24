@@ -9,7 +9,7 @@ const PALETTE = [
   ['label', 'Label'], ['textbox', 'Text Box'], ['button', 'Button'],
   ['combo', 'Combo Box'], ['list', 'List'], ['table', 'Table'],
   ['checkbox', 'Check Box'], ['radio', 'Radio'], ['looper', 'Looper'],
-  ['chart', 'Chart'], ['image', 'Image'], ['tree', 'Tree'],
+  ['chart', 'Chart'], ['image', 'Image'], ['tree', 'Tree'], ['tab', 'Tab'],
 ];
 
 /* Option schemas: type = string|number|bool|select|json|items|dt|cell|align */
@@ -45,6 +45,9 @@ const TYPE_OPTS = {
              expand_all: { t: 'bool' },
              selection: { t: 'select', opts: ['single', 'none'] },
              max_nodes: { t: 'number' } },
+  tab:     { tabs: { t: 'json' },
+             tab_position: { t: 'select', opts: ['top', 'bottom'] },
+             swipable: { t: 'bool' } },
 };
 const COMMON_OPTS = {
   label: { t: 'string' }, value: { t: 'string' }, enabled: { t: 'bool' },
@@ -67,6 +70,7 @@ const LABELS = {
   table: 'Table', where: 'Where', order_by: 'Order by', id_field: 'ID field',
   parent_field: 'Parent field', label_field: 'Label field', expand_all: 'Expand all',
   selection: 'Selection', max_nodes: 'Max nodes',
+  tabs: 'Tabs', tab_position: 'Tab position', swipable: 'Swipable',
 };
 
 const state = {

@@ -90,6 +90,15 @@ func TestRouteComponentCommands(t *testing.T) {
 	if cmdString(looper[0], "kind") != "looper" {
 		t.Fatalf("looper kind = %q", cmdString(looper[0], "kind"))
 	}
+
+	tabSet := RouteOutbox(OutboxMsg{Type: "tab_set_tab", Selector: "#c:f:t", Data: `{"index":2}`})
+	if cmdString(tabSet[0], "kind") != "tab" || cmdString(tabSet[0], "op") != "set_tab" {
+		t.Fatalf("tab_set_tab cmd: %v", tabSet[0])
+	}
+	tabUpd := RouteOutbox(OutboxMsg{Type: "tab_update", Selector: "#c:f:t", Data: `{"tabs":[]}`})
+	if cmdString(tabUpd[0], "kind") != "tab" || cmdString(tabUpd[0], "op") != "update" {
+		t.Fatalf("tab_update cmd: %v", tabUpd[0])
+	}
 }
 
 // TestRouteComponentRoundTrip verifies request commands carry the resp id so the

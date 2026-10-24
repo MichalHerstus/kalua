@@ -205,6 +205,9 @@ func (s *Session) handleTransportInbox(msg common.InboxMsg, logger Logger) {
 	case "selection_resp":
 		imsg.typ = inboxSelectionResp
 		imsg.raw = msg.Value
+	case "tab_change":
+		imsg.typ = inboxWSEvent
+		imsg.raw = msg.Value
 	default:
 		logger.Warnf("unknown inbox message type: %s", msg.Type)
 		return
@@ -237,6 +240,29 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 	value := msg.value
 	if msg.raw != nil {
 		value = s.toLuaValue(msg.raw)
+	}
+
+	// Tab control onchange: the browser reports {index} and the handler
+	// signature is onchange(new_index, old_index). Update current_tab so
+	// k.tab.get_tab tracks the active tab (§10).
+	if msg.event == "onchange" && s.isTabControl(msg.form, msg.ctrl) {
+		var resumeArgs []lua.LValue
+		if vt, ok := value.(*lua.LTable); ok {
+			newIdx := int(lua.LVAsNumber(vt.RawGetString("index")))
+			oldIdx := 1
+			if ctrl := s.controlTable(msg.form, msg.ctrl); ctrl != nil {
+				if v := ctrl.RawGetString("current_tab"); v != lua.LNil {
+					oldIdx = int(lua.LVAsNumber(v))
+				}
+				ctrl.RawSetString("current_tab", lua.LNumber(newIdx))
+			}
+			resumeArgs = []lua.LValue{lua.LNumber(newIdx), lua.LNumber(oldIdx)}
+		}
+		ran := s.runFormHandler(msg.form, msg.ctrl, msg.event, resumeArgs, logger)
+		if !ran {
+			s.runFormHandler(msg.form, "@form", msg.event, resumeArgs, logger)
+		}
+		return
 	}
 
 	ran := s.runFormHandler(msg.form, msg.ctrl, msg.event, []lua.LValue{value}, logger)
@@ -410,6 +436,48 @@ func (s *Session) toLuaValue(v interface{}) lua.LValue {
 	default:
 		return lua.LString(fmt.Sprintf("%v", v))
 	}
+}
+
+// isTabControl reports whether (formName, ctrlName) is a tab control.
+func (s *Session) isTabControl(formName, ctrlName string) bool {
+	formTbl := s.L.GetGlobal(formName)
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	return ctrlTbl.RawGetString("type").String() == "tab"
+}
+
+// controlTable returns the control table for (formName, ctrlName), or nil.
+func (s *Session) controlTable(form, ctrl string) *lua.LTable {
+	formTbl := s.L.GetGlobal(form)
+	if formTbl == lua.LNil {
+		return nil
+	}
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return nil
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return nil
+	}
+	ctrlTbl, ok := controlsTbl.RawGetString(ctrl).(*lua.LTable)
+	if !ok {
+		return nil
+	}
+	return ctrlTbl
 }
 
 // getStack returns a string representation of the Lua stack.

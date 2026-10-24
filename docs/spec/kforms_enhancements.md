@@ -2783,7 +2783,8 @@ end
 
 ### Implementation Status
 
-Not started — plan only.
+Implemented (Phase 18). See AGENTS.md "Implemented Features (Phase 18 - Tab Control)" and
+`testdata/apps/tab_demo.lua` for the walkthrough.
 
 ---
 
