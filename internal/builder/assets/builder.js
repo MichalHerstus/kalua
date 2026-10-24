@@ -10,6 +10,7 @@ const PALETTE = [
   ['combo', 'Combo Box'], ['list', 'List'], ['table', 'Table'],
   ['checkbox', 'Check Box'], ['radio', 'Radio'], ['looper', 'Looper'],
   ['chart', 'Chart'], ['image', 'Image'], ['tree', 'Tree'], ['tab', 'Tab'],
+  ['topbar', 'Topbar'], ['sidebar', 'Sidebar'], ['footer', 'Footer'],
 ];
 
 /* Option schemas: type = string|number|bool|select|json|items|dt|cell|align */
@@ -48,6 +49,16 @@ const TYPE_OPTS = {
   tab:     { tabs: { t: 'json' },
              tab_position: { t: 'select', opts: ['top', 'bottom'] },
              swipable: { t: 'bool' } },
+  topbar:  { icon: { t: 'string' }, title: { t: 'string' },
+             user: { t: 'json' }, logout: { t: 'string' } },
+  sidebar: { position: { t: 'select', opts: ['left', 'right'] },
+             width: { t: 'number' }, collapsed_width: { t: 'number' },
+             collapsible: { t: 'bool' }, collapsed: { t: 'bool' },
+             items: { t: 'json' }, on_select: { t: 'string' },
+             style: { t: 'json' } },
+  footer:  { text: { t: 'string' }, version: { t: 'string' },
+             script_name: { t: 'string' }, links: { t: 'json' },
+             style: { t: 'json' } },
 };
 const COMMON_OPTS = {
   label: { t: 'string' }, value: { t: 'string' }, enabled: { t: 'bool' },
@@ -71,6 +82,11 @@ const LABELS = {
   parent_field: 'Parent field', label_field: 'Label field', expand_all: 'Expand all',
   selection: 'Selection', max_nodes: 'Max nodes',
   tabs: 'Tabs', tab_position: 'Tab position', swipable: 'Swipable',
+  icon: 'Icon', title: 'Title', user: 'User', logout: 'Logout function',
+  position: 'Position', width: 'Width', collapsed_width: 'Collapsed width',
+  collapsible: 'Collapsible', collapsed: 'Collapsed', items: 'Items',
+  on_select: 'On select', style: 'Style', text: 'Text', version: 'Version',
+  script_name: 'Script name', links: 'Links',
 };
 
 const state = {

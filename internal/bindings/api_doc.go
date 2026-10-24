@@ -507,6 +507,77 @@ k.form.show("main")`},
 			P("icon", "string", "New tab icon (emoji or text)."),
 		},
 		Example: `k.tab.set_tab_icon("main", "tabs", 2, "📉")`},
+
+	// layout controls (kforms_enhancements.md §11)
+	"ctrl.topbar": {Name: "ctrl.topbar", Group: "controls", Signature: "k.ctrl.topbar(form, name, optsTable)",
+		Docs: "Adds a fixed topbar (kforms_enhancements.md §11.1) spanning the viewport width with app branding, optional user info and a logout affordance. opts: {icon (image path), title, user={name, role, avatar}, logout (function called when the user block is clicked), visible}. Clicking the user block fires the \"logout\" event — the function passed to `logout` is registered as that handler, and k.form.on(form, ctrl, \"logout\", fn) overrides it.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Unique control name."),
+			P("optsTable.icon", "string", "Image path (JPG/PNG/SVG) shown at the left of the bar."),
+			P("optsTable.title", "string", "App name."),
+			P("optsTable.user", "table", "User info: {name=..., role=..., avatar=<image path>}."),
+			P("optsTable.logout", "function", "Called when the user clicks the avatar/name (direct logout call)."),
+			P("optsTable.visible", "boolean", "Show/hide the topbar (default true)."),
+		},
+		Example: `k.form.new("main", {title="App", layout="vertical"})
+k.ctrl.topbar("main", "bar", {
+  icon = "assets/logo.png",
+  title = "My App",
+  user = { name = "John Doe", role = "admin", avatar = "assets/avatar.png" },
+  logout = function() k.quit() end,
+})
+k.form.show("main")`},
+
+	"ctrl.sidebar": {Name: "ctrl.sidebar", Group: "controls", Signature: "k.ctrl.sidebar(form, name, optsTable)",
+		Docs: "Adds a fixed navigation sidebar (kforms_enhancements.md §11.2) anchored to the viewport's left or right edge (position), outside the form flow — like the topbar and footer. On the run page a form with a sidebar fills the whole remaining viewport area between the fixed bars (topbar/footer/sidebar) with an ~3px gap on every side; the sidebar is collapsible to an icon-only strip (session-only, resets on reload, the form frame follows the strip width). opts: {position=\"left\"|\"right\", width, collapsed_width, collapsible, collapsed, items=[{label, icon, action, badge} | {type=\"separator\"}], on_select (global handler called with the clicked item), visible, style={bg, border_right, ...}}. Clicking an item fires the \"sidebar_select\" event with (action, item, index) — payload {action, item, index}.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Unique control name."),
+			P("optsTable.position", "string", "\"left\" (default) or \"right\" — which viewport edge the fixed sidebar anchors to."),
+			P("optsTable.width", "number", "Expanded width in pixels (default 280)."),
+			P("optsTable.collapsed_width", "number", "Collapsed width in pixels (default 64)."),
+			P("optsTable.collapsible", "boolean", "Allow the user to collapse/expand (default true)."),
+			P("optsTable.collapsed", "boolean", "Initial collapsed state (default false; session only)."),
+			P("optsTable.items", "list", "Array of item definitions (see below)."),
+			P("optsTable.on_select", "function", "Global selection handler invoked with the clicked item (optional)."),
+			P("optsTable.visible", "boolean", "Show/hide the sidebar (default true)."),
+			P("optsTable.style", "table", "CSS style overrides, e.g. {bg=..., border_right=...}."),
+		},
+		Example: `k.form.new("main", {title="App", layout="grid"})
+k.ctrl.sidebar("main", "side", {
+  position = "left",
+  items = {
+    { label = "Dashboard", icon = "assets/home.png", action = "nav_dashboard" },
+    { type = "separator" },
+    { label = "Settings", icon = "assets/settings.png", action = "nav_settings", badge = 5 },
+  },
+})
+k.form.on("main", "side", "sidebar_select", function(action, item, index)
+  k.print("selected", action)
+end)
+k.form.show("main")`},
+
+	"ctrl.footer": {Name: "ctrl.footer", Group: "controls", Signature: "k.ctrl.footer(form, name, optsTable)",
+		Docs: "Adds a fixed footer (kforms_enhancements.md §11.3) at the bottom of the viewport with copyright text, optional links, and auto-populated version + script name. opts: {text, version (auto-filled from the KALUA binary when omitted), script_name (auto-filled from the running script), links=[{label, url}], visible, style={bg, height, ...}}. No events.",
+		Params: []Param{
+			P("form", "string", "Parent form name."),
+			P("name", "string", "Unique control name."),
+			P("optsTable.text", "string", "Copyright/description text."),
+			P("optsTable.version", "string", "App version (auto-filled from KALUA if omitted)."),
+			P("optsTable.script_name", "string", "Running script name (auto-filled)."),
+			P("optsTable.links", "list", "Array of {label, url} link definitions."),
+			P("optsTable.visible", "boolean", "Show/hide the footer (default true)."),
+			P("optsTable.style", "table", "CSS style overrides: {bg=..., height=...}."),
+		},
+		Example: `k.form.new("main", {title="App", layout="vertical"})
+k.ctrl.footer("main", "foot", {
+  text = "© 2024 My Company",
+  version = "1.0.0",
+  links = { { label = "Privacy", url = "/privacy" }, { label = "Terms", url = "/terms" } },
+})
+k.form.show("main")`},
+
 	"ctrl.select_text": {Name: "ctrl.select_text", Group: "controls", Signature: "k.ctrl.select_text(form, name)",
 		Docs:    "Selects all text in a textbox or textarea control.",
 		Params:  []Param{P("form", "string", "Parent form name."), P("name", "string", "Control name.")},

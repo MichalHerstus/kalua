@@ -4012,6 +4012,58 @@ end
 
 ---
 
+## 6.10 Layout Controls — `shell_demo.lua`
+
+The **Layout controls** (`k.ctrl.topbar`, `k.ctrl.sidebar`, `k.ctrl.footer`) provide a complete application shell on top of any form (§11 of `kforms_enhancements.md`). The topbar and footer are fixed-position bars spanning the full viewport width; the sidebar is a fixed panel anchored to the viewport's left or right edge, outside the form flow — all three render outside the ordinary form layout.
+
+```lua
+function main()
+  -- 'content' spans the full grid; the fixed sidebar does not occupy a cell.
+  k.form.new("main", { title = "Shell Demo", layout = "grid" })
+
+  -- Topbar: fixed header with branding + user info + logout (§11.1).
+  k.ctrl.topbar("main", "bar", {
+    title = "My App",
+    user = { name = "John Doe", role = "admin", avatar = "assets/avatar.png" },
+    logout = function() k.quit() end,      -- direct logout call
+  })
+
+  -- Sidebar: fixed navigation panel on the LEFT viewport edge (§11.2).
+  k.ctrl.sidebar("main", "side", {
+    position = "left",                    -- "left" | "right"
+    width = 280, collapsed_width = 64,
+    collapsible = true,                   -- collapse to an icon strip
+    items = {
+      { label = "Dashboard", action = "nav_dashboard" },
+      { type = "separator" },
+      { label = "Settings",  action = "nav_settings", badge = 5 },
+    },
+    on_select = function(item) k.print("selected", item.action) end,
+  })
+
+  -- Footer: fixed bottom bar with links + auto-filled version/script name (§11.3).
+  k.ctrl.footer("main", "foot", {
+    text  = "© 2024 My Company",
+    links = { { label = "Privacy", url = "/privacy" } },
+  })
+
+  -- Events: logout (topbar user click) and sidebar_select (item click).
+  k.form.on("main", "side", "sidebar_select", function(action, item, index)
+    k.print("picked", action, index)
+  end)
+  k.form.on("main", "bar", "logout", function() k.print("bye") end)
+
+  k.form.show("main")
+end
+```
+
+- **Topbar** (`k.ctrl.topbar`): opts `icon`, `title`, `user = {name, role, avatar}`, `logout` (function), `visible`. Clicking the user block fires the `logout` event — the `logout` option is registered as that handler (so `k.form.on(form, ctrl, "logout", fn)` overrides it). Fixed 56px height.
+- **Sidebar** (`k.ctrl.sidebar`): opts `position` (`"left"`|`"right"` — the viewport edge the fixed panel anchors to), `width`, `collapsed_width`, `collapsible`, `collapsed` (session-only), `items`, `on_select` (global handler → `(item)`), `visible`, `style` (`{bg, border_right, ...}`). Item click fires `sidebar_select` → `(action, item, index)`. Collapse is session-only (resets on reload); the form body padding follows the sidebar width on its side.
+- **Footer** (`k.ctrl.footer`): opts `text`, `version` (auto-filled from the KALUA binary when omitted), `script_name` (auto-filled from the running script), `links = {{label, url}}`, `visible`, `style`. No events. Fixed 40px height.
+- **Layout integration**: all three render outside the normal control flow (`position: fixed`) and never occupy a grid cell. On the run page a form with a sidebar **fills the whole remaining viewport area between the topbar, sidebar and footer** with an ~3px gap on every side — there is no empty band on the right. Collapsing the sidebar slides the frame to the collapsed strip (still ~3px away). Forms with a topbar/footer but no sidebar keep the plain full-width padding.
+
+---
+
 # 7. KALUA Builder
 
 The **KALUA Builder** is a design-time visual editor for forms. It never executes the app; it renders the **real Go renderer** in-process, so the preview is pixel-accurate (the builder embeds the same runtime stylesheet that `KALUA run` serves). A file may contain **many forms** plus non-form code (helpers, `main()`, DB setup, AI chat) — the builder edits any form without touching what it does not own.

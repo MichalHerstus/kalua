@@ -5,6 +5,7 @@ package bindings
 
 import (
 	"kalua/internal/common"
+	"kalua/internal/version"
 
 	"github.com/yuin/gopher-lua"
 )
@@ -186,6 +187,20 @@ func registerControlsWasm(e *Env) {
 		return addControlWasm(L, e, "radio")
 	})
 
+	// k.ctrl.topbar / k.ctrl.sidebar / k.ctrl.footer (kforms_enhancements.md §11)
+	// Layout (shell) controls; the shared renderer emits the same markup the
+	// native build produces. Event wiring (logout / sidebar_select) mirrors the
+	// native session via reportDOMEvent in app.minimal.js.
+	e.register("ctrl.topbar", "controls", func(L *lua.LState) int {
+		return addControlWasm(L, e, "topbar")
+	})
+	e.register("ctrl.sidebar", "controls", func(L *lua.LState) int {
+		return addControlWasm(L, e, "sidebar")
+	})
+	e.register("ctrl.footer", "controls", func(L *lua.LState) int {
+		return addControlWasm(L, e, "footer")
+	})
+
 	// k.ctrl.set_value(form, name, value)
 	e.register("ctrl.set_value", "controls", func(L *lua.LState) int {
 		formName := L.CheckString(1)
@@ -308,6 +323,26 @@ func addControlWasm(L *lua.LState, e *Env, ctrlType string) int {
 	opts.ForEach(func(k, v lua.LValue) {
 		ctrl.RawSet(k, v)
 	})
+
+	// Layout (shell) control normalization matching the native addControl:
+	// the sidebar records the owning form's layout mode so the shared renderer
+	// can emit data-k-sidebar-layout without the form table; the footer
+	// auto-fills version from the running KALUA binary when omitted (§11).
+	if ctrlType == "sidebar" {
+		layout := "vertical"
+		if lv := tbl.RawGetString("layout"); lv != lua.LNil && lv.String() == "grid" {
+			layout = "grid"
+		}
+		ctrl.RawSetString("layout", lua.LString(layout))
+	}
+	if ctrlType == "footer" {
+		if v := ctrl.RawGetString("version"); v == lua.LNil || v.String() == "" {
+			ctrl.RawSetString("version", lua.LString(version.Get().Version))
+		}
+		if s := ctrl.RawGetString("script_name"); (s == lua.LNil || s.String() == "") && e.scriptName != "" {
+			ctrl.RawSetString("script_name", lua.LString(e.scriptName))
+		}
+	}
 
 	controlsTbl.RawSetString(name, ctrl)
 

@@ -314,7 +314,7 @@ func SetupUIError(L *lua.LState) {
 
 	// Disable k.ctrl.*
 	ctrlTbl := L.NewTable()
-	ctrlFuncs := []string{"set_value", "get_value", "set_property", "get_property", "textbox", "button", "label", "combo", "list", "table", "checkbox", "radio", "select_text", "set_selection", "get_selection", "get_item_count", "execute_event", "image", "chart", "looper", "grid", "login", "tree", "tab"}
+	ctrlFuncs := []string{"set_value", "get_value", "set_property", "get_property", "textbox", "button", "label", "combo", "list", "table", "checkbox", "radio", "select_text", "set_selection", "get_selection", "get_item_count", "execute_event", "image", "chart", "looper", "grid", "login", "tree", "tab", "topbar", "sidebar", "footer"}
 	for _, fn := range ctrlFuncs {
 		ctrlTbl.RawSetString(fn, L.NewFunction(errorFunc("k.ctrl."+fn)))
 	}

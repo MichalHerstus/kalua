@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/yuin/gopher-lua"
+
+	"kalua/internal/version"
 )
 
 // renderForm renders a form to HTML using templ-like logic (simplified for now).
@@ -43,9 +45,29 @@ func renderForm(L *lua.LState, formName string) string {
 		}
 	}
 	controls := tbl.RawGetString("controls")
+	controlsTbl, _ := controls.(*lua.LTable)
+	shell := scanShellLayout(controlsTbl)
 
 	var html string
-	html += `<div id="f:` + formNameEsc + `" class="kalua-form"`
+	html += `<div id="f:` + formNameEsc + `" class="kalua-form`
+	// Layout (shell) controls (kforms_enhancements.md §11) are position:fixed,
+	// so the form body must leave room for them: add a class per present shell
+	// control and kalua.css pads the form accordingly. The sidebar is anchored
+	// to its configured side (data-k-sidebar-position) so padding applies on
+	// that side only.
+	for _, shellType := range []string{"topbar", "sidebar", "footer"} {
+		if formHasControlType(controls, shellType) {
+			html += " kalua-has-" + shellType
+		}
+	}
+	if shell.hasSidebar {
+		if shell.sidePosition == "right" {
+			html += " kalua-has-sidebar-right"
+		} else {
+			html += " kalua-has-sidebar-left"
+		}
+	}
+	html += `"`
 	if layout != "vertical" {
 		html += ` layout="` + escAttr(layout) + `"`
 	}
@@ -53,6 +75,24 @@ func renderForm(L *lua.LState, formName string) string {
 		html += ` align="` + escAttr(align) + `"`
 	}
 	style := "--kalua-gap:" + strconv.Itoa(gap) + "px"
+	// Shell metrics as CSS variables. Only a fixed sidebar needs them: it
+	// ranks between the topbar (56px) and the footer (40px) when those bars
+	// are present, and spans the full viewport height otherwise. Forms without
+	// a sidebar carry no shell vars (their inline style stays unchanged).
+	if shell.hasSidebar {
+		top := "56px"
+		if !shell.hasTopbar {
+			top = "0px"
+		}
+		bottom := "40px"
+		if !shell.hasFooter {
+			bottom = "0px"
+		}
+		style += ";--kalua-topbar-height:" + top
+		style += ";--kalua-footer-height:" + bottom
+		style += ";--kalua-sidebar-width:" + strconv.Itoa(shell.sideWidth) + "px"
+		style += ";--kalua-sidebar-collapsed-width:" + strconv.Itoa(shell.sideCollapse) + "px"
+	}
 	if props := styleFromProps(tbl); props != "" {
 		style += ";" + props
 	}
@@ -65,32 +105,107 @@ func renderForm(L *lua.LState, formName string) string {
 
 	if layout == "grid" {
 		html += renderGridForm(tbl)
-	} else if controlsTbl, ok := controls.(*lua.LTable); ok {
+	} else if controlsTbl != nil {
 		html += renderVerticalControls(controlsTbl, tbl)
+	}
+
+	// §11 layout (shell) controls render outside the normal control flow as
+	// position:fixed elements. They stay inside the form element (so closing
+	// the form removes them) but are skipped by renderVerticalControls/
+	// renderGridForm, which would otherwise place/row them.
+	if controlsTbl != nil {
+		if orderTbl, ok := tbl.RawGetString("order").(*lua.LTable); ok {
+			orderTbl.ForEach(func(_, v lua.LValue) {
+				if ctrl, ok := controlsTbl.RawGetString(v.String()).(*lua.LTable); ok && shellControl(ctrl.RawGetString("type").String()) {
+					html += renderControl(ctrl)
+				}
+			})
+		}
 	}
 
 	html += `</div>`
 	return html
 }
 
+// shellControl reports whether a control type is a §11 layout (shell) control
+// rendered outside the normal form flow (position:fixed).
+func shellControl(ctrlType string) bool {
+	return ctrlType == "topbar" || ctrlType == "sidebar" || ctrlType == "footer"
+}
+
+// shellLayout summarizes a form's §11 shell controls for renderForm: whether a
+// fixed topbar/footer is present (their heights offset the form) and the
+// sidebar's position/widths (used for the form's side padding + CSS vars).
+type shellLayout struct {
+	hasTopbar    bool
+	hasFooter    bool
+	hasSidebar   bool
+	sidePosition string // "left" | "right" (default "left")
+	sideWidth    int    // expanded px (default 280)
+	sideCollapse int    // collapsed px (default 64)
+}
+
+// scanShellLayout inspects a form's controls for §11 shell controls.
+func scanShellLayout(controlsTbl *lua.LTable) shellLayout {
+	var sl shellLayout
+	if controlsTbl == nil {
+		return sl
+	}
+	sl.sideWidth = 280
+	sl.sideCollapse = 64
+	controlsTbl.ForEach(func(_, v lua.LValue) {
+		ctrl, ok := v.(*lua.LTable)
+		if !ok {
+			return
+		}
+		switch ctrl.RawGetString("type").String() {
+		case "topbar":
+			sl.hasTopbar = true
+		case "footer":
+			sl.hasFooter = true
+		case "sidebar":
+			sl.hasSidebar = true
+			if p := ctrl.RawGetString("position"); p != lua.LNil && p.String() == "right" {
+				sl.sidePosition = "right"
+			}
+			if w := ctrl.RawGetString("width"); w != lua.LNil {
+				if n := int(lua.LVAsNumber(w)); n > 0 {
+					sl.sideWidth = n
+				}
+			}
+			if w := ctrl.RawGetString("collapsed_width"); w != lua.LNil {
+				if n := int(lua.LVAsNumber(w)); n > 0 {
+					sl.sideCollapse = n
+				}
+			}
+		}
+	})
+	return sl
+}
+
 // renderVerticalControls renders a vertical-layout form's controls in creation
 // order (the form's "order" table), falling back to unordered iteration. Each
 // control (including buttons) renders on its own full-width row — matching
-// `kalua run` exactly (the preview loads the same kalua.css).
+// `kalua run` exactly (the preview loads the same kalua.css). §11 shell
+// controls (topbar/sidebar/footer) are rendered separately by renderForm.
 func renderVerticalControls(controlsTbl, tbl *lua.LTable) string {
 	order := tbl.RawGetString("order")
 	var html string
 	if orderTbl, ok := order.(*lua.LTable); ok {
 		orderTbl.ForEach(func(k, v lua.LValue) {
 			if ctrl, ok := controlsTbl.RawGetString(v.String()).(*lua.LTable); ok {
-				html += renderControl(ctrl)
+				if !shellControl(ctrl.RawGetString("type").String()) {
+					html += renderControl(ctrl)
+				}
 			}
 		})
 	} else {
 		// Fallback to unordered iteration
 		controlsTbl.ForEach(func(k, v lua.LValue) {
 			if ctrl, ok := v.(*lua.LTable); ok {
-				html += renderControl(ctrl)
+				if !shellControl(ctrl.RawGetString("type").String()) {
+					html += renderControl(ctrl)
+				}
 			}
 		})
 	}
@@ -132,6 +247,11 @@ func renderGridForm(tbl *lua.LTable) string {
 	if orderTbl != nil {
 		orderTbl.ForEach(func(_, v lua.LValue) {
 			name := v.String()
+			if ctrl := controlsTbl.RawGetString(name); ctrl != lua.LNil {
+				if ct, ok := ctrl.(*lua.LTable); ok && shellControl(ct.RawGetString("type").String()) {
+					return // §11 shell controls render fixed, outside cells
+				}
+			}
 			cellID := "main"
 			if ctrl := controlsTbl.RawGetString(name); ctrl != lua.LNil {
 				if ct, ok := ctrl.(*lua.LTable); ok {
@@ -146,6 +266,9 @@ func renderGridForm(tbl *lua.LTable) string {
 		controlsTbl.ForEach(func(_, v lua.LValue) {
 			ct, ok := v.(*lua.LTable)
 			if !ok {
+				return
+			}
+			if shellControl(ct.RawGetString("type").String()) {
 				return
 			}
 			cellID := ct.RawGetString("cell").String()
@@ -625,6 +748,12 @@ func renderControl(ctrl *lua.LTable) string {
 		return renderTree(ctrl, formName, name, id, visible)
 	case "tab":
 		return renderTab(ctrl, formName, name, id, visible)
+	case "topbar":
+		return renderTopbar(ctrl, formName, name, id, visible)
+	case "sidebar":
+		return renderSidebar(ctrl, formName, name, id, visible)
+	case "footer":
+		return renderFooter(ctrl, formName, name, id, visible)
 	}
 	return `<div class="kalua-control">Unknown control: ` + escText(ctrlType) + `</div>`
 }
@@ -1000,6 +1129,282 @@ func renderTab(ctrl *lua.LTable, formName, name, id, visible string) string {
 			` + panelsHtml + `
 		</div>
 	</div>`
+}
+
+// formHasControlType reports whether a form's controls table contains a control
+// of the given type. Used by renderForm to tag shell-layout classes.
+func formHasControlType(controls lua.LValue, ctrlType string) bool {
+	if controls == lua.LNil {
+		return false
+	}
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	found := false
+	controlsTbl.ForEach(func(_, v lua.LValue) {
+		if found {
+			return
+		}
+		if ct, ok := v.(*lua.LTable); ok && ct.RawGetString("type").String() == ctrlType {
+			found = true
+		}
+	})
+	return found
+}
+
+// renderTopbar renders the §11.1 fixed topbar (k.ctrl.topbar): app branding,
+// optional user info (avatar/name/role) and a logout affordance. The user
+// block carries data-k-topbar-user so the client reports a "logout" event on
+// click. position:fixed styling comes from kalua.css.
+func renderTopbar(ctrl *lua.LTable, formName, name, id, visible string) string {
+	// The shared per-widget styling (bg/color/...) merges into `visible`.
+	var inner string
+	if v := ctrl.RawGetString("icon"); v != lua.LNil && v.String() != "" {
+		inner += `<img class="kalua-topbar-icon" src="` + escAttr(v.String()) + `" alt="">`
+	}
+	if v := ctrl.RawGetString("title"); v != lua.LNil && v.String() != "" {
+		inner += `<span class="kalua-topbar-title">` + escText(v.String()) + `</span>`
+	}
+	inner += `<div class="kalua-topbar-spacer"></div>`
+	if u := ctrl.RawGetString("user"); u != lua.LNil {
+		if userTbl, ok := u.(*lua.LTable); ok {
+			user := ""
+			if av := userTbl.RawGetString("avatar"); av != lua.LNil && av.String() != "" {
+				user += `<img class="kalua-topbar-avatar" src="` + escAttr(av.String()) + `" alt="">`
+			}
+			if nv := userTbl.RawGetString("name"); nv != lua.LNil && nv.String() != "" {
+				user += `<span class="kalua-topbar-user-name">` + escText(nv.String()) + `</span>`
+			}
+			if rv := userTbl.RawGetString("role"); rv != lua.LNil && rv.String() != "" {
+				user += `<span class="kalua-topbar-user-role">` + escText(rv.String()) + `</span>`
+			}
+			if user != "" {
+				inner += `<div class="kalua-topbar-user" data-k-topbar-user="1" role="button" tabindex="0"` +
+					` title="` + escAttr(name) + ` logout">` + user + `</div>`
+			}
+		}
+	}
+	return `<div class="kalua-topbar" id="` + escAttr(id) + `"` + attrsFor(formName, name) + ` data-k-topbar="1"` + visible + `>` + inner + `</div>`
+}
+
+// attrsFor builds the shared data-k-form/data-k-ctrl attribute pair.
+func attrsFor(formName, name string) string {
+	return ` data-k-form="` + escAttr(formName) + `" data-k-ctrl="` + escAttr(name) + `"`
+}
+
+// renderSidebar renders the §11.2 collapsible sidebar (k.ctrl.sidebar). Items
+// are nav buttons carrying data-k-sidebar-item plus the item JSON (data-k-value)
+// so the client reports sidebar_select {action, item, index}. The layout mode
+// (grid cell vs vertical tab bar) is set by addControl from the owning form and
+// rendered as data-k-sidebar-layout; collapse state is session-only and handled
+// client-side (data-k-sidebar-collapsed + .kalua-sidebar-collapsed).
+func renderSidebar(ctrl *lua.LTable, formName, name, id, visible string) string {
+	position := "left"
+	if v := ctrl.RawGetString("position"); v != lua.LNil && v.String() != "" {
+		position = escAttr(v.String())
+	}
+	width := 280
+	if v := ctrl.RawGetString("width"); v != lua.LNil {
+		if n := int(lua.LVAsNumber(v)); n > 0 {
+			width = n
+		}
+	}
+	collapsedWidth := 64
+	if v := ctrl.RawGetString("collapsed_width"); v != lua.LNil {
+		if n := int(lua.LVAsNumber(v)); n > 0 {
+			collapsedWidth = n
+		}
+	}
+	collapsible := "true"
+	if v := ctrl.RawGetString("collapsible"); v != lua.LNil && v.String() == "false" {
+		collapsible = "false"
+	}
+	collapsed := "false"
+	if v := ctrl.RawGetString("collapsed"); v != lua.LNil && v.String() == "true" {
+		collapsed = "true"
+	}
+	layout := "vertical"
+	if v := ctrl.RawGetString("layout"); v != lua.LNil && v.String() != "" {
+		layout = escAttr(v.String())
+	}
+	// Per-widget styling: the control's own bg/color/font props plus the §11.2
+	// `style` table ({bg=..., border_right=...}) fold into the element style.
+	// Widths ride as CSS variables so the collapsed class can swap them without
+	// inline style juggling.
+	visible = mergeCSS(visible, styleTableCSS(ctrl))
+	cssVars := "--kalua-sidebar-width:" + strconv.Itoa(width) + "px;" +
+		"--kalua-sidebar-collapsed-width:" + strconv.Itoa(collapsedWidth) + "px"
+	visible = mergeCSS(visible, cssVars)
+
+	var toggle string
+	if collapsible == "true" {
+		toggle = `<button type="button" class="kalua-sidebar-toggle" data-k-sidebar-toggle="1" aria-label="Toggle sidebar" title="Toggle sidebar">⇤</button>`
+	}
+
+	var items string
+	if itemsTbl, ok := ctrl.RawGetString("items").(*lua.LTable); ok {
+		idx := 0
+		itemsTbl.ForEach(func(_, v lua.LValue) {
+			itemTbl, ok := v.(*lua.LTable)
+			if !ok {
+				return
+			}
+			if itemTbl.RawGetString("type").String() == "separator" {
+				items += `<div class="kalua-sidebar-separator" role="separator"></div>`
+				return
+			}
+			idx++
+			label := ""
+			if lv := itemTbl.RawGetString("label"); lv != lua.LNil {
+				label = escText(lv.String())
+			}
+			action := ""
+			if av := itemTbl.RawGetString("action"); av != lua.LNil {
+				action = escAttr(av.String())
+			}
+			icon := ""
+			if iv := itemTbl.RawGetString("icon"); iv != lua.LNil && iv.String() != "" {
+				icon = `<img class="kalua-sidebar-icon" src="` + escAttr(iv.String()) + `" alt="">`
+			}
+			badge := ""
+			if bv := itemTbl.RawGetString("badge"); bv != lua.LNil && bv.String() != "" {
+				badge = `<span class="kalua-sidebar-badge">` + escText(bv.String()) + `</span>`
+			}
+			labelWrap := ""
+			if label != "" {
+				labelWrap = `<span class="kalua-sidebar-label">` + label + `</span>`
+			}
+			items += `<button type="button" class="kalua-sidebar-item" data-k-sidebar-item="1"` +
+				` data-k-sidebar-action="` + action + `" data-k-sidebar-index="` + strconv.Itoa(idx) + `"` +
+				` data-k-value="` + escAttr(luaTableToJSON(itemTbl)) + `">` +
+				icon + labelWrap + badge + `</button>`
+		})
+	}
+
+	return `<div class="kalua-sidebar" id="` + escAttr(id) + `"` + attrsFor(formName, name) + visible + `
+		data-k-sidebar="1"
+		data-k-sidebar-position="` + position + `"
+		data-k-sidebar-width="` + strconv.Itoa(width) + `"
+		data-k-sidebar-collapsed-width="` + strconv.Itoa(collapsedWidth) + `"
+		data-k-sidebar-collapsible="` + collapsible + `"
+		data-k-sidebar-collapsed="` + collapsed + `"
+		data-k-sidebar-layout="` + layout + `">
+		` + toggle + `
+		<div class="kalua-sidebar-items">` + items + `</div>
+	</div>`
+}
+
+// renderFooter renders the §11.3 fixed footer (k.ctrl.footer): copyright text,
+// optional links, and the auto-filled KALUA version + script name.
+func renderFooter(ctrl *lua.LTable, formName, name, id, visible string) string {
+	visible = mergeCSS(visible, styleTableCSS(ctrl))
+
+	var inner string
+	if v := ctrl.RawGetString("text"); v != lua.LNil && v.String() != "" {
+		inner += `<span class="kalua-footer-text">` + escText(v.String()) + `</span>`
+	}
+	if linksTbl, ok := ctrl.RawGetString("links").(*lua.LTable); ok {
+		linksTbl.ForEach(func(_, v lua.LValue) {
+			linkTbl, ok := v.(*lua.LTable)
+			if !ok {
+				return
+			}
+			label := ""
+			if lv := linkTbl.RawGetString("label"); lv != lua.LNil {
+				label = escText(lv.String())
+			}
+			url := ""
+			if uv := linkTbl.RawGetString("url"); uv != lua.LNil {
+				url = escAttr(uv.String())
+			}
+			if label != "" && url != "" {
+				inner += `<a class="kalua-footer-link" href="` + url + `" target="_blank" rel="noopener">` + label + `</a>`
+			}
+		})
+	}
+	// Version/script_name are auto-filled (§11.3): version falls back to the
+	// running KALUA binary version when omitted; script_name is filled by the
+	// host (bindings.Options.ScriptName) at control creation.
+	versionTxt := ""
+	if v := ctrl.RawGetString("version"); v != lua.LNil && v.String() != "" {
+		versionTxt = escText(v.String())
+	} else {
+		versionTxt = escText(version.Get().Version)
+	}
+	if versionTxt != "" {
+		inner += `<span class="kalua-footer-version">` + versionTxt + `</span>`
+	}
+	if v := ctrl.RawGetString("script_name"); v != lua.LNil && v.String() != "" {
+		inner += `<span class="kalua-footer-script">` + escText(v.String()) + `</span>`
+	}
+
+	return `<footer class="kalua-footer" id="` + escAttr(id) + `"` + attrsFor(formName, name) + ` data-k-footer="1"` + visible + `>` + inner + `</footer>`
+}
+
+// styleTableCSS converts a control's `style` option table
+// ({bg=..., border_right=...}) into a "property:value;property:value;" CSS
+// string. Key normalization: `bg` maps to `background`, snake_case (_) and
+// camelCase map to the kebab-case CSS property; values are emitted verbatim.
+func styleTableCSS(ctrl *lua.LTable) string {
+	st, ok := ctrl.RawGetString("style").(*lua.LTable)
+	if !ok {
+		return ""
+	}
+	var parts []string
+	st.ForEach(func(k, v lua.LValue) {
+		if v == lua.LNil || v.String() == "" {
+			return
+		}
+		prop := stylePropName(k.String())
+		if prop == "" {
+			return
+		}
+		parts = append(parts, prop+":"+v.String()+";")
+	})
+	return strings.Join(parts, "")
+}
+
+// stylePropName maps a style-table key to a CSS property name: `bg` becomes
+// `background`, `_` becomes `-`, and camelCase becomes kebab-case (borderRight
+// → border-right). Unmappable names are dropped.
+func stylePropName(k string) string {
+	switch k {
+	case "bg":
+		return "background"
+	case "bg_color":
+		return "background-color"
+	case "text_color":
+		return "color"
+	}
+	k = strings.ReplaceAll(k, "_", "-")
+	var sb strings.Builder
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if c >= 'A' && c <= 'Z' {
+			if i > 0 {
+				sb.WriteByte('-')
+			}
+			sb.WriteByte(c - 'A' + 'a')
+			continue
+		}
+		sb.WriteByte(c)
+	}
+	return sb.String()
+}
+
+// mergeCSS merges extra CSS properties into the visibility/alignment style
+// attribute produced by renderVisibility/renderControl, returning the combined
+// ` style="..."` attribute.
+func mergeCSS(visible, props string) string {
+	if props == "" {
+		return visible
+	}
+	if visible == "" {
+		return ` style="` + escAttr(props) + `"`
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(visible, ` style="`), `"`)
+	return ` style="` + escAttr(inner) + ";" + escAttr(props) + `"`
 }
 
 // cssLength maps a numeric value to a px length and passes %, auto, keywords

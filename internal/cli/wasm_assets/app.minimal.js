@@ -264,6 +264,7 @@
         initGrids(scope);
         initTabulators(scope);
         initLoopers(scope);
+        initSidebars(scope);
         initCharts(scope);
         initDatePickers(scope);
     }
@@ -946,6 +947,9 @@
 
     function renderForm(html) {
         stage.innerHTML = html;
+        // A sidebar form fills the area among the fixed shell bars (§11.4);
+        // flag it on <body> so kalua.css neutralizes the run-shell card.
+        document.body.classList.toggle('kalua-shell', /kalua-has-sidebar/.test(html));
         scanComponents(stage);
         const firstFocusable = stage.querySelector('input, select, button, textarea');
         if (firstFocusable) firstFocusable.focus();
@@ -965,6 +969,7 @@
         if (top) {
             destroyComponents(stage);
             stage.innerHTML = '';
+            document.body.classList.remove('kalua-shell');
         } else {
             const formEl = document.getElementById('f:' + name);
             if (formEl) {
@@ -1117,6 +1122,36 @@
         if (panels) panels.innerHTML = panelsHtml;
     }
 
+    // ---- Sidebar (k.ctrl.sidebar §11.2) ----
+    // A fixed navigation panel anchored to the viewport's left/right edge,
+    // outside the form flow. Collapse (session-only) flips the
+    // data-k-sidebar-collapsed attribute and adds .kalua-sidebar-collapsed to
+    // the sidebar and its form (content padding follows the width variables).
+
+    function sidebarFormEl(side) {
+        const form = side.getAttribute('data-k-form');
+        return form ? document.getElementById('f:' + form) : null;
+    }
+
+    function applySidebarState(side, collapsed) {
+        side.setAttribute('data-k-sidebar-collapsed', collapsed ? 'true' : 'false');
+        side.classList.toggle('kalua-sidebar-collapsed', collapsed);
+        const formEl = sidebarFormEl(side);
+        if (formEl) formEl.classList.toggle('kalua-sidebar-collapsed', collapsed);
+    }
+
+    function initSidebars(scope) {
+        if (!scope) return;
+        scope.querySelectorAll('.kalua-sidebar').forEach(function(side) {
+            applySidebarState(side, side.getAttribute('data-k-sidebar-collapsed') === 'true');
+        });
+    }
+
+    function toggleSidebar(side) {
+        if (!side) return;
+        applySidebarState(side, side.getAttribute('data-k-sidebar-collapsed') !== 'true');
+    }
+
     function handleClick(e) {
         // Tab header click: switch tab locally + report onchange {index}.
         const tabBtn = e.target.closest('[data-k-tab-btn]');
@@ -1127,6 +1162,42 @@
             const index = parseInt(tabBtn.getAttribute('data-k-tab-btn') || '1', 10);
             tabActivate(headers.closest('.kalua-tab'), index);
             reportDOMEvent(headers.dataset.kForm || '', headers.dataset.kCtrl || '', 'onchange', { index: index });
+            return;
+        }
+
+        // Topbar user click (k.ctrl.topbar §11.1): report logout.
+        const topbarUser = e.target.closest('[data-k-topbar-user]');
+        if (topbarUser) {
+            e.preventDefault();
+            const bar = topbarUser.closest('.kalua-topbar');
+            if (!bar) return;
+            reportDOMEvent(bar.dataset.kForm || '', bar.dataset.kCtrl || '', 'logout', {});
+            return;
+        }
+
+        // Sidebar item click (k.ctrl.sidebar §11.2): report sidebar_select
+        // {action, item, index}; the item's JSON rides in data-k-value.
+        const sideItem = e.target.closest('[data-k-sidebar-item]');
+        if (sideItem) {
+            e.preventDefault();
+            const side = sideItem.closest('.kalua-sidebar');
+            if (!side) return;
+            let item = {};
+            try { item = JSON.parse(sideItem.dataset.kValue || '{}'); } catch (err) {}
+            const index = parseInt(sideItem.getAttribute('data-k-sidebar-index') || '1', 10);
+            reportDOMEvent(side.dataset.kForm || '', side.dataset.kCtrl || '', 'sidebar_select', {
+                action: sideItem.getAttribute('data-k-sidebar-action') || '',
+                item: item,
+                index: index
+            });
+            return;
+        }
+
+        // Sidebar collapse toggle (§11.2): session-only, handled client-side.
+        const sideToggle = e.target.closest('[data-k-sidebar-toggle]');
+        if (sideToggle) {
+            e.preventDefault();
+            toggleSidebar(sideToggle.closest('.kalua-sidebar'));
             return;
         }
 

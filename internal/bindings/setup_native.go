@@ -16,7 +16,7 @@ import (
 // sess is the session this env belongs to (for msgbox, clipboard, etc.); can be nil.
 // logger is used for error logging; can be nil.
 func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterface, logger Logger) *Env {
-	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize, Sess: sess, Logger: logger, verbose: opts.Verbose}
+	e := &Env{L: L, App: app, known: map[string]string{}, maxFileSize: opts.MaxFileSize, Sess: sess, Logger: logger, verbose: opts.Verbose, scriptName: opts.ScriptName}
 	if e.maxFileSize <= 0 {
 		e.maxFileSize = DefaultMaxFileSize
 	}

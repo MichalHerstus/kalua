@@ -9,6 +9,7 @@ import (
 	"github.com/yuin/gopher-lua"
 
 	"kalua/internal/common"
+	"kalua/internal/version"
 	"kalua/internal/vm"
 )
 
@@ -493,6 +494,56 @@ func registerControls(e *Env) {
 		name := L.CheckString(2)
 		opts := L.OptTable(3, L.NewTable())
 		addControl(L, formName, name, "tab", opts)
+		return 0
+	})
+
+	// k.ctrl.topbar(form, name, options) - Topbar control (§11 kforms_enhancements.md)
+	// Fixed header with app branding, user info and logout. opts: {icon, title,
+	// user={name, role, avatar}, logout (function, called on user click),
+	// visible}. The logout function is registered as the control's "logout"
+	// handler, so k.form.on(form, ctrl, "logout", fn) overrides it.
+	e.register("ctrl.topbar", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "topbar", opts)
+		return 0
+	})
+
+	// k.ctrl.sidebar(form, name, options) - Sidebar control (§11 kforms_enhancements.md)
+	// Collapsible navigation panel that adapts to the form layout: a grid cell
+	// (cell="sidebar") in grid layout, a horizontal tab bar below the topbar in
+	// vertical layout. opts: {position=left|right, width, collapsed_width,
+	// collapsible, collapsed (session-only), items (array of {label, icon,
+	// action, badge} or {type="separator"}), on_select (global handler, called
+	// with the clicked item), visible, style}. Clicking an item fires the
+	// "sidebar_select" event with (action, item, index).
+	e.register("ctrl.sidebar", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "sidebar", opts)
+		return 0
+	})
+
+	// k.ctrl.footer(form, name, options) - Footer control (§11 kforms_enhancements.md)
+	// Fixed bottom bar with copyright text, optional links, and auto-filled
+	// version (from the KALUA binary) + script name. opts: {text, version,
+	// script_name, links (array of {label, url}), visible, style}.
+	e.register("ctrl.footer", "controls", func(L *lua.LState) int {
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+		addControl(L, formName, name, "footer", opts)
+		// Auto-fill version/script_name (§11.3) when omitted at creation time.
+		if ctrl := getControl(L, formName, name); ctrl != nil {
+			if v := ctrl.RawGetString("version"); v == lua.LNil || v.String() == "" {
+				ctrl.RawSetString("version", lua.LString(version.Get().Version))
+			}
+			if s := ctrl.RawGetString("script_name"); (s == lua.LNil || s.String() == "") && e.scriptName != "" {
+				ctrl.RawSetString("script_name", lua.LString(e.scriptName))
+			}
+		}
 		return 0
 	})
 
@@ -1083,28 +1134,20 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 
 	// For button with onclick, register as click handler. Image controls are
 	// clickable too (clickable=true option) and share the same handler table.
+	// The topbar's logout function is registered as its "logout" handler so
+	// clicking the user block invokes it (§11.1).
 	if ctrlType == "button" || ctrlType == "image" {
 		onclick := opts.RawGetString("onclick")
 		if onclick != lua.LNil {
 			if lfn, ok := onclick.(*lua.LFunction); ok {
-				// Register handler for click event
-				handlers := tbl.RawGetString("handlers")
-				if handlers == lua.LNil {
-					handlers = L.NewTable()
-					tbl.RawSetString("handlers", handlers)
-				}
-				handlersTbl, ok := handlers.(*lua.LTable)
-				if ok {
-					ctrlHandlers := handlersTbl.RawGetString(name)
-					if ctrlHandlers == lua.LNil {
-						ctrlHandlers = L.NewTable()
-						handlersTbl.RawSetString(name, ctrlHandlers)
-					}
-					ctrlHandlersTbl, ok := ctrlHandlers.(*lua.LTable)
-					if ok {
-						ctrlHandlersTbl.RawSetString("click", lfn)
-					}
-				}
+				registerControlHandler(L, tbl, name, "click", lfn)
+			}
+		}
+	}
+	if ctrlType == "topbar" {
+		if logout := opts.RawGetString("logout"); logout != lua.LNil {
+			if lfn, ok := logout.(*lua.LFunction); ok {
+				registerControlHandler(L, tbl, name, "logout", lfn)
 			}
 		}
 	}
@@ -1263,7 +1306,73 @@ func addControl(L *lua.LState, formName, name, ctrlType string, opts *lua.LTable
 		ctrlTbl.RawSetString("current_tab", lua.LNumber(1))
 	}
 
+	// Layout control options (kforms_enhancements.md §11).
+	//
+	// Topbar: fixed header with icon/title/user (avatar/name/role). The logout
+	// function is registered as the "logout" handler above.
+	if ctrlType == "topbar" {
+		ctrlTbl.RawSetString("icon", opts.RawGetString("icon"))
+		ctrlTbl.RawSetString("title", opts.RawGetString("title"))
+		ctrlTbl.RawSetString("user", opts.RawGetString("user"))
+	}
+
+	// Sidebar: collapsible navigation. The layout mode is derived from the
+	// owning form (grid → grid cell, else horizontal tab bar) so the renderer
+	// does not need the form table; the optional on_select function is kept on
+	// the control (global selection handler) and invoked by the session.
+	if ctrlType == "sidebar" {
+		ctrlTbl.RawSetString("position", opts.RawGetString("position"))
+		ctrlTbl.RawSetString("width", opts.RawGetString("width"))
+		ctrlTbl.RawSetString("collapsed_width", opts.RawGetString("collapsed_width"))
+		ctrlTbl.RawSetString("collapsible", opts.RawGetString("collapsible"))
+		ctrlTbl.RawSetString("collapsed", opts.RawGetString("collapsed"))
+		ctrlTbl.RawSetString("items", opts.RawGetString("items"))
+		ctrlTbl.RawSetString("on_select", opts.RawGetString("on_select"))
+		ctrlTbl.RawSetString("style", opts.RawGetString("style"))
+		layout := "vertical"
+		if lv := tbl.RawGetString("layout"); lv != lua.LNil && lv.String() == "grid" {
+			layout = "grid"
+		}
+		ctrlTbl.RawSetString("layout", lua.LString(layout))
+	}
+
+	// Footer: fixed bottom bar with text/version/script_name/links. version
+	// and script_name auto-fill happens in the ctrl.footer registration.
+	if ctrlType == "footer" {
+		ctrlTbl.RawSetString("text", opts.RawGetString("text"))
+		ctrlTbl.RawSetString("version", opts.RawGetString("version"))
+		ctrlTbl.RawSetString("script_name", opts.RawGetString("script_name"))
+		ctrlTbl.RawSetString("links", opts.RawGetString("links"))
+		ctrlTbl.RawSetString("style", opts.RawGetString("style"))
+	}
+
 	controlsTbl.RawSetString(name, ctrlTbl)
+}
+
+// registerControlHandler stores an option-provided function under the form's
+// handlers table (handlers[ctrlName][event]); the session dispatches browser
+// events through the same table, so k.form.on(form, ctrl, event, fn) later in
+// the script overrides the option.
+func registerControlHandler(L *lua.LState, tbl *lua.LTable, name, event string, fn *lua.LFunction) {
+	handlers := tbl.RawGetString("handlers")
+	if handlers == lua.LNil {
+		handlers = L.NewTable()
+		tbl.RawSetString("handlers", handlers)
+	}
+	handlersTbl, ok := handlers.(*lua.LTable)
+	if !ok {
+		return
+	}
+	ctrlHandlers := handlersTbl.RawGetString(name)
+	if ctrlHandlers == lua.LNil {
+		ctrlHandlers = L.NewTable()
+		handlersTbl.RawSetString(name, ctrlHandlers)
+	}
+	ctrlHandlersTbl, ok := ctrlHandlers.(*lua.LTable)
+	if !ok {
+		return
+	}
+	ctrlHandlersTbl.RawSetString(event, fn)
 }
 
 // AddControl is the exported registration entry point used by the visual

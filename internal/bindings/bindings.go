@@ -36,6 +36,11 @@ type Options struct {
 
 	// Verbose enables enhanced tracing of k.* API calls (Tier 1 debugging).
 	Verbose bool
+
+	// ScriptName is the base name of the script being run (e.g. "myapp.lua").
+	// Used to auto-fill the footer control's `script_name` (§11.3) when the
+	// script omits it. Empty in headless/unknown contexts.
+	ScriptName string
 }
 
 // DefaultMaxFileSize bounds k.file_load/k.json_load reads unless Options
@@ -72,6 +77,10 @@ type Env struct {
 
 	// verbose eust whether k.* API tracing is enabled (Options.Verbose).
 	verbose bool
+
+	// scriptName is the running script's base name (Options.ScriptName); the
+	// footer control auto-fills its script_name from it (§11.3).
+	scriptName string
 
 	// onErr is the script-registered k.on_error(fn) hook (or nil). When a
 	// binding fails it is invoked with (ERRORCODE, ERRORMSG) so the script can
@@ -187,6 +196,9 @@ var registerKnown = map[string]string{
 	"tab.remove_tab":            "controls",
 	"tab.set_tab_title":         "controls",
 	"tab.set_tab_icon":          "controls",
+	"ctrl.topbar":               "controls",
+	"ctrl.sidebar":              "controls",
+	"ctrl.footer":               "controls",
 	"ctrl.select_text":          "controls",
 	"ctrl.set_selection":        "controls",
 	"ctrl.get_selection":        "controls",

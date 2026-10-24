@@ -35,6 +35,7 @@ var runModeBindings = map[string]bool{
 	"ctrl.get_property": true, "ctrl.set_focus": true, "ctrl.select_text": true,
 	"ctrl.get_selection": true, "ctrl.set_selection": true, "ctrl.get_item_count": true,
 	"ctrl.execute_event": true, "ctrl.chart": true, "ctrl.tree": true, "ctrl.tab": true,
+	"ctrl.topbar": true, "ctrl.sidebar": true, "ctrl.footer": true,
 	// tab operations
 	"tab.set_tab": true, "tab.get_tab": true, "tab.get_tab_count": true,
 	"tab.add_tab": true, "tab.insert_tab": true, "tab.remove_tab": true,

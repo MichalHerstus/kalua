@@ -1679,6 +1679,39 @@
         if (panelsEl) panelsEl.innerHTML = panelsHtml;
     }
 
+    // Sidebar (k.ctrl.sidebar §11.2): a fixed navigation panel anchored to the
+    // viewport's left/right edge (position:fixed CSS), outside the form flow.
+    // The form body is padded on the sidebar side using the same CSS variables
+    // (--kalua-sidebar-width / --kalua-sidebar-collapsed-width). Collapse is
+    // session-only (resets on reload): the toggle flips the
+    // data-k-sidebar-collapsed attribute and adds .kalua-sidebar-collapsed to
+    // both the sidebar and its form (so the content padding matches).
+    function sidebarFormEl(side) {
+        const form = side.getAttribute('data-k-form');
+        return form ? document.getElementById('f:' + form) : null;
+    }
+
+    function applySidebarState(side, collapsed) {
+        side.setAttribute('data-k-sidebar-collapsed', collapsed ? 'true' : 'false');
+        side.classList.toggle('kalua-sidebar-collapsed', collapsed);
+        const formEl = sidebarFormEl(side);
+        if (formEl) formEl.classList.toggle('kalua-sidebar-collapsed', collapsed);
+    }
+
+    function initSidebars(scope) {
+        if (!scope) return;
+        scope.querySelectorAll('.kalua-sidebar').forEach(function(side) {
+            applySidebarState(side, side.getAttribute('data-k-sidebar-collapsed') === 'true');
+        });
+    }
+
+    // toggleSidebar collapses/expands a sidebar locally; the host is not told
+    // (session-only per §11.2).
+    function toggleSidebar(side) {
+        if (!side) return;
+        applySidebarState(side, side.getAttribute('data-k-sidebar-collapsed') !== 'true');
+    }
+
     // tabulatorGetData answers k.table.get_data requests with all current row data.
     function tabulatorGetData(id, selector, form, ctrl) {
         const inst = selector && tabulatorInstances.get(selector);
@@ -1705,10 +1738,14 @@
     // Form rendering
     function renderForm(html) {
         stage.innerHTML = html;
+        // A sidebar form fills the area among the fixed shell bars (§11.4);
+        // flag it on <body> so kalua.css neutralizes the run-shell card.
+        document.body.classList.toggle('kalua-shell', /kalua-has-sidebar/.test(html));
         initGrids(stage);
         initTabulators(stage);
         initLoopers(stage);
         initTrees(stage);
+        initSidebars(stage);
         initCharts(stage);
         initDatePickers(stage);
         // Focus first focusable element
@@ -1736,6 +1773,7 @@
             if (fresh) initTabulators(fresh.parentElement || stage);
             if (fresh) initLoopers(fresh.parentElement || stage);
             if (fresh) initTrees(fresh.parentElement || stage);
+            if (fresh) initSidebars(fresh.parentElement || stage);
             if (fresh) initCharts(fresh.parentElement || stage);
             if (fresh) initDatePickers(fresh.parentElement || stage);
         }
@@ -1747,6 +1785,7 @@
             destroyCharts(stage);
             destroyDatePickers(stage);
             stage.innerHTML = '';
+            document.body.classList.remove('kalua-shell');
         } else {
             const formEl = document.getElementById('f:' + name);
             if (formEl) {
@@ -1807,6 +1846,7 @@
         initTabulators(overlay);
         initLoopers(overlay);
         initTrees(overlay);
+        initSidebars(overlay);
         initCharts(overlay);
         initDatePickers(overlay);
 
@@ -2037,6 +2077,43 @@
         const tabBtn = e.target.closest('[data-k-tab-btn]');
         if (tabBtn) {
             handleTabHeaderClick(e);
+            return;
+        }
+
+        // Topbar user click (k.ctrl.topbar §11.1): report logout. The host
+        // invokes the registered logout function / k.form.on "logout" handler.
+        const topbarUser = e.target.closest('[data-k-topbar-user]');
+        if (topbarUser) {
+            e.preventDefault();
+            const bar = topbarUser.closest('.kalua-topbar');
+            if (!bar) return;
+            sendEvent(bar.dataset.kForm || '', bar.dataset.kCtrl || '', 'logout', {});
+            return;
+        }
+
+        // Sidebar item click (k.ctrl.sidebar §11.2): report sidebar_select
+        // {action, item, index}; the item's JSON rides in data-k-value.
+        const sideItem = e.target.closest('[data-k-sidebar-item]');
+        if (sideItem) {
+            e.preventDefault();
+            const side = sideItem.closest('.kalua-sidebar');
+            if (!side) return;
+            let item = {};
+            try { item = JSON.parse(sideItem.dataset.kValue || '{}'); } catch (err) {}
+            const index = parseInt(sideItem.getAttribute('data-k-sidebar-index') || '1', 10);
+            sendEvent(side.dataset.kForm || '', side.dataset.kCtrl || '', 'sidebar_select', {
+                action: sideItem.getAttribute('data-k-sidebar-action') || '',
+                item: item,
+                index: index
+            });
+            return;
+        }
+
+        // Sidebar collapse toggle (§11.2): session-only, handled client-side.
+        const sideToggle = e.target.closest('[data-k-sidebar-toggle]');
+        if (sideToggle) {
+            e.preventDefault();
+            toggleSidebar(sideToggle.closest('.kalua-sidebar'));
             return;
         }
 

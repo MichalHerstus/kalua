@@ -5,14 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/yuin/gopher-lua"
 
+	"kalua/internal/bindings"
 	"kalua/internal/common"
 	"kalua/internal/session"
-	"kalua/internal/bindings"
 	"kalua/internal/vm"
 )
 
@@ -103,6 +104,10 @@ func (t *WSTransport) Run() {
 func NewSessionWithWSTransport(id, scriptPath string, opts bindings.Options, transport common.Transport, logger session.Logger) (*session.Session, error) {
 	L := vm.New()
 	app := vm.NewApp(L)
+	// Auto-fill the footer's script_name from the running script (§11.3).
+	if opts.ScriptName == "" {
+		opts.ScriptName = filepath.Base(scriptPath)
+	}
 	env := bindings.Setup(L, app, opts, nil, logger)
 	
 	// Load and compile the script

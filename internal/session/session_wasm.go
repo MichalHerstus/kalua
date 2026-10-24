@@ -265,6 +265,30 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		return
 	}
 
+	// Layout control events (kforms_enhancements.md §11): the topbar's logout
+	// ({}) and the sidebar's sidebar_select ({action, item, index}) are not
+	// form values. The sidebar's optional on_select handler receives the item.
+	if (msg.event == "logout" && s.isTopbarControl(msg.form, msg.ctrl)) ||
+		(msg.event == "sidebar_select" && s.isSidebarControl(msg.form, msg.ctrl)) {
+		var resumeArgs []lua.LValue
+		if msg.event == "sidebar_select" {
+			if vt, ok := value.(*lua.LTable); ok {
+				item := vt.RawGetString("item")
+				if ctrl := s.controlTable(msg.form, msg.ctrl); ctrl != nil {
+					if fn, ok := ctrl.RawGetString("on_select").(*lua.LFunction); ok {
+						s.runOptFunction(fn, logger, item)
+					}
+				}
+				resumeArgs = []lua.LValue{vt.RawGetString("action"), item, vt.RawGetString("index")}
+			}
+		}
+		ran := s.runFormHandler(msg.form, msg.ctrl, msg.event, resumeArgs, logger)
+		if !ran {
+			s.runFormHandler(msg.form, "@form", msg.event, resumeArgs, logger)
+		}
+		return
+	}
+
 	ran := s.runFormHandler(msg.form, msg.ctrl, msg.event, []lua.LValue{value}, logger)
 
 	if !ran {
@@ -456,6 +480,52 @@ func (s *Session) isTabControl(formName, ctrlName string) bool {
 		return false
 	}
 	return ctrlTbl.RawGetString("type").String() == "tab"
+}
+
+// isTopbarControl / isSidebarControl report whether (formName, ctrlName) is a
+// layout control (§11) so events can be dispatched without the generic
+// control-value update.
+func (s *Session) isTopbarControl(formName, ctrlName string) bool {
+	return s.controlType(formName, ctrlName) == "topbar"
+}
+
+func (s *Session) isSidebarControl(formName, ctrlName string) bool {
+	return s.controlType(formName, ctrlName) == "sidebar"
+}
+
+func (s *Session) controlType(formName, ctrlName string) string {
+	formTbl := s.L.GetGlobal(formName)
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return ""
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return ""
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return ""
+	}
+	return ctrlTbl.RawGetString("type").String()
+}
+
+// runOptFunction invokes a control option function (e.g. the sidebar's
+// on_select global handler, §11.2) in a fresh coroutine.
+func (s *Session) runOptFunction(fn *lua.LFunction, logger Logger, args ...lua.LValue) {
+	co, cancel := s.L.NewThread()
+	st, err, _ := s.L.Resume(co, fn, args...)
+	if st == lua.ResumeError {
+		if cancel != nil {
+			cancel()
+		}
+		logger.Errorf("option handler error: %v", err)
+		s.notifyError(err)
+		return
+	}
+	s.flushOutbox()
 }
 
 // controlTable returns the control table for (formName, ctrlName), or nil.

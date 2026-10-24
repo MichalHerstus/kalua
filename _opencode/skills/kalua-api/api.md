@@ -617,6 +617,32 @@ Fires a control's event handler as if the user triggered it (e.g., "onclick"). R
 k.ctrl.execute_event("main", "btn_ok", "onclick")
 ```
 
+**`k.ctrl.footer(form, name, optsTable)`**  
+Adds a fixed footer (kforms_enhancements.md §11.3) at the bottom of the viewport with copyright text, optional links, and auto-populated version + script name. opts: {text, version (auto-filled from the KALUA binary when omitted), script_name (auto-filled from the running script), links=[{label, url}], visible, style={bg, height, ...}}. No events.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.text` | string | Copyright/description text. |
+| `optsTable.version` | string | App version (auto-filled from KALUA if omitted). |
+| `optsTable.script_name` | string | Running script name (auto-filled). |
+| `optsTable.links` | list | Array of {label, url} link definitions. |
+| `optsTable.visible` | boolean | Show/hide the footer (default true). |
+| `optsTable.style` | table | CSS style overrides: {bg=..., height=...}. |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="App", layout="vertical"})
+k.ctrl.footer("main", "foot", {
+  text = "© 2024 My Company",
+  version = "1.0.0",
+  links = { { label = "Privacy", url = "/privacy" }, { label = "Terms", url = "/terms" } },
+})
+k.form.show("main")
+```
+
 **`k.ctrl.get_item_count(form, name)`**  
 Returns the number of items/rows in a combo, list, radio, or table control.
 
@@ -923,6 +949,41 @@ Sets a control's value and re-renders it.
 k.ctrl.set_value("main", "age", 31)
 ```
 
+**`k.ctrl.sidebar(form, name, optsTable)`**  
+Adds a fixed navigation sidebar (kforms_enhancements.md §11.2) anchored to the viewport's left or right edge (position), outside the form flow — like the topbar and footer. On the run page a form with a sidebar fills the whole remaining viewport area between the fixed bars (topbar/footer/sidebar) with an ~3px gap on every side; the sidebar is collapsible to an icon-only strip (session-only, resets on reload, the form frame follows the strip width). opts: {position="left"|"right", width, collapsed_width, collapsible, collapsed, items=[{label, icon, action, badge} | {type="separator"}], on_select (global handler called with the clicked item), visible, style={bg, border_right, ...}}. Clicking an item fires the "sidebar_select" event with (action, item, index) — payload {action, item, index}.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.position` | string | "left" (default) or "right" — which viewport edge the fixed sidebar anchors to. |
+| `optsTable.width` | number | Expanded width in pixels (default 280). |
+| `optsTable.collapsed_width` | number | Collapsed width in pixels (default 64). |
+| `optsTable.collapsible` | boolean | Allow the user to collapse/expand (default true). |
+| `optsTable.collapsed` | boolean | Initial collapsed state (default false; session only). |
+| `optsTable.items` | list | Array of item definitions (see below). |
+| `optsTable.on_select` | function | Global selection handler invoked with the clicked item (optional). |
+| `optsTable.visible` | boolean | Show/hide the sidebar (default true). |
+| `optsTable.style` | table | CSS style overrides, e.g. {bg=..., border_right=...}. |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="App", layout="grid"})
+k.ctrl.sidebar("main", "side", {
+  position = "left",
+  items = {
+    { label = "Dashboard", icon = "assets/home.png", action = "nav_dashboard" },
+    { type = "separator" },
+    { label = "Settings", icon = "assets/settings.png", action = "nav_settings", badge = 5 },
+  },
+})
+k.form.on("main", "side", "sidebar_select", function(action, item, index)
+  k.print("selected", action)
+end)
+k.form.show("main")
+```
+
 **`k.ctrl.tab(form, name, optsTable)`**  
 Adds a tab control (kforms_enhancements.md §10) that organizes content into multiple tabs showing only the active tab's panel at a time. Users switch tabs by clicking headers; k.tab.* switches programmatically. opts: {tabs (required array of {title, icon?}), tab_position="top"|"bottom" (default "top"), swipable=?boolean (default true), cell?, align?}. Events via k.form.on(form, ctrl, "onchange", function(new_idx, old_idx) ... end). k.tab.get_tab returns the active tab index (1-based).
 
@@ -992,6 +1053,32 @@ Adds a textbox control. opts: {label, value, enabled, visible, multiline?:boolea
 
 ```lua
 k.ctrl.textbox("main", "age", { label = "Age", datetime = { mode = "date", format = "Y-m-d" } })
+```
+
+**`k.ctrl.topbar(form, name, optsTable)`**  
+Adds a fixed topbar (kforms_enhancements.md §11.1) spanning the viewport width with app branding, optional user info and a logout affordance. opts: {icon (image path), title, user={name, role, avatar}, logout (function called when the user block is clicked), visible}. Clicking the user block fires the "logout" event — the function passed to `logout` is registered as that handler, and k.form.on(form, ctrl, "logout", fn) overrides it.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.icon` | string | Image path (JPG/PNG/SVG) shown at the left of the bar. |
+| `optsTable.title` | string | App name. |
+| `optsTable.user` | table | User info: {name=..., role=..., avatar=<image path>}. |
+| `optsTable.logout` | function | Called when the user clicks the avatar/name (direct logout call). |
+| `optsTable.visible` | boolean | Show/hide the topbar (default true). |
+
+**Example:**
+
+```lua
+k.form.new("main", {title="App", layout="vertical"})
+k.ctrl.topbar("main", "bar", {
+  icon = "assets/logo.png",
+  title = "My App",
+  user = { name = "John Doe", role = "admin", avatar = "assets/avatar.png" },
+  logout = function() k.quit() end,
+})
+k.form.show("main")
 ```
 
 **`k.ctrl.tree(form, name, optsTable)`**  

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/yuin/gopher-lua"
@@ -91,6 +92,7 @@ func Run(cfg RunConfig) ExitCode {
 		AllowFS:     cfg.AllowFS,
 		MaxFileSize: cfg.MaxFileSize,
 		Verbose:     cfg.Verbose,
+		ScriptName:  filepath.Base(cfg.ScriptPath),
 	}, nil, log)
 
 	// 6. Execute the chunk to define main() in globals

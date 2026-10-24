@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,6 +74,10 @@ type Session struct {
 func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*Session, error) {
 	L := vm.New()
 	app := vm.NewApp(L)
+	// Auto-fill the footer's script_name from the running script (§11.3).
+	if opts.ScriptName == "" {
+		opts.ScriptName = filepath.Base(scriptPath)
+	}
 	env := bindings.Setup(L, app, opts, nil, logger) // session set after creation
 	// Load and compile the script
 	chunkFn, err := vm.LoadFile(L, scriptPath)
@@ -541,8 +546,20 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		}
 	}
 
+	// Layout control events (kforms_enhancements.md §11): the topbar's logout
+	// (browser payload {}) and the sidebar's sidebar_select ({action, item,
+	// index}) are not form values, so the generic control-value update is
+	// skipped and the payloads are unpacked into Kalipso handler signatures
+	// below. The sidebar's optional on_select (global handler) is invoked with
+	// the clicked item.
+	layoutDispatch := false
+	if (msg.event == "logout" && s.isTopbarControl(msg.form, msg.ctrl)) ||
+		(msg.event == "sidebar_select" && s.isSidebarControl(msg.form, msg.ctrl)) {
+		layoutDispatch = true
+	}
+
 	// Update control value in form definition from browser event
-	if !looperDispatch && !chartDispatch && !loginDispatch && !treeDispatch && !tabDispatch && value != lua.LNil {
+	if !looperDispatch && !chartDispatch && !loginDispatch && !treeDispatch && !tabDispatch && !layoutDispatch && value != lua.LNil {
 		s.updateControlValue(msg.form, msg.ctrl, value)
 	}
 
@@ -611,6 +628,21 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 	case treeDispatch:
 		vt := value.(*lua.LTable)
 		resumeArgs = []lua.LValue{vt.RawGetString("node")}
+	case layoutDispatch && msg.event == "logout":
+		// Topbar logout (§11.1): the logout function registered from the opt
+		// (or overridden by k.form.on) is dispatched below as the "logout"
+		// handler; no payload arguments.
+		resumeArgs = []lua.LValue{}
+	case layoutDispatch && msg.event == "sidebar_select":
+		vt := value.(*lua.LTable)
+		item := vt.RawGetString("item")
+		// Optional global on_select handler receives the clicked item (§11.2).
+		if ctrl := s.controlTable(msg.form, msg.ctrl); ctrl != nil {
+			if fn, ok := ctrl.RawGetString("on_select").(*lua.LFunction); ok {
+				s.runOptFunction(fn, logger, item)
+			}
+		}
+		resumeArgs = []lua.LValue{vt.RawGetString("action"), item, vt.RawGetString("index")}
 	}
 
 	ran := s.runFormHandler(msg.form, ctrlKey, msg.event, resumeArgs, logger)
@@ -814,7 +846,23 @@ func (s *Session) runFormHandler(formName, ctrlKey, event string, resumeArgs []l
 	return true
 }
 
-// runFormHandlerSync calls a form handler synchronously and returns its return values.
+// runOptFunction invokes a control option function (e.g. the sidebar's
+// on_select global handler, §11.2) in a fresh coroutine so the handler runs
+// serialized on the actor goroutine and an error cannot crash the session.
+func (s *Session) runOptFunction(fn *lua.LFunction, logger Logger, args ...lua.LValue) {
+	co, cancel := s.L.NewThread()
+	st, err, _ := s.L.Resume(co, fn, args...)
+	if st == lua.ResumeError {
+		if cancel != nil {
+			cancel()
+		}
+		logger.Errorf("option handler error: %v", err)
+		s.notifyError(err)
+		s.outbox <- common.OutboxMsg{Type: "error", Msg: err.Error(), Stack: getStack(s.L)}
+		return
+	}
+	s.flushOutbox()
+}
 // Used for validation hooks where we need the handler's result (e.g., {ok=true} or {ok=false, error="msg"}).
 func (s *Session) runFormHandlerSync(logger Logger, formName, ctrlKey, event string, args []lua.LValue) ([]lua.LValue, bool) {
 	formTbl := s.L.GetGlobal(formName)
@@ -3589,6 +3637,35 @@ func (s *Session) isTabControl(formName, ctrlName string) bool {
 		return false
 	}
 	return ctrlTbl.RawGetString("type").String() == "tab"
+}
+
+func (s *Session) isTopbarControl(formName, ctrlName string) bool {
+	return s.controlType(formName, ctrlName) == "topbar"
+}
+
+func (s *Session) isSidebarControl(formName, ctrlName string) bool {
+	return s.controlType(formName, ctrlName) == "sidebar"
+}
+
+// controlType returns the runtime type string of a control, or "" when the
+// control does not exist.
+func (s *Session) controlType(formName, ctrlName string) string {
+	formTbl := s.L.GetGlobal(formName)
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return ""
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return ""
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return ""
+	}
+	return ctrlTbl.RawGetString("type").String()
 }
 
 // updateControlValue updates a control's value in the form definition.

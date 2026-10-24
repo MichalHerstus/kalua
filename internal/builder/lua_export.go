@@ -135,6 +135,12 @@ func defaultEventsForControl(c *Control) []string {
 		return []string{"on_click", "on_select", "on_expand", "on_loaded", "on_error"}
 	case "tab":
 		return []string{"onchange"}
+	case "topbar":
+		return []string{"logout"}
+	case "sidebar":
+		return []string{"sidebar_select"}
+	case "footer":
+		return nil // no events (§11.5)
 	case "button":
 		return []string{"click"}
 	case "textbox", "combo", "list", "checkbox", "radio", "table":

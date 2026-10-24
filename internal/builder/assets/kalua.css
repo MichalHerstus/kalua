@@ -1079,3 +1079,282 @@ body {
 .form-modal:has(.kalua-login) > .kalua-form {
     margin: auto;
 }
+
+/* Layout controls (kforms_enhancements.md §11): Topbar, Sidebar, Footer. The
+   topbar and footer are position:fixed shell bars; the form body leaves room
+   for them via the kalua-has-* classes render.go tags onto .kalua-form. */
+
+/* Topbar (k.ctrl.topbar §11.1) — fixed header, 56px, full viewport width. */
+.kalua-topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 56px;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    box-sizing: border-box;
+    background: #2f6fdd;
+    color: #fff;
+}
+.kalua-topbar .kalua-topbar-icon {
+    height: 32px;
+    width: auto;
+    max-width: 120px;
+    object-fit: contain;
+}
+.kalua-topbar-title {
+    font-size: 18px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.kalua-topbar-spacer {
+    flex: 1;
+}
+.kalua-topbar-user {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+.kalua-topbar-user:hover {
+    background: rgba(255, 255, 255, 0.18);
+}
+.kalua-topbar-user .kalua-topbar-avatar {
+    height: 32px;
+    width: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: rgba(255, 255, 255, 0.25);
+}
+.kalua-topbar-user-name {
+    font-size: 14px;
+    font-weight: 500;
+}
+.kalua-topbar-user-role {
+    font-size: 12px;
+    opacity: 0.85;
+}
+
+/* Sidebar (k.ctrl.sidebar §11.2): a fixed navigation panel anchored to the
+   viewport's left or right edge (data-k-sidebar-position), outside the form
+   flow. It spans the space between the topbar (56px) and the footer (40px),
+   falling back to full height when those bars are absent (CSS vars are set on
+   .kalua-form by render.go). Collapse (session-only) adds
+   .kalua-sidebar-collapsed, which swaps width to the icon strip. */
+.kalua-sidebar {
+    position: fixed;
+    top: var(--kalua-topbar-height, 56px);
+    bottom: var(--kalua-footer-height, 40px);
+    z-index: 900;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: var(--kalua-sidebar-width, 280px);
+    box-sizing: border-box;
+    padding: 8px;
+    overflow-y: auto;
+    background: #fff;
+    border-right: 1px solid #e0e0e0;
+    transition: width 0.2s ease;
+}
+.kalua-sidebar[data-k-sidebar-position="left"] {
+    left: 0;
+}
+.kalua-sidebar[data-k-sidebar-position="right"] {
+    right: 0;
+    border-right: none;
+    border-left: 1px solid #e0e0e0;
+}
+.kalua-sidebar-toggle {
+    align-self: flex-end;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    color: inherit;
+    padding: 2px 6px;
+    border-radius: 4px;
+    line-height: 1;
+}
+.kalua-sidebar-toggle:hover {
+    background: rgba(0, 0, 0, 0.08);
+}
+.kalua-sidebar-items {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+}
+.kalua-sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    border-radius: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+.kalua-sidebar-item:hover {
+    background: rgba(47, 111, 221, 0.12);
+}
+.kalua-sidebar-icon {
+    height: 20px;
+    width: 20px;
+    flex: 0 0 auto;
+    object-fit: contain;
+}
+.kalua-sidebar-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.kalua-sidebar-badge {
+    flex: 0 0 auto;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: #e53935;
+    color: #fff;
+    font-size: 11px;
+    line-height: 18px;
+    text-align: center;
+}
+.kalua-sidebar-separator {
+    height: 1px;
+    margin: 6px 4px;
+    background: rgba(0, 0, 0, 0.12);
+}
+/* Collapsed: icon strip only (labels/badges hidden; width swaps to the
+   collapsed width via the --kalua-sidebar-collapsed-width variable). */
+.kalua-sidebar.kalua-sidebar-collapsed {
+    width: var(--kalua-sidebar-collapsed-width, 64px);
+}
+.kalua-sidebar-collapsed .kalua-sidebar-label,
+.kalua-sidebar-collapsed .kalua-sidebar-badge {
+    display: none;
+}
+.kalua-sidebar-collapsed .kalua-sidebar-item {
+    justify-content: center;
+}
+.kalua-sidebar-collapsed .kalua-sidebar-items {
+    align-items: center;
+}
+
+/* Footer (k.ctrl.footer §11.3) — fixed bottom bar, 40px, full viewport width. */
+.kalua-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    min-height: 40px;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 16px;
+    box-sizing: border-box;
+    background: #f5f5f5;
+    color: #666;
+    font-size: 13px;
+    border-top: 1px solid #e0e0e0;
+}
+.kalua-footer-text {
+    margin-right: auto;
+}
+.kalua-footer-link {
+    color: #2f6fdd;
+    text-decoration: none;
+}
+.kalua-footer-link:hover {
+    text-decoration: underline;
+}
+.kalua-footer-version,
+.kalua-footer-script {
+    opacity: 0.85;
+    white-space: nowrap;
+}
+
+/* Shell form layout (§11.4): a form with layout controls fills the whole
+   remaining viewport area. The fixed bars (topbar/sidebar/footer) overlay the
+   viewport edges; on the run page a sidebar form is anchored BETWEEN them with
+   an ~3px gap on every side (it escapes #app's centered 900px column via
+   position:fixed, scoped to #stage so the builder preview is unaffected). The
+   sidebar width (or collapsed strip) sets the left/right inset, so the right
+   side never stays empty.
+
+   Forms with a topbar/footer but NO sidebar keep the plain top/bottom padding
+   (content flows full width below/above the bars). */
+.kalua-form.kalua-has-topbar {
+    padding-top: 56px;
+}
+.kalua-form.kalua-has-footer {
+    padding-bottom: 40px;
+}
+
+/* Run shell: the form fills the area among the fixed bars, ~3px from each. */
+#stage .kalua-form.kalua-has-sidebar-left,
+#stage .kalua-form.kalua-has-sidebar-right {
+    position: fixed;
+    margin: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    top: calc(var(--kalua-topbar-height, 56px) + 3px);
+    bottom: calc(var(--kalua-footer-height, 40px) + 3px);
+    overflow: auto;
+    background: #fff;
+}
+#stage .kalua-form.kalua-has-sidebar-left {
+    left: calc(var(--kalua-sidebar-width, 280px) + 3px);
+    right: 3px;
+}
+#stage .kalua-form.kalua-has-sidebar-right {
+    left: 3px;
+    right: calc(var(--kalua-sidebar-width, 280px) + 3px);
+}
+#stage .kalua-form.kalua-has-sidebar-left.kalua-sidebar-collapsed {
+    left: calc(var(--kalua-sidebar-collapsed-width, 64px) + 3px);
+}
+#stage .kalua-form.kalua-has-sidebar-right.kalua-sidebar-collapsed {
+    right: calc(var(--kalua-sidebar-collapsed-width, 64px) + 3px);
+}
+
+/* Kill the run shell's white #stage card for shell apps (set by app.js when a
+   sidebar form renders) so the framed layout is seamless. */
+body.kalua-shell #stage {
+    padding: 0;
+    min-height: 0;
+    background: transparent;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+/* Non-run contexts (e.g. the builder preview): fall back to clearing the
+   sidebar column so content is not hidden behind the fixed panel. */
+body:not(.kalua-shell) .kalua-form.kalua-has-sidebar-left {
+    margin-left: var(--kalua-sidebar-width, 280px);
+}
+body:not(.kalua-shell) .kalua-form.kalua-has-sidebar-right {
+    margin-right: var(--kalua-sidebar-width, 280px);
+}
+body:not(.kalua-shell) .kalua-form.kalua-has-sidebar-left.kalua-sidebar-collapsed {
+    margin-left: var(--kalua-sidebar-collapsed-width, 64px);
+}
+body:not(.kalua-shell) .kalua-form.kalua-has-sidebar-right.kalua-sidebar-collapsed {
+    margin-right: var(--kalua-sidebar-collapsed-width, 64px);
+}
