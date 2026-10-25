@@ -10,8 +10,11 @@ import (
 	"kalua/internal/common"
 )
 
-// ToolCallBlockRE matches `function {"name":...,"arguments":...}` blocks.
-var ToolCallBlockRE = regexp.MustCompile(`function\s*\{[^{}]*"name"\s*:\s*"[^"]*"[^{}]*"arguments"\s*:\s*\{[^{}]*\}\)`)
+// ToolCallBlockRE matches `function {"name":...,"arguments":{...}}` blocks.
+//
+// Brace-flat by design: the args object must not contain nested objects (use
+// scalar params), matching the documented §12 format.
+var ToolCallBlockRE = regexp.MustCompile(`function\s*\{[^{}]*"name"\s*:\s*"[^"]*"[^{}]*"arguments"\s*:\s*\{[^{}]*\}\}`)
 
 // ExtractToolCalls scans text for tagged tool-call blocks and returns them.
 // Returns nil when none are found. Malformed JSON inside a block yields an
@@ -51,9 +54,9 @@ func SchemaJSON(schema common.ToolSchema) string {
 		}
 	}
 	obj := map[string]interface{}{
-		"name":    schema.Name,
-		"desc":    schema.Desc,
-		"params":  params,
+		"name":   schema.Name,
+		"desc":   schema.Desc,
+		"params": params,
 	}
 	b, _ := json.Marshal(obj)
 	return string(b)
@@ -79,9 +82,9 @@ func ToolSchemasJSON(schemas []common.ToolSchema) string {
 			}
 		}
 		arr[i] = map[string]interface{}{
-			"name":    s.Name,
-			"desc":    s.Desc,
-			"params":  params,
+			"name":   s.Name,
+			"desc":   s.Desc,
+			"params": params,
 		}
 	}
 	b, _ := json.Marshal(arr)

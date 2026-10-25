@@ -81,16 +81,16 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 	// Build the Env so expression functions and helpers share the same
 	// kNULL/coerce surface as run mode.
 	e := &Env{
-		L:         L,
-		App:       app,
-		known:     map[string]string{},
-		Logger:    logger,
-		k:         k,
-		workdir:   workdirOf(opts),
-		allowFS:   allowFSOf(opts),
-		verbose:   opts.Verbose,
+		L:          L,
+		App:        app,
+		known:      map[string]string{},
+		Logger:     logger,
+		k:          k,
+		workdir:    workdirOf(opts),
+		allowFS:    allowFSOf(opts),
+		verbose:    opts.Verbose,
 		scriptName: opts.ScriptName,
-		aiConfig:  opts.AIConfig,
+		aiConfig:   opts.AIConfig,
 	}
 	if e.maxFileSize <= 0 {
 		e.maxFileSize = DefaultMaxFileSize
@@ -316,7 +316,7 @@ func SetupUIError(L *lua.LState) {
 
 	// Disable k.ctrl.*
 	ctrlTbl := L.NewTable()
-	ctrlFuncs := []string{"set_value", "get_value", "set_property", "get_property", "textbox", "button", "label", "combo", "list", "table", "checkbox", "radio", "select_text", "set_selection", "get_selection", "get_item_count", "execute_event", "image", "chart", "looper", "grid", "login", "tree", "tab", "topbar", "sidebar", "footer"}
+	ctrlFuncs := []string{"set_value", "get_value", "set_property", "get_property", "textbox", "button", "label", "combo", "list", "table", "checkbox", "radio", "select_text", "set_selection", "get_selection", "get_item_count", "execute_event", "image", "chart", "looper", "grid", "login", "tree", "tab", "topbar", "sidebar", "footer", "ai_chat"}
 	for _, fn := range ctrlFuncs {
 		ctrlTbl.RawSetString(fn, L.NewFunction(errorFunc("k.ctrl."+fn)))
 	}

@@ -11,6 +11,7 @@ const PALETTE = [
   ['checkbox', 'Check Box'], ['radio', 'Radio'], ['looper', 'Looper'],
   ['chart', 'Chart'], ['image', 'Image'], ['tree', 'Tree'], ['tab', 'Tab'],
   ['topbar', 'Topbar'], ['sidebar', 'Sidebar'], ['footer', 'Footer'],
+  ['ai_chat', 'AI Chat'],
 ];
 
 /* Option schemas: type = string|number|bool|select|json|items|dt|cell|align */
@@ -59,6 +60,11 @@ const TYPE_OPTS = {
   footer:  { text: { t: 'string' }, version: { t: 'string' },
              script_name: { t: 'string' }, links: { t: 'json' },
              style: { t: 'json' } },
+  ai_chat: { title: { t: 'string' }, welcome: { t: 'string' },
+             system: { t: 'string' }, placeholder: { t: 'string' },
+             max_turns: { t: 'number' }, tools: { t: 'json' },
+             height: { t: 'string' }, show_header: { t: 'bool' },
+             show_apikey: { t: 'bool' }, markdown: { t: 'bool' } },
 };
 const COMMON_OPTS = {
   label: { t: 'string' }, value: { t: 'string' }, enabled: { t: 'bool' },
@@ -87,6 +93,10 @@ const LABELS = {
   collapsible: 'Collapsible', collapsed: 'Collapsed', items: 'Items',
   on_select: 'On select', style: 'Style', text: 'Text', version: 'Version',
   script_name: 'Script name', links: 'Links',
+  title: 'Title', welcome: 'Welcome message', system: 'System prompt',
+  placeholder: 'Placeholder', max_turns: 'Max turns', tools: 'Tools (JSON)',
+  height: 'Height', show_header: 'Show header', show_apikey: 'Show API key',
+  markdown: 'Markdown',
 };
 
 const state = {

@@ -755,6 +755,8 @@ func renderControl(ctrl *lua.LTable) string {
 		return renderSidebar(ctrl, formName, name, id, visible)
 	case "footer":
 		return renderFooter(ctrl, formName, name, id, visible)
+	case "ai_chat":
+		return renderAIChat(ctrl)
 	}
 	return `<div class="kalua-control">Unknown control: ` + escText(ctrlType) + `</div>`
 }
@@ -762,6 +764,121 @@ func renderControl(ctrl *lua.LTable) string {
 // RenderControl renders a control to HTML. Exported for use by session package.
 func RenderControl(ctrl *lua.LTable) string {
 	return renderControl(ctrl)
+}
+
+// renderAIChat renders an ai_chat control (§12.2 kforms_enhancements.md).
+// Bubbles are rendered server-side from the control's ai_transcript so a
+// form re-render preserves history. The client converts text nodes via mdRender.
+func renderAIChat(ctrl *lua.LTable) string {
+	formName := escAttr(ctrl.RawGetString("form").String())
+	name := escAttr(ctrl.RawGetString("name").String())
+	id := "c:" + formName + ":" + name
+
+	title := "AI Assistant"
+	if v := ctrl.RawGetString("ai_title"); v != lua.LNil && v.String() != "nil" && v.String() != "" {
+		title = v.String()
+	}
+	placeholder := "Ask me anything…"
+	if v := ctrl.RawGetString("ai_placeholder"); v != lua.LNil && v.String() != "" {
+		placeholder = v.String()
+	}
+	height := ""
+	if v := ctrl.RawGetString("ai_height"); v != lua.LNil && v.String() != "nil" {
+		height = v.String()
+	}
+
+	showHeader := true
+	if v := ctrl.RawGetString("ai_show_header"); v != lua.LNil {
+		showHeader = lua.LVAsBool(v)
+	}
+	showAPIKey := false
+	if v := ctrl.RawGetString("ai_show_apikey"); v != lua.LNil {
+		showAPIKey = lua.LVAsBool(v)
+	}
+	markdown := true
+	if v := ctrl.RawGetString("ai_markdown"); v != lua.LNil {
+		markdown = lua.LVAsBool(v)
+	}
+
+	disabledAttr := ""
+	if v := ctrl.RawGetString("enabled"); v != lua.LNil && v.String() == "false" {
+		disabledAttr = ` disabled`
+	}
+
+	// Shared visibility + per-widget styling on the root element.
+	_, visible := renderVisibility(ctrl)
+	visible = mergeControlStyle(ctrl, visible)
+	if height != "" {
+		if visible == "" {
+			visible = ` style="--kalua-ai-height:` + escAttr(height) + `"`
+		} else {
+			inner := strings.TrimSuffix(strings.TrimPrefix(visible, ` style="`), `"`)
+			visible = ` style="` + inner + `;--kalua-ai-height:` + escAttr(height) + `"`
+		}
+	}
+
+	// Class attribute (shared class opt).
+	classAttr := ""
+	if v := ctrl.RawGetString("class"); v != lua.LNil && v.String() != "" {
+		classAttr = ` class="` + escAttr(v.String()) + ` kalua-ai-chat-inline"`
+	} else {
+		classAttr = ` class="kalua-ai-chat-inline"`
+	}
+
+	var sb strings.Builder
+	sb.WriteString(`<div id="` + id + `"` + classAttr)
+	sb.WriteString(` data-k-ai-chat="1" data-k-form="` + formName + `" data-k-ctrl="` + name + `"`)
+	if markdown {
+		sb.WriteString(` data-k-md="1"`)
+	}
+	sb.WriteString(visible)
+	sb.WriteString(`>`)
+
+	if showHeader {
+		sb.WriteString(`<div class="kalua-ai-header"><div class="kalua-ai-title">` + escText(title) + `</div></div>`)
+	}
+
+	// Transcript rendered server-side from ai_transcript.
+	sb.WriteString(`<div class="kalua-ai-transcript" data-k-ai-transcript="1">`)
+	if tt := ctrl.RawGetString("ai_transcript"); tt != lua.LNil {
+		if ttbl, ok := tt.(*lua.LTable); ok {
+			for i := 1; i <= ttbl.Len(); i++ {
+				m := ttbl.RawGetInt(i)
+				if mt, ok := m.(*lua.LTable); ok {
+					role := mt.RawGetString("role").String()
+					content := mt.RawGetString("content").String()
+					bubbleClass := "kalua-ai-bubble-user"
+					if role == "assistant" {
+						bubbleClass = "kalua-ai-bubble-assistant"
+					}
+					mdAttr := ""
+					if markdown {
+						mdAttr = ` data-k-md="1"`
+					}
+					sb.WriteString(`<div class="kalua-ai-bubble ` + bubbleClass + `"` + mdAttr + `>` + escText(content) + `</div>`)
+				}
+			}
+		}
+	}
+	sb.WriteString(`</div>`)
+
+	// Optional API key input.
+	if showAPIKey {
+		sb.WriteString(`<div class="kalua-ai-apikey-row"><label class="kalua-ai-apikey-label">API Key:</label>`)
+		sb.WriteString(`<input type="password" class="kalua-ai-apikey-input" id="` + id + `-ai-apikey" placeholder="sk-…" data-k-ai-apikey="1"></div>`)
+	}
+
+	// Input bar.
+	sb.WriteString(`<div class="kalua-ai-input-bar">`)
+	sb.WriteString(`<input type="text" class="kalua-ai-input" id="` + id + `-ai-input" placeholder="` + escAttr(placeholder) + `" data-k-ai-input="1"` + disabledAttr + `>`)
+	sb.WriteString(`<button type="button" class="kalua-ai-send" data-k-ai-send="1"` + disabledAttr + `>Send</button>`)
+	sb.WriteString(`<button type="button" class="kalua-ai-stop" data-k-ai-stop="1" hidden` + disabledAttr + `>Stop</button>`)
+	sb.WriteString(`</div>`)
+
+	sb.WriteString(`<div class="kalua-ai-status" data-k-ai-status="1" hidden></div>`)
+
+	sb.WriteString(`</div>`)
+	return sb.String()
 }
 
 // renderLooper renders a looper container. When the looper is DB-linked, the

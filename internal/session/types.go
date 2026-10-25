@@ -4,6 +4,8 @@
 package session
 
 import (
+	"context"
+
 	"github.com/yuin/gopher-lua"
 )
 
@@ -59,7 +61,29 @@ const (
 	inboxGridUpdateRowResp                   // k.grid.update_row response
 	inboxTreeDataRequest                     // browser asked for the full tree data
 	inboxTabChange                           // browser reported a tab switch (tab_change)
+	inboxAIChatSend                          // control-scoped ai_chat_send (browser or k.ai_chat.send)
+	inboxAIChatStop                          // control-scoped ai_chat_stop
+	inboxAIChatEvent                         // post-turn Lua event (on_reply/on_tool/on_error/on_done)
+	inboxAIToolCall                          // suspend-aware tool execution requested by the agent worker
 )
+
+// toolCall is one model-requested tool invocation sent from the agent worker
+// goroutine to the actor for execution.
+type toolCall struct {
+	Name string
+	Args map[string]interface{}
+}
+
+// toolResult is the outcome of a tool execution delivered back to the worker.
+type toolResult struct {
+	Value interface{}
+	Err   error
+}
+
+// aiTurn tracks one in-flight AI chat turn per control.
+type aiTurn struct {
+	cancel context.CancelFunc
+}
 
 // inboxMsg is a typed message delivered to the session actor's inbox.
 type inboxMsg struct {
@@ -77,6 +101,11 @@ type inboxMsg struct {
 	respID     string
 	resp       string
 	selectRows []int
+
+	// args carries Lua values for posted AI chat events (on_reply/on_tool/...).
+	args []lua.LValue
+	// replyChan delivers a tool result back to the waiting agent worker.
+	replyChan chan toolResult
 
 	// query is a unit of work to run on the actor goroutine (inboxQuery).
 	query func(*lua.LState) lua.LValue

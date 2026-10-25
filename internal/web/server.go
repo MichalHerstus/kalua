@@ -438,11 +438,26 @@ func (s *Server) handleWSMessage(sess *session.Session, msg map[string]interface
 		sess.PostGridBatchDelete(form, ctrl, value)
 	case "ai_chat_send":
 		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
 		value := map[string]interface{}{
 			"text":    getString(msg, "text"),
 			"api_key": getString(msg, "api_key"),
 		}
-		sess.PostEventAny(form, "__kai_chat", "ai_chat_send", value)
+		if ctrl != "" {
+			// Control-scoped send (§12.2): target the k.ctrl.ai_chat directly.
+			sess.PostEventAny(form, ctrl, "ai_chat_send", value)
+		} else {
+			// Legacy modal send (§12.1): target the __kai_chat form.
+			sess.PostEventAny(form, "__kai_chat", "ai_chat_send", value)
+		}
+	case "ai_chat_stop":
+		form := getString(msg, "form")
+		ctrl := getString(msg, "ctrl")
+		if ctrl != "" {
+			sess.PostEventAny(form, ctrl, "ai_chat_stop", nil)
+		} else {
+			sess.PostEventAny(form, "__kai_chat", "ai_chat_stop", nil)
+		}
 	case "ai_chat_close":
 		form := getString(msg, "form")
 		sess.PostEventAny(form, "__kai_chat", "ai_chat_close", nil)

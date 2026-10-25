@@ -139,6 +139,8 @@ func defaultEventsForControl(c *Control) []string {
 		return []string{"logout"}
 	case "sidebar":
 		return []string{"sidebar_select"}
+	case "ai_chat":
+		return []string{"on_send", "on_reply", "on_tool", "on_error", "on_done"}
 	case "footer":
 		return nil // no events (§11.5)
 	case "button":

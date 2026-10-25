@@ -246,8 +246,8 @@ Three constraints drive the design: the agent loop blocks on network I/O → run
 `RunAsync`; tools touch `lua.LState` → executed through `Session.Query` on the actor
 goroutine; a form's suspend resumes with `LNil` → needs a new `PendingFormShowValue`.
 
-Decisions: **text tool protocol** `<tool_call>{json}</tool_call>` (`internal/ai` has
-no native tool support, and many local models lack `tool_calls`) · **auto-exposure**
+Decisions: **text tool protocol** `function {json}` (`internal/ai` has no native tool
+support, and many local models lack `tool_calls`) · **auto-exposure**
 with a `k.ai.tool` override hook · **config** reuses `[AI]` INI + `KALUA_AI_*` env, **no
 new run flags** (`resolveAI` already shared with `builderCmd`) · **streaming** on ·
 **tools synchronous only in phase 1** · `max_turns` default 8 · reuses the builder's
@@ -267,6 +267,17 @@ escape-first `markdown.js` and prior-art chat UX.
 | 10 | `registerKnown` + `api_doc.go` + `USER_GUIDE.md` + `make gen-api` (0.5 d) | ⏳ |
 | 11 | Tests — `ai/{tools,agent,collect}_test.go`, `session/aichat_test.go`, `cli/ai_test.go` (1.5 d) | ⏳ |
 | 12 | Demo app `testdata/apps/ai_agent_demo.lua` (0.5 d) | ⏳ |
+
+**§12.2 — AI Chat Control (`k.ctrl.ai_chat`).** The modal form is re-framed as sugar over
+an ordinary control that can live inside any form (vertical, grid cell, tab panel) and
+never blocks the script. Turns are event-driven (`on_send`/`on_reply`/`on_tool`/`on_error`/
+`on_done`) with `k.ai_chat.*` operations; state lives on the control (several chats per
+session); tools are off by default for the control and auto for the modal; Markdown is
+rendered client-side via the existing `markdown.js`; WASM and serve remain out of scope.
+A suspend-aware tool runner (coroutine + `asyncOps` completion, `inboxAIToolCall`) makes
+`k.db_select`/`k.sql`/`k.http_request` usable inside tools, removing the phase-1
+\"tools are synchronous\" limitation. Spec only — see
+`kforms_enhancements.md` §12.2 for the full design, protocol, file change and test plan.
 
 ---
 
@@ -337,7 +348,7 @@ extension (Phase 5 LSP & editor).
 | `kalua_wasm_plan.md` | M0–M5 | 🔶 M0–M4 ✅, M5 ⏳ |
 | `AI_builder.md` | AI phases 1–4, agentic P0–P2 | ✅ complete |
 | `kform_builder_plan.md` | Webview builder phases 1–7, table/looper editor, **builder palette (grid + layout controls)** | 🔁 superseded; table/looper + named DBs ✅; palette plan → Phase 1 grid/CRUD-tab, Phase 2 layout controls |
-| `kforms_enhancements.md` | §§1–12 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳, §10 tab ⏳, §11 layout controls ⏳, §12 AI chat form ⏳ |
+| `kforms_enhancements.md` | §§1–12 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳, §10 tab ⏳, §11 layout controls ⏳, §12 AI chat: form ✅, **§12.2 control (`k.ctrl.ai_chat`) ⏳ spec only** |
 | `kalua_security_plan.md` | Security assessment (intranet model) | ⏳ assessment complete; mitigations P0–P10 pending |
 | `serve-communication-plan.md` | Serve: REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP + structured logging | ⏳ plan only; phases 0–8 not started |
 | `kalua-serve-enhancements.deprecated.md` | Old serve flow primitives (superseded) | 🔁 superseded |
@@ -346,7 +357,7 @@ extension (Phase 5 LSP & editor).
 **Top pending plan items (no code yet):** REPL mode (§8 #11) · DAP debugger (§11 B/C) ·
 codebase cleanup C/D (§13) · WASM M5 JS simplification · `k.ctrl.login` (§8) ·
 `k.ctrl.tree` (§9) · **`k.ctrl.tab` (§10) · Layout Controls: Topbar, Sidebar, Footer (§11) · Image onclick handling (§4.3) · builder palette: `grid` missing + dead CRUD tab (Phase 1 plan)** ·
-**AI chat form `k.form.ai_agent` — auto-exposed script-function tools (§12)** ·
+**AI chat form `k.form.ai_agent` — auto-exposed script-function tools (§12)**, and its embeddable successor **`k.ctrl.ai_chat` (§12.2, spec only — non-blocking, in-form, suspend-aware tools)** ·
 **Serve communication — Phase 0 correctness, then REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP, then structured logging to `klog.db` (§18)** ·
 **Security hardening (P0–P3: network/SQL allowlists, auth middleware, path sandbox; C7 `k.connect_db` sandbox escape is fixed in Phase 5 §8.11)**.
 

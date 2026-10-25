@@ -68,6 +68,13 @@ type Session struct {
 	clientW      int
 	clientH      int
 	clientLocale string
+
+	// AI chat turns - in-flight turns keyed by form+"\x00"+ctrl.
+	aiTurns  map[string]*aiTurn
+	aiTurnMu sync.Mutex
+	// pendingToolCalls - coroutines awaiting a tool result, keyed by coroutine.
+	pendingToolCalls map[*lua.LState]chan toolResult
+	aiToolMu         sync.Mutex
 }
 
 // New creates and starts a new session actor.
@@ -120,10 +127,13 @@ func New(id string, scriptPath string, opts bindings.Options, logger Logger) (*S
 		// Form show coroutines
 		formCoros: make(map[string]*lua.LState),
 		// Async operations - suspended coroutines waiting for completion
-		asyncOps:      make(map[string]*asyncOp),
-		gridAsyncOps:  make(map[string]*gridAsyncOp),
+		asyncOps:     make(map[string]*asyncOp),
+		gridAsyncOps: make(map[string]*gridAsyncOp),
 		// Sleep operations - suspended coroutines waiting for k.sleep
 		sleepOps: make(map[string]*lua.LState),
+		// AI chat turns
+		aiTurns:          make(map[string]*aiTurn),
+		pendingToolCalls: make(map[*lua.LState]chan toolResult),
 	}
 
 	// Set session on env for msgbox, clipboard, etc.
@@ -158,10 +168,13 @@ func NewWithTransport(id string, L *lua.LState, app *vm.App, env *bindings.Env, 
 		// Form show coroutines
 		formCoros: make(map[string]*lua.LState),
 		// Async operations - suspended coroutines waiting for completion
-		asyncOps:      make(map[string]*asyncOp),
-		gridAsyncOps:  make(map[string]*gridAsyncOp),
+		asyncOps:     make(map[string]*asyncOp),
+		gridAsyncOps: make(map[string]*gridAsyncOp),
 		// Sleep operations - suspended coroutines waiting for k.sleep
 		sleepOps: make(map[string]*lua.LState),
+		// AI chat turns
+		aiTurns:          make(map[string]*aiTurn),
+		pendingToolCalls: make(map[*lua.LState]chan toolResult),
 	}
 
 	// Set session on env for msgbox, clipboard, etc.
@@ -358,6 +371,17 @@ func (s *Session) handleInbox(msg inboxMsg, logger Logger) {
 		s.handleGridUpdateRowResp(msg, logger)
 	case inboxTreeDataRequest:
 		s.handleTreeDataRequest(msg, logger)
+	case inboxAIChatSend:
+		raw, _ := msg.raw.(map[string]interface{})
+		text, _ := raw["text"].(string)
+		apiKey, _ := raw["api_key"].(string)
+		s.handleAIChatControlSend(msg.form, msg.ctrl, text, apiKey, logger)
+	case inboxAIChatStop:
+		s.handleAIChatControlStop(msg.form, msg.ctrl, logger)
+	case inboxAIChatEvent:
+		s.postAIChatEvent(msg, logger)
+	case inboxAIToolCall:
+		s.handleAIToolCall(msg, logger)
 	}
 }
 
@@ -566,8 +590,15 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		aiChatDispatch = true
 	}
 
+	// Control-scoped AI chat: ai_chat_send/ai_chat_stop target a specific
+	// k.ctrl.ai_chat control. They are not control values.
+	aiChatControlDispatch := false
+	if (msg.event == "ai_chat_send" || msg.event == "ai_chat_stop") && msg.ctrl != "" && s.isAIChatControl(msg.form, msg.ctrl) {
+		aiChatControlDispatch = true
+	}
+
 	// Update control value in form definition from browser event
-	if !looperDispatch && !chartDispatch && !loginDispatch && !treeDispatch && !tabDispatch && !layoutDispatch && !aiChatDispatch && value != lua.LNil {
+	if !looperDispatch && !chartDispatch && !loginDispatch && !treeDispatch && !tabDispatch && !layoutDispatch && !aiChatDispatch && !aiChatControlDispatch && value != lua.LNil {
 		s.updateControlValue(msg.form, msg.ctrl, value)
 	}
 
@@ -662,6 +693,21 @@ func (s *Session) handleWSEvent(msg inboxMsg, logger Logger) {
 		return
 	case aiChatDispatch && msg.event == "ai_chat_close":
 		s.handleAIChatClose(msg.form)
+		return
+	case aiChatControlDispatch && msg.event == "ai_chat_send":
+		vt := value.(*lua.LTable)
+		text := ""
+		if tv := vt.RawGetString("text"); tv != lua.LNil {
+			text = tv.String()
+		}
+		apiKey := ""
+		if ak := vt.RawGetString("api_key"); ak != lua.LNil {
+			apiKey = ak.String()
+		}
+		s.handleAIChatControlSend(msg.form, msg.ctrl, text, apiKey, logger)
+		return
+	case aiChatControlDispatch && msg.event == "ai_chat_stop":
+		s.handleAIChatControlStop(msg.form, msg.ctrl, logger)
 		return
 	}
 
@@ -883,6 +929,7 @@ func (s *Session) runOptFunction(fn *lua.LFunction, logger Logger, args ...lua.L
 	}
 	s.flushOutbox()
 }
+
 // Used for validation hooks where we need the handler's result (e.g., {ok=true} or {ok=false, error="msg"}).
 func (s *Session) runFormHandlerSync(logger Logger, formName, ctrlKey, event string, args []lua.LValue) ([]lua.LValue, bool) {
 	formTbl := s.L.GetGlobal(formName)
@@ -944,6 +991,12 @@ func (s *Session) runFormHandlerSync(logger Logger, formName, ctrlKey, event str
 // handleFormEvent processes form lifecycle events (open_form, after_open_form, close_form, on_idle)
 // dispatched via PostFormEvent.
 func (s *Session) handleFormEvent(formName, event string, logger Logger) {
+	// close_form cancels every in-flight AI chat turn that lives on the form
+	// (§12.2 lifecycle: closing a form must not leak a worker or leave a
+	// control busy).
+	if event == "close_form" {
+		s.cancelAIChatTurns(formName)
+	}
 	s.runFormHandler(formName, "@form", event, []lua.LValue{lua.LString(event)}, logger)
 }
 
@@ -2553,8 +2606,19 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 		resumeVal = lua.LNil
 	}
 
-	st, errResume, _ := s.L.Resume(op.co, nil, resumeVal)
+	st, errResume, rets := s.L.Resume(op.co, nil, resumeVal)
 	if st == lua.ResumeError {
+		// If this coroutine was a pending AI chat tool call, surface the error
+		// as a tool result (never a session crash).
+		s.aiToolMu.Lock()
+		replyChan, isTool := s.pendingToolCalls[op.co]
+		if isTool {
+			delete(s.pendingToolCalls, op.co)
+		}
+		s.aiToolMu.Unlock()
+		if isTool {
+			replyChan <- toolResult{Err: errResume}
+		}
 		logger.Errorf("async resume error: %v", errResume)
 		if s.verbose {
 			logger.Errorf("%s", postMortemDump(s.L))
@@ -2564,6 +2628,24 @@ func (s *Session) handleAsyncDone(data interface{}, logger Logger) {
 		s.notifyError(errResume)
 		s.outbox <- common.OutboxMsg{Type: "error", Msg: errResume.Error(), Stack: getStack(s.L)}
 		return
+	}
+
+	// If this was a pending AI chat tool call that ran to completion, forward
+	// its return value to the waiting agent worker.
+	if st == lua.ResumeOK {
+		s.aiToolMu.Lock()
+		replyChan, isTool := s.pendingToolCalls[op.co]
+		if isTool {
+			delete(s.pendingToolCalls, op.co)
+		}
+		s.aiToolMu.Unlock()
+		if isTool {
+			var ret lua.LValue = lua.LNil
+			if len(rets) > 0 {
+				ret = rets[0]
+			}
+			replyChan <- toolResult{Value: luaValueToGo(ret)}
+		}
 	}
 
 	// Clean up the stored op now that the coroutine is resumed. On a normal
@@ -3431,7 +3513,14 @@ func (s *Session) Query(fn func(*lua.LState) lua.LValue) lua.LValue {
 	case <-s.done:
 		return lua.LNil
 	}
-	return <-reply
+	select {
+	case v := <-reply:
+		return v
+	case <-s.done:
+		// Session is closing; the actor will not reply. Return nil rather than
+		// blocking forever (e.g. an AI turn worker writing its final transcript).
+		return lua.LNil
+	}
 }
 
 // GetGlobal reads a Lua global on the actor goroutine and returns its value.
@@ -3659,6 +3748,26 @@ func (s *Session) isTabControl(formName, ctrlName string) bool {
 	return ctrlTbl.RawGetString("type").String() == "tab"
 }
 
+// isAIChatControl reports whether (formName, ctrlName) is an ai_chat control.
+func (s *Session) isAIChatControl(formName, ctrlName string) bool {
+	formTbl := s.L.GetGlobal(formName)
+	tbl, ok := formTbl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	controls := tbl.RawGetString("controls")
+	controlsTbl, ok := controls.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	ctrl := controlsTbl.RawGetString(ctrlName)
+	ctrlTbl, ok := ctrl.(*lua.LTable)
+	if !ok {
+		return false
+	}
+	return ctrlTbl.RawGetString("type").String() == "ai_chat"
+}
+
 func (s *Session) isTopbarControl(formName, ctrlName string) bool {
 	return s.controlType(formName, ctrlName) == "topbar"
 }
@@ -3805,6 +3914,9 @@ func (s *Session) Close() error {
 	for _, t := range s.timers {
 		t.Stop()
 	}
+	// Cancel all in-flight AI chat turns so worker goroutines release their
+	// reply channels and exit before we wait on the actor.
+	s.cancelAllAITurns()
 	s.cancel()
 	close(s.done)
 	// Wait for the actor goroutine to exit *before* closing the inbox: closing
@@ -3820,6 +3932,8 @@ func (s *Session) Close() error {
 // teardown performs session cleanup.
 func (s *Session) teardown(logger Logger) {
 	s.quitting = true
+	// Cancel any in-flight AI chat turns before posting close_form events.
+	s.cancelAllAITurns()
 	// close_form cleanup for all forms on stack - fire close_form event for each
 	for len(s.formStack) > 0 {
 		name := s.PopForm()

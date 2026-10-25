@@ -206,13 +206,24 @@ var registerKnown = map[string]string{
 	"ctrl.topbar":               "controls",
 	"ctrl.sidebar":              "controls",
 	"ctrl.footer":               "controls",
+	"ctrl.ai_chat":              "controls",
 	"ctrl.select_text":          "controls",
 	"ctrl.set_selection":        "controls",
 	"ctrl.get_selection":        "controls",
 	"ctrl.get_item_count":       "controls",
 	"ctrl.execute_event":        "controls",
 	"form.ai_agent":             "forms",
+	"ai":                        "ai", // namespace
 	"ai.tool":                   "ai",
+	"ai_chat":                   "controls", // namespace
+	"ai_chat.send":              "controls",
+	"ai_chat.stop":              "controls",
+	"ai_chat.add_message":       "controls",
+	"ai_chat.get_transcript":    "controls",
+	"ai_chat.set_transcript":    "controls",
+	"ai_chat.clear":             "controls",
+	"ai_chat.set_system":        "controls",
+	"ai_chat.is_busy":           "controls",
 	"chart.set_data":            "controls",
 	"chart.add_dataset":         "controls",
 	"chart.remove_dataset":      "controls",
@@ -476,7 +487,7 @@ func split(s, sep string) []string {
 // checker.
 func Known() map[string]bool {
 	m := make(map[string]bool, len(registerKnown))
-for name := range registerKnown {
+	for name := range registerKnown {
 		m[name] = true
 	}
 	return m

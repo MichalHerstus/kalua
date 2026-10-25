@@ -1170,13 +1170,19 @@
                 showAIChat(msg.form, msg.html);
                 break;
             case 'ai_chat_delta':
-                aiAppendDelta(msg.form, msg.text);
+                aiAppendDelta(msg.form, msg.ctrl, msg.text);
                 break;
             case 'ai_chat_status':
-                aiStatus(msg.form, msg.text);
+                aiStatus(msg.form, msg.ctrl, msg.text);
                 break;
             case 'ai_chat_done':
-                aiDone(msg.form);
+                aiDone(msg.form, msg.ctrl);
+                break;
+            case 'ai_chat_message':
+                aiChatMessage(msg.form, msg.ctrl, msg.data);
+                break;
+            case 'ai_chat_transcript':
+                aiChatTranscriptReplace(msg.form, msg.ctrl, msg.data);
                 break;
         }
     }
@@ -1760,6 +1766,7 @@
         initSidebars(stage);
         initCharts(stage);
         initDatePickers(stage);
+        initAIChats(stage);
         // Focus first focusable element
         const firstFocusable = stage.querySelector('input, select, button, textarea');
         if (firstFocusable) {
@@ -1788,6 +1795,7 @@
             if (fresh) initSidebars(fresh.parentElement || stage);
             if (fresh) initCharts(fresh.parentElement || stage);
             if (fresh) initDatePickers(fresh.parentElement || stage);
+            if (fresh) initAIChats(fresh.parentElement || stage);
         }
     }
 
@@ -1861,6 +1869,7 @@
         initSidebars(overlay);
         initCharts(overlay);
         initDatePickers(overlay);
+        initAIChats(overlay);
 
         // Trap focus within modal (same as msgbox)
         overlay.addEventListener('keydown', function(e) {
@@ -1944,32 +1953,130 @@
         }
     }
 
-    function aiAppendDelta(formName, text) {
-        const transcript = document.getElementById(formName + '-ai-transcript');
+    // Resolves the AI chat element for a (form, ctrl). ctrl may be empty for
+    // the legacy modal shell (<form>-ai-chat inside the #aichat:<form> overlay).
+    function aiChatRoot(form, ctrl) {
+        if (ctrl) {
+            return document.querySelector('[data-k-ai-chat][data-k-form="' + form + '"][data-k-ctrl="' + ctrl + '"]');
+        }
+        return document.getElementById(form + '-ai-chat');
+    }
+
+    function aiChatTranscriptEl(form, ctrl) {
+        var root = aiChatRoot(form, ctrl);
+        if (!root) return null;
+        return root.querySelector('[data-k-ai-transcript]') || document.getElementById(form + '-ai-transcript');
+    }
+
+    function aiChatStatusEl(form, ctrl) {
+        var root = aiChatRoot(form, ctrl);
+        if (!root) return null;
+        return root.querySelector('[data-k-ai-status]') || document.getElementById(form + '-ai-status');
+    }
+
+    // Sets busy/disabled state on the input bar while a turn is in flight.
+    function setAIBusy(form, ctrl, busy) {
+        var root = aiChatRoot(form, ctrl);
+        if (!root) return;
+        var input = root.querySelector('[data-k-ai-input]');
+        var send = root.querySelector('[data-k-ai-send]');
+        var stop = root.querySelector('[data-k-ai-stop]');
+        var status = root.querySelector('[data-k-ai-status]');
+        if (input) input.disabled = busy;
+        if (send) send.disabled = busy;
+        if (stop) stop.hidden = !busy;
+        if (status) {
+            status.hidden = true;
+            status.textContent = '';
+        }
+    }
+
+    function aiAppendDelta(form, ctrl, text) {
+        var transcript = aiChatTranscriptEl(form, ctrl);
         if (!transcript) return;
         // Append to the last assistant bubble or create a new one.
-        let bubble = transcript.lastElementChild;
+        var bubble = transcript.lastElementChild;
         if (!bubble || !bubble.classList.contains('kalua-ai-bubble-assistant')) {
             bubble = document.createElement('div');
             bubble.className = 'kalua-ai-bubble kalua-ai-bubble-assistant';
+            bubble.dataset.raw = '';
             transcript.appendChild(bubble);
         }
-        bubble.textContent += text;
+        bubble.dataset.raw += text;
+        bubble.innerHTML = mdRender(bubble.dataset.raw) + '<span class="md-cursor"></span>';
         transcript.scrollTop = transcript.scrollHeight;
     }
 
-    function aiStatus(formName, text) {
-        const statusEl = document.getElementById(formName + '-ai-status');
-        if (!statusEl) return;
-        statusEl.textContent = text;
-        statusEl.style.display = text ? 'block' : 'none';
+    function aiStatus(form, ctrl, text) {
+        var el = aiChatStatusEl(form, ctrl);
+        if (!el) return;
+        el.textContent = text;
+        el.style.display = text ? 'block' : 'none';
     }
 
-    function aiDone(formName) {
-        const statusEl = document.getElementById(formName + '-ai-status');
-        if (statusEl) {
-            statusEl.style.display = 'none';
+    function aiDone(form, ctrl) {
+        setAIBusy(form, ctrl, false);
+        // Drop the streaming cursor from the last assistant bubble.
+        var transcript = aiChatTranscriptEl(form, ctrl);
+        if (transcript) {
+            var bubble = transcript.lastElementChild;
+            if (bubble && bubble.classList.contains('kalua-ai-bubble-assistant')) {
+                bubble.innerHTML = mdRender(bubble.dataset.raw || '');
+            }
         }
+    }
+
+    // Appends one message bubble (markdown for assistant, plain text for user).
+    function aiChatMessage(form, ctrl, dataJSON) {
+        var msg;
+        try { msg = JSON.parse(dataJSON || '{}'); } catch (e) { return; }
+        var transcript = aiChatTranscriptEl(form, ctrl);
+        if (!transcript) return;
+        var cls = msg.role === 'assistant' ? 'kalua-ai-bubble-assistant' : 'kalua-ai-bubble-user';
+        var bubble = document.createElement('div');
+        bubble.className = 'kalua-ai-bubble ' + cls;
+        if (msg.role === 'assistant') {
+            bubble.dataset.raw = msg.content || '';
+            bubble.innerHTML = mdRender(msg.content || '');
+        } else {
+            bubble.textContent = msg.content || '';
+        }
+        transcript.appendChild(bubble);
+        transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    // Replaces all bubbles from a full transcript JSON array.
+    function aiChatTranscriptReplace(form, ctrl, dataJSON) {
+        var msgs;
+        try { msgs = JSON.parse(dataJSON || '[]'); } catch (e) { return; }
+        var transcript = aiChatTranscriptEl(form, ctrl);
+        if (!transcript) return;
+        transcript.innerHTML = '';
+        msgs.forEach(function(m) {
+            var cls = m.role === 'assistant' ? 'kalua-ai-bubble-assistant' : 'kalua-ai-bubble-user';
+            var bubble = document.createElement('div');
+            bubble.className = 'kalua-ai-bubble ' + cls;
+            if (m.role === 'assistant') {
+                bubble.dataset.raw = m.content || '';
+                bubble.innerHTML = mdRender(m.content || '');
+            } else {
+                bubble.textContent = m.content || '';
+            }
+            transcript.appendChild(bubble);
+        });
+        transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    // Initialises Markdown rendering for server-rendered bubbles that carry
+    // raw text in textContent. Re-applied on every re-render (idempotent via
+    // dataset.kMdInit).
+    function initAIChats(scope) {
+        scope.querySelectorAll('.kalua-ai-bubble[data-k-md]').forEach(function(bubble) {
+            if (bubble.dataset.kMdInit) return;
+            bubble.dataset.kMdInit = '1';
+            var raw = bubble.textContent;
+            bubble.innerHTML = mdRender(raw);
+        });
     }
 
     // Popup (multilevel menu modal)
@@ -2314,7 +2421,7 @@
             return;
         }
 
-        // AI chat close button.
+        // AI chat close button (modal only).
         const aiClose = e.target.closest('[data-k-ai-close]');
         if (aiClose) {
             e.preventDefault();
@@ -2324,22 +2431,40 @@
             return;
         }
 
+        // AI chat stop button (cancels the in-flight turn).
+        const aiStop = e.target.closest('[data-k-ai-stop]');
+        if (aiStop) {
+            e.preventDefault();
+            e.stopPropagation();
+            const form = aiStop.dataset.kForm;
+            const ctrl = aiStop.dataset.kCtrl || '';
+            const msg = { type: 'ai_chat_stop', form: form };
+            if (ctrl) msg.ctrl = ctrl;
+            send(msg);
+            setAIBusy(form, ctrl, false);
+            return;
+        }
+
         // AI chat send button.
         const aiSend = e.target.closest('[data-k-ai-send]');
         if (aiSend) {
             e.preventDefault();
+            e.stopPropagation();
             const form = aiSend.dataset.kForm;
-            const chat = document.getElementById(form + '-ai-chat');
-            const input = document.getElementById(form + '-ai-input');
+            const ctrl = aiSend.dataset.kCtrl || '';
+            const chat = aiChatRoot(form, ctrl);
+            const input = chat ? chat.querySelector('[data-k-ai-input]') : document.getElementById(form + '-ai-input');
             const apikeyInput = chat ? chat.querySelector('[data-k-ai-apikey]') : null;
             const text = input ? input.value : '';
             if (text.trim() === '') return;
             const msg = { type: 'ai_chat_send', form: form, text: text };
+            if (ctrl) msg.ctrl = ctrl;
             if (apikeyInput && apikeyInput.value.trim() !== '') {
                 msg.api_key = apikeyInput.value.trim();
             }
             send(msg);
             input.value = '';
+            setAIBusy(form, ctrl, true);
             return;
         }
 
@@ -2408,21 +2533,27 @@
     }
 
     function handleKeydown(e) {
-        // AI chat input: Enter sends the message.
+        // AI chat input: Enter sends the message (Shift+Enter inserts a newline).
         const aiInput = e.target.closest('[data-k-ai-input]');
         if (aiInput && e.key === 'Enter') {
+            if (e.shiftKey) {
+                return; // let the default newline behaviour through
+            }
             e.preventDefault();
-            const form = aiInput.closest('.kalua-ai-chat').dataset.kForm;
-            const chat = document.getElementById(form + '-ai-chat');
-            const apikeyInput = chat ? chat.querySelector('[data-k-ai-apikey]') : null;
+            const root = aiInput.closest('[data-k-ai-chat]');
+            const form = root ? root.dataset.kForm : aiInput.closest('.kalua-ai-chat').dataset.kForm;
+            const ctrl = root ? root.dataset.kCtrl || '' : '';
+            const apikeyInput = root ? root.querySelector('[data-k-ai-apikey]') : null;
             const text = aiInput.value;
             if (text.trim() === '') return;
             const msg = { type: 'ai_chat_send', form: form, text: text };
+            if (ctrl) msg.ctrl = ctrl;
             if (apikeyInput && apikeyInput.value.trim() !== '') {
                 msg.api_key = apikeyInput.value.trim();
             }
             send(msg);
             aiInput.value = '';
+            setAIBusy(form, ctrl, true);
             return;
         }
 

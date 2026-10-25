@@ -11,6 +11,30 @@ import (
 	"kalua/internal/vm"
 )
 
+// ResolveAIConfig resolves AI connection settings: explicit opt > env/INI >
+// defaults. Used by k.ctrl.ai_chat, which never fails construction: an
+// unresolved endpoint simply makes the first turn fire on_error.
+func ResolveAIConfig(e *Env, baseURL, apiKey, model string) (string, string, string) {
+	if e != nil && e.aiConfig != nil {
+		if baseURL == "" {
+			baseURL = e.aiConfig.BaseURL
+		}
+		if apiKey == "" {
+			apiKey = e.aiConfig.APIKey
+		}
+		if model == "" {
+			model = e.aiConfig.Model
+		}
+	}
+	if model == "" {
+		model = "local-model"
+	}
+	if baseURL == "" {
+		baseURL = "http://localhost:1234/v1"
+	}
+	return baseURL, apiKey, model
+}
+
 // registerAIChat installs k.form.ai_agent and k.ai.tool bindings.
 func registerAIChat(e *Env) {
 	e.register("form.ai_agent", "forms", func(L *lua.LState) int {
@@ -174,6 +198,103 @@ func registerAIChat(e *Env) {
 		toolsTbl.RawSetString(name, entry)
 		return 0
 	})
+
+	// k.ctrl.ai_chat(form, name, opts) — embeddable AI chat control (§12.2).
+	// Non-blocking and event-driven: renders inside any form and never blocks
+	// the script. AI configuration is resolved lazily on the first turn.
+	e.register("ctrl.ai_chat", "controls", func(L *lua.LState) int {
+		if e.Sess == nil {
+			return e.fail(L, KErrorInvalidParam, "ctrl.ai_chat: no session available")
+		}
+		formName := L.CheckString(1)
+		name := L.CheckString(2)
+		opts := L.OptTable(3, L.NewTable())
+
+		optStr := func(key string) string {
+			if v := opts.RawGetString(key); v != lua.LNil {
+				return v.String()
+			}
+			return ""
+		}
+		optBool := func(key string, def bool) bool {
+			if v := opts.RawGetString(key); v != lua.LNil {
+				return lua.LVAsBool(v)
+			}
+			return def
+		}
+
+		addControl(L, formName, name, "ai_chat", opts)
+
+		ft := L.GetGlobal(formName).(*lua.LTable)
+		controls := ft.RawGetString("controls").(*lua.LTable)
+		ctrl := controls.RawGetString(name).(*lua.LTable)
+
+		title := optStr("title")
+		if title == "" {
+			title = "AI Assistant"
+		}
+		welcome := optStr("welcome")
+		placeholder := optStr("placeholder")
+		if placeholder == "" {
+			placeholder = "Ask me anything…"
+		}
+		system := optStr("system")
+		maxTurns := 8
+		if v := opts.RawGetString("max_turns"); v != lua.LNil {
+			maxTurns = int(lua.LVAsNumber(v))
+			if maxTurns < 1 {
+				maxTurns = 1
+			}
+		}
+		rawTools := opts.RawGetString("tools")
+		height := optStr("height")
+		showHeader := optBool("show_header", true)
+		showAPIKey := optBool("show_apikey", false)
+		markdown := optBool("markdown", true)
+		disabled := optBool("disabled", false)
+		baseURL, apiKey, model := ResolveAIConfig(e, optStr("base_url"), optStr("api_key"), optStr("model"))
+
+		ctrl.RawSetString("ai_title", lua.LString(title))
+		ctrl.RawSetString("ai_welcome", lua.LString(welcome))
+		ctrl.RawSetString("ai_placeholder", lua.LString(placeholder))
+		ctrl.RawSetString("ai_system", lua.LString(system))
+		ctrl.RawSetString("ai_max_turns", lua.LNumber(maxTurns))
+		ctrl.RawSetString("ai_tools_opt", rawTools)
+		ctrl.RawSetString("ai_base_url", lua.LString(baseURL))
+		ctrl.RawSetString("ai_api_key", lua.LString(apiKey))
+		ctrl.RawSetString("ai_model", lua.LString(model))
+		ctrl.RawSetString("ai_markdown", lua.LBool(markdown))
+		if height != "" {
+			ctrl.RawSetString("ai_height", lua.LString(height))
+		}
+		ctrl.RawSetString("ai_show_header", lua.LBool(showHeader))
+		ctrl.RawSetString("ai_show_apikey", lua.LBool(showAPIKey))
+		if disabled {
+			ctrl.RawSetString("enabled", lua.LString("false"))
+		}
+		ctrl.RawSetString("ai_busy", lua.LFalse)
+
+		// Transcript seeded with the welcome message.
+		transcript := L.NewTable()
+		if welcome != "" {
+			m := L.NewTable()
+			m.RawSetString("role", lua.LString("assistant"))
+			m.RawSetString("content", lua.LString(welcome))
+			transcript.RawSetInt(1, m)
+		}
+		ctrl.RawSetString("ai_transcript", transcript)
+
+		// Register the on_send handler if provided.
+		if fn := opts.RawGetString("on_send"); fn != lua.LNil {
+			if lfn, ok := fn.(*lua.LFunction); ok {
+				registerControlHandler(L, ft, name, "on_send", lfn)
+			}
+		}
+
+		return 0
+	})
+
+	registerAIChatOps(e)
 }
 
 // luaValueToParamTable converts a common.Param to a Lua table.
@@ -256,43 +377,43 @@ func collectAISchemas(L *lua.LState) []common.ToolSchema {
 // as tools.
 func SandboxLibNames() map[string]bool {
 	return map[string]bool{
-		"k":             true,
-		"K":             true,
-		"CTRL":          true,
-		"ARGS":          true,
-		"main":          true,
-		"string":        true,
-		"table":         true,
-		"math":          true,
-		"os":            true,
-		"io":            true,
-		"debug":         true,
-		"coroutine":     true,
-		"_G":            true,
-		"_VERSION":      true,
-		"assert":        true,
+		"k":              true,
+		"K":              true,
+		"CTRL":           true,
+		"ARGS":           true,
+		"main":           true,
+		"string":         true,
+		"table":          true,
+		"math":           true,
+		"os":             true,
+		"io":             true,
+		"debug":          true,
+		"coroutine":      true,
+		"_G":             true,
+		"_VERSION":       true,
+		"assert":         true,
 		"collectgarbage": true,
-		"dofile":        true,
-		"error":         true,
-		"getmetatable":  true,
-		"ipairs":        true,
-		"load":          true,
-		"loadfile":      true,
-		"loadstring":    true,
-		"next":          true,
-		"pairs":         true,
-		"pcall":         true,
-		"print":         true,
-		"rawequal":      true,
-		"rawget":        true,
-		"rawset":        true,
-		"require":       true,
-		"select":        true,
-		"setmetatable":  true,
-		"tonumber":      true,
-		"tostring":      true,
-		"type":          true,
-		"xpcall":        true,
+		"dofile":         true,
+		"error":          true,
+		"getmetatable":   true,
+		"ipairs":         true,
+		"load":           true,
+		"loadfile":       true,
+		"loadstring":     true,
+		"next":           true,
+		"pairs":          true,
+		"pcall":          true,
+		"print":          true,
+		"rawequal":       true,
+		"rawget":         true,
+		"rawset":         true,
+		"require":        true,
+		"select":         true,
+		"setmetatable":   true,
+		"tonumber":       true,
+		"tostring":       true,
+		"type":           true,
+		"xpcall":         true,
 	}
 }
 
@@ -419,27 +540,26 @@ func AIToolSchemaFromLua(entry *lua.LTable) common.ToolSchema {
 	return s
 }
 
-// ensureAITranscript ensures the chat form has a transcript table and returns it.
-func ensureAITranscript(L *lua.LState, formName string) *lua.LTable {
-	formTbl := L.GetGlobal(formName)
-	if formTbl == lua.LNil {
-		return L.NewTable()
-	}
-	ft, ok := formTbl.(*lua.LTable)
-	if !ok {
-		return L.NewTable()
-	}
-	t := ft.RawGetString("ai_transcript")
+// AppendAIChatMessage appends a {role, content, name?} message to a control's
+// ai_transcript (control-scoped transcript, used by k.ctrl.ai_chat).
+func AppendAIChatMessage(L *lua.LState, ct *lua.LTable, role, content, name string) {
+	t := ct.RawGetString("ai_transcript")
 	if t == lua.LNil {
 		t = L.NewTable()
-		ft.RawSetString("ai_transcript", t)
+		ct.RawSetString("ai_transcript", t)
 	}
 	tt, _ := t.(*lua.LTable)
 	if tt == nil {
 		tt = L.NewTable()
-		ft.RawSetString("ai_transcript", tt)
+		ct.RawSetString("ai_transcript", tt)
 	}
-	return tt
+	m := L.NewTable()
+	m.RawSetString("role", lua.LString(role))
+	m.RawSetString("content", lua.LString(content))
+	if name != "" {
+		m.RawSetString("name", lua.LString(name))
+	}
+	tt.RawSetInt(tt.Len()+1, m)
 }
 
 // sanitizeName ensures a tool name is safe for use in a tagged block.

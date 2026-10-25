@@ -1553,6 +1553,63 @@ end)
 k.form.show("main")
 ```
 
+**`k.ctrl.ai_chat(form, name, optsTable)`**  
+Adds an embeddable AI chat control (kforms_enhancements.md §12.2) that renders inside any form (vertical, grid cell, tab panel) and never blocks the script. It is the same assistant as `k.form.ai_agent`, but event-driven: state lives on the control, so a form may host several chats and each turn is handled asynchronously while `main()` keeps serving the form. AI configuration is resolved lazily on the first turn; a turn with no resolved endpoint fires `on_error`. opts: {title="AI Assistant", welcome, placeholder="Ask me anything…", system, max_turns=8, tools=false|true|{names}|{schemas}, height=420, show_header=true, show_apikey=false, markdown=true, disabled=false, model?, base_url?, api_key?} plus the shared styling/layout opts ({cell, align, bg, color, font, font_size, style, visible, class}).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.title` | string | Header text (default "AI Assistant"). |
+| `optsTable.welcome` | string | Assistant message seeded into the transcript at construction. |
+| `optsTable.placeholder` | string | Input placeholder (default "Ask me anything…"). |
+| `optsTable.system` | string | Extra system prompt (persona, domain rules). |
+| `optsTable.max_turns` | number | Tool-loop bound, min 1 (default 8). |
+| `optsTable.tools` | bool\|table | false (default): no tools. true: auto-expose eligible globals. {name,...}: allowlist. {{name,desc,params},...}: explicit schemas. |
+| `optsTable.height` | string\|number | Panel height; numbers become px, strings are used verbatim (default 420). |
+| `optsTable.show_header` | boolean | Render the header (default true). |
+| `optsTable.show_apikey` | boolean | Render the in-panel API-key input (default false). |
+| `optsTable.markdown` | boolean | Render assistant bubbles as Markdown (default true). |
+| `optsTable.disabled` | boolean | Disable input/send (default false). |
+| `optsTable.model` | string | Per-control model override (default [AI]/env). |
+| `optsTable.base_url` | string | Per-control endpoint override (default [AI]/env). |
+| `optsTable.api_key` | string | Per-control key override (never rendered unless show_apikey). |
+
+Tools are **off by default** for the control (`tools=false`). `k.ai.tool(name, schema[, fn])` layers a custom tool on top in every enabled mode. Events via `k.form.on(form, ctrl, ...)`: `on_send(text)` (synchronous veto — return `false` to cancel the turn), `on_reply(text, messages)`, `on_tool(name, args, result)`, `on_error(message)`, `on_done()`. `k.ctrl.get_value` returns the last assistant text; `set_value` is a no-op (use `k.ai_chat.add_message`).
+
+**Example:**
+
+```lua
+k.form.new("main", {title="Customers", layout="grid",
+  cells = { {id="list", width=7}, {id="chat", width=5} }})
+k.ctrl.ai_chat("main", "assistant", {
+  cell = "chat", title = "Customer assistant",
+  welcome = "Ask me to load a customer.",
+  system = "You load customers into the form. Always call fill_customer.",
+  tools = { "fill_customer" },
+  height = "100%",
+})
+k.form.on("main", "assistant", "on_reply", function(text, messages)
+  k.print("assistant: " .. text)
+end)
+```
+
+**`k.ai_chat.send(form, name, text[, api_key])`** — starts a turn through the same path as a browser send, including the `on_send` veto. Asynchronous; returns nothing.
+
+**`k.ai_chat.stop(form, name)`** — cancels the in-flight turn; partial assistant text is kept.
+
+**`k.ai_chat.add_message(form, name, role, content[, name])`** — appends a `{role, content, name?}` message and pushes an `ai_chat_message` update. Roles: `"system"`/`"user"`/`"assistant"`/`"tool"`.
+
+**`k.ai_chat.get_transcript(form, name)` → table** — returns the transcript array.
+
+**`k.ai_chat.set_transcript(form, name, messages)`** — replaces the transcript and pushes `ai_chat_transcript`.
+
+**`k.ai_chat.clear(form, name)`** — clears the transcript.
+
+**`k.ai_chat.set_system(form, name, text)`** — replaces the system prompt for subsequent turns.
+
+**`k.ai_chat.is_busy(form, name)` → boolean** — whether a turn is in flight.
+
 **`k.ctrl.table(form, name, optsTable)`**  
 Adds a table control; rows manipulated via k.table.*. With opts {db, query, ...} the table is DB-linked (Tabulator mode). db is a k.connect_db handle or a --db NAME prereregistered at startup.
 
@@ -4522,6 +4579,80 @@ k.ctrl.button("main", "btn_theme", {
   end
 })
 ```
+
+---
+
+## 6.14 AI Chat Control — `ai_chat_control_demo.lua`
+
+The **AI Chat control** (`k.ctrl.ai_chat`) embeds the same assistant as
+`k.form.ai_agent` (§5.4 **Forms**) inside any form — vertical layout, grid cell or
+tab panel — without blocking the script. Unlike the modal helper it is fully
+event-driven: state lives on the control (a form may host several chats), turns
+never block `main()`, and the model can drive the form it sits in through tools
+(`k.ctrl.set_value`, `k.db_select`, …).
+
+```lua
+function fill_customer(id)
+  -- Tool exposed to the model: load a customer into the detail fields.
+  local c = find_customer(id)
+  if not c then return { error = "no customer " .. tostring(id) } end
+  k.ctrl.set_value("main", "cust_name", c.name)
+  k.ctrl.set_value("main", "cust_city", c.city)
+  return c
+end
+
+function main()
+  k.form.new("main", { title = "Customers", layout = "grid",
+                       cells = { {id="list", width=7}, {id="chat", width=5} } })
+
+  k.ctrl.ai_chat("main", "assistant", {
+    cell        = "chat",
+    title       = "Customer assistant",
+    welcome     = "Ask me to load a customer, e.g. *load customer 7*.",
+    system      = "You load customers into the form. Always call fill_customer.",
+    tools       = { "find_customer", "fill_customer" },  -- allowlist
+    height      = "100%",
+    placeholder = "load customer 7…",
+  })
+
+  k.form.on("main", "assistant", "on_tool", function(name, args, result)
+    k.print("ai tool " .. name .. " -> " .. k.json_string(result))
+  end)
+  k.form.on("main", "assistant", "on_reply", function(text, messages)
+    k.print("assistant: " .. text)
+  end)
+
+  k.form.show("main", { modal = false })
+end
+```
+
+- **Options**: `title`, `welcome` (seed message appended to the transcript),
+  `placeholder`, `system` (extra persona/domain prompt), `max_turns` (default `8`),
+  `tools` (`false`/`true`/{names}/{schemas} — **off by default**), `height`
+  (px number or `"100%"`/`"60vh"`, default `420`), `show_header` (`true`),
+  `show_apikey` (`false`), `markdown` (`true`), `disabled` (`false`), plus the
+  shared layout/styling opts (`cell`, `align`, `bg`, `color`, `font`, `font_size`,
+  `style`, `visible`, `class`). Per-control `model`/`base_url`/`api_key` override
+  `[AI]`/env config; the endpoint is resolved **on the first turn** (an unmatched
+  config fires `on_error`, never a construction error).
+- **Tools**: `false` (default) → no tools; `true` → auto-expose every eligible
+  script global; `{ "fn1", "fn2" }` → allowlist; `{ {name=, desc=, params=}, … }`
+  → explicit schemas. `k.ai.tool(name, schema[, fn])` layers on top in every mode.
+  Tools run on the actor with a **suspend-aware runner**, so they may call
+  `k.db_select` / `k.sql` / `k.http_request` directly.
+- **Events** (`k.form.on(form, ctrl, event, fn)`):
+  - `on_send(text)` — before the turn, *synchronously*; return `false` to veto.
+  - `on_reply(text, messages)` — after the final assistant text; `messages` is the
+    full transcript.
+  - `on_tool(name, args, result)` — once per tool call, after the tool returns.
+  - `on_error(message)` — model/network/agent error; the turn still ends with `on_done`.
+  - `on_done()` — last event of any started turn.
+- **Operations** (`k.ai_chat.*`): `send(form, name, text)`, `stop(form, name)`,
+  `add_message(form, name, role, content[, name])`,
+  `get_transcript(form, name)` → table, `set_transcript(form, name, messages)`,
+  `clear(form, name)`, `set_system(form, name, text)`, `is_busy(form, name)`.
+- **Control value**: `k.ctrl.get_value(form, name)` → the last assistant text;
+  `k.ctrl.set_value` is a no-op (use `k.ai_chat.add_message`).
 
 ---
 

@@ -104,7 +104,7 @@ func registerForms(e *Env) {
 	})
 
 	// k.form.show(name, [options]) - show form (modal with gap, or normal; suspends caller)
-// options: {modal=true|false, gap=number|{x=num,y=num}}
+	// options: {modal=true|false, gap=number|{x=num,y=num}}
 	e.register("form.show", "forms", func(L *lua.LState) int {
 		name := L.CheckString(1)
 		opts := L.OptTable(2, L.NewTable())
@@ -774,8 +774,11 @@ func registerControls(e *Env) {
 		if ctrl == nil {
 			return 0
 		}
-		// Tree nodes come from the DB; set_value is ignored (§9).
-		if ctrl.RawGetString("type").String() == "tree" {
+		// Tree nodes come from the DB; set_value is ignored (§9). AI chat
+		// transcripts are actor-owned; set_value is a no-op (§12.2) — use
+		// k.ai_chat.add_message instead.
+		switch ctrl.RawGetString("type").String() {
+		case "tree", "ai_chat":
 			return 0
 		}
 		ctrl.RawSetString("value", value)
@@ -841,7 +844,22 @@ func registerControls(e *Env) {
 			})
 			return 0
 		}
-		ctrl.RawSetString(prop, value)
+		// AI chat (§12.2): title/placeholder map to the renderer's ai_* keys so
+		// k.ctrl.set_property("title"/"placeholder") re-renders the header/input.
+		if ctrl.RawGetString("type").String() == "ai_chat" {
+			switch prop {
+			case "title":
+				ctrl.RawSetString("ai_title", value)
+				ctrl.RawSetString(prop, value)
+			case "placeholder":
+				ctrl.RawSetString("ai_placeholder", value)
+				ctrl.RawSetString(prop, value)
+			default:
+				ctrl.RawSetString(prop, value)
+			}
+		} else {
+			ctrl.RawSetString(prop, value)
+		}
 
 		// Re-render and send update
 		html := renderControl(ctrl)

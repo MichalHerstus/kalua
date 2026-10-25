@@ -29,11 +29,11 @@ const DocVersion = 3
 // builder documents vs raw Lua sources.
 const FormFileExt = ".kalua-form.json"
 
-// Types are the 16 runtime control types understood by the builder.
+// Types are the 17 runtime control types understood by the builder.
 var Types = []string{
 	"label", "textbox", "button", "combo", "list", "table",
 	"checkbox", "radio", "looper", "chart", "image", "tree", "tab",
-	"topbar", "sidebar", "footer",
+	"topbar", "sidebar", "footer", "ai_chat",
 }
 
 var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -64,9 +64,9 @@ type Form struct {
 	Notes         []string            `json:"notes,omitempty"`         // import/export notices
 
 	// k.form.show options (from literal call)
-	Modal  bool    `json:"modal,omitempty"`
-	GapX   float64 `json:"gap_x,omitempty"`
-	GapY   float64 `json:"gap_y,omitempty"`
+	Modal bool    `json:"modal,omitempty"`
+	GapX  float64 `json:"gap_x,omitempty"`
+	GapY  float64 `json:"gap_y,omitempty"`
 
 	// Transient source bookkeeping (import-populated, re-derived on save):
 	Lines      [][]int  `json:"lines,omitempty"`      // owned statement [start,end] line ranges (1-based, inclusive)

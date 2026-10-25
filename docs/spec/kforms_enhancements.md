@@ -3018,6 +3018,12 @@ A **built-in, modal AI chat form** for `KALUA run`. Every function the script de
 becomes a tool the agent can call, so the model can act on the app's own data
 (`k.db_select`, file reads, computed helpers) rather than only answering in prose.
 
+> **§12.2** adds the embeddable form of the same assistant — `k.ctrl.ai_chat` — which
+> can be placed inside any regular form (vertical layout, grid cell, tab panel) and
+> does not block the script. `k.form.ai_agent` is then a thin wrapper over it: the
+> modal builds a hidden `__kai_chat` form containing one `ai_chat` control. See
+> **AI Chat Control** below for the control API, protocol and engine design.
+
 `k.form.ai_agent(opts)` **blocks the script** (like `k.form.show` / `k.msgbox`) and
 returns the full transcript when the user closes the chat.
 
@@ -3088,11 +3094,17 @@ Three design constraints drive the architecture:
 **Text protocol, model-agnostic.** `internal/ai` has no native tool support today
 (`ChatRequest` has no `tools`; `ChatMessage` has only `Role`/`Content`), and the
 default target is a local OpenAI-compatible endpoint where many models do not
-implement `tool_calls` at all. So the model is instructed to emit a tagged JSON block:
+implement `tool_calls` at all. So the model is instructed to emit a JSON block
+prefixed with the `function` keyword:
 
 ```
-<tool_call>{"name":"get_customer","arguments":{"id":7}}</tool_call>
+function {"name":"get_customer","arguments":{"id":7}}
 ```
+
+(`ToolCallBlockRE` in `internal/ai/tools.go` matches `function {…}`; the
+`<tool_call>…</tool_call>` tag shown in earlier drafts is **not** what the
+implementation accepts. The regex is brace-flat: nested-object arguments do not
+match, so tool parameters should stay scalar.)
 
 Loop: stream assistant reply → `ExtractToolCalls(text)` → if any, execute each,
 append the results as `role:"tool"`, re-prompt → repeat until the model answers in
@@ -3197,7 +3209,7 @@ end
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| **Tool protocol** | Text (`<tool_call>{json}</tool_call>`) | `internal/ai` has no native tool support; many local models lack `tool_calls` entirely. Model-agnostic, fully unit-testable, no provider variance |
+| **Tool protocol** | Text (`function {json}`) | `internal/ai` has no native tool support; many local models lack `tool_calls` entirely. Model-agnostic, fully unit-testable, no provider variance |
 | **Tool exposure** | Auto-expose all script globals | Zero declaration. Made viable by `Proto` introspection (real param names) + comment-derived descriptions, so schemas are meaningful rather than noise |
 | **Override hook** | `k.ai.tool` | Auto-exposure cannot know intent; a script can improve or hide a tool |
 | **Semantics** | Blocks until closed, returns transcript | Matches the established `k.form.show` / `k.msgbox` idiom; the script gets the result naturally |
@@ -3317,7 +3329,12 @@ Plus: `KALUA check testdata/apps/ai_agent_demo.lua`, `go test ./...`,
 
 ### Implementation Status
 
-Not started — plan only.
+**Modal form shipped** — `k.form.ai_agent`, `k.ai.tool`, the agent loop, streaming and
+the `__kai_chat` shell are implemented (`internal/bindings/aichat.go`,
+`internal/session/aichat.go`, `internal/web/assets/app.js`).
+
+**Control (§12.2) is spec only — not implemented.** The modal is scheduled to be
+re-implemented as a wrapper over the control so both share one engine.
 
 ### Known Limitation (phase 1)
 
@@ -3329,6 +3346,571 @@ runs the closure on the actor goroutine and cannot suspend.
 callback, so a suspending tool parks until its own resume lands. Note this is the same
 limitation the existing `k.exec` has (`handleExec` collects return values even when
 `Resume` yields).
+
+**§12.2 removes this limitation for the control (and, once unified, for the modal):**
+its suspend-aware tool runner (`inboxAIToolCall`) drives the tool coroutine through
+`asyncOps`, so `k.db_select` / `k.sql` / `k.http_request` work inside tools.
+
+---
+
+## 12.2 AI Chat Control (`k.ctrl.ai_chat`)
+
+### Overview
+
+`k.form.ai_agent` (§12.1) is a **modal, blocking** chat: it materializes a hidden
+`__kai_chat` form, shows it, and resumes the script with the transcript when the user
+closes it. That is the right shape for "ask the assistant, then use the answer", but it
+cannot be placed *inside* an app screen, cannot coexist with other controls, and cannot
+be used while the form is being edited or driven.
+
+`k.ctrl.ai_chat` is the same assistant as an **ordinary control**:
+
+- It renders inside any form — vertical layout, grid cell, tab panel — next to the
+  controls it is meant to work with.
+- It **never blocks** the script. Interaction is event-driven, like a button.
+- State lives on the control, so a form may host several chats (and several tabs may
+  each have one) without interfering.
+- Tools are script globals, so the model can drive the form it is embedded in
+  (`k.ctrl.set_value`, `k.ctrl.set_property`, `k.db_select`, …).
+
+The modal form is then **sugar over the control**: `k.form.ai_agent(opts)` builds a
+`__kai_chat` form containing one `ai_chat` control and blocks until close, preserving
+its public contract (options, transcript return value, streaming).
+
+### Scope Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Relationship to `k.form.ai_agent` | Keep it; re-implement as a wrapper over the control | One engine, one renderer, no behavioral fork. Existing apps keep working |
+| Semantics | Non-blocking control + events | Control semantics: the script must keep serving the form while the user chats |
+| Tools default | **Off** for the control; **auto** for the modal | An inline "ask the docs" panel should not expose every script global by accident; the modal already promised auto-exposure |
+| Blocking helper | `k.ai_chat.ask()` **deferred** | Not needed for the event-driven model; can be added later with a pending-op kind |
+| Tool execution | Suspend-aware coroutine runner | `k.db_select` / `k.sql` / `k.http_request` suspend in run mode; `Session.Query` cannot. Without this, DB-backed tools fail |
+| Transcript ownership | Lua control table, written only on the actor | Keeps `k.ai_chat.get_transcript` / `set_transcript` honest and removes the existing off-actor write |
+| Markdown | Yes — reuse `markdown.js` (`mdRender`) | Already served in the run shell and escape-first (LLM output is untrusted) |
+| WASM | **Out of scope** (control *and* modal) | `registerAIChat` is already native-only; no new WASM bridge work in this phase |
+| Serve mode | Raises (UI binding) | Consistent with every other `k.ctrl.*` in `serve` |
+
+### API Surface
+
+#### Constructor
+
+```lua
+k.ctrl.ai_chat(form, name, opts)
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `title` | `string` | `"AI Assistant"` | Header text |
+| `welcome` | `string` | — | Assistant message appended to `ai_transcript` at construction and rendered as the first bubble (so it is part of later turns) |
+| `placeholder` | `string` | `"Ask me anything…"` | Input placeholder |
+| `system` | `string` | — | Extra system prompt (persona, domain rules) |
+| `max_turns` | `number` | `8` | Tool-loop bound (min 1) |
+| `tools` | `bool`/`table` | `false` | Tool exposure — see below |
+| `height` | `number`/`string` | `420` | Panel height. Numbers become px; strings are used verbatim (`"60vh"`) |
+| `show_header` | `bool` | `true` | Render the header (title) |
+| `show_apikey` | `bool` | `false` | Render the in-panel API-key input |
+| `markdown` | `bool` | `true` | Render assistant bubbles as Markdown |
+| `disabled` | `bool` | `false` | Render input/send disabled |
+| `model` | `string` | `[AI]`/env | Per-control model override |
+| `base_url` | `string` | `[AI]`/env | Per-control endpoint override |
+| `api_key` | `string` | `[AI]`/env | Per-control key override (never rendered unless `show_apikey`) |
+
+Also accepts the shared control options: `cell`, `align`, `bg`, `color`, `font`,
+`font_size`, `style`, `visible`, `class` (§6, §10).
+
+AI configuration is resolved **lazily on the first turn**, not at construction, so the
+builder preview and apps without an LLM still render. A turn with no resolved endpoint
+fires `on_error` instead of failing construction.
+
+#### `tools` semantics
+
+| Value | Meaning |
+|-------|---------|
+| omitted or `false` | No tools. The system prompt contains no tool block. Default for the control |
+| `true` | Auto-expose every eligible script global, plus `k.ai.tool` overrides |
+| `{ "find_customer", "search_orders" }` | Allowlist: only the named globals/overrides |
+| `{ {name=, desc=, params=}, … }` | Explicit schemas (same shape as `k.ai.tool`'s `schema`) |
+
+`k.ai.tool(name, schemaTable[, fn])` layers on top in every enabled mode. For the modal,
+an omitted `tools` keeps the legacy behavior (**auto**).
+
+Eligibility follows `ai.CollectSchemas`: excludes `main`, `k`/`K`/`CTRL`/`ARGS`,
+sandbox library tables, and `_`-prefixed names; requires `Proto != nil`.
+
+#### Events
+
+Registered with the normal control-handler API:
+
+```lua
+k.form.on(form, ctrl, event, fn)
+```
+
+| Event | Arguments | When |
+|-------|-----------|------|
+| `on_send` | `text` | Before the turn starts, before the user bubble is committed. Return `false` to **veto** the turn (nothing is sent, no user message appended, no `on_error`/`on_done`) |
+| `on_reply` | `text`, `messages` | After the final assistant text is committed. `messages` is the full transcript (`{role, content, name?}`) |
+| `on_tool` | `name`, `args`, `result` | Once per tool call, after the tool returns. `args` and `result` are Lua tables (JSON-decoded) |
+| `on_error` | `message` | Model/network/agent error. The turn ends; `on_done` still fires |
+| `on_done` | — | Last event of any **started** turn (success, error, stop) |
+
+Execution model:
+
+- `on_reply`, `on_tool`, `on_error`, `on_done` run in a fresh coroutine on the actor
+  (`runFormHandler`), so they may use any `k.*` API, including suspending ones.
+- `on_send` must run **synchronously** so its return value can be inspected
+  (`runFormHandlerSync`). Calling a suspending API inside `on_send` is unsupported
+  (`PCall` cannot yield); the turn proceeds if the handler yields.
+- A second send while a turn is in flight is ignored (the client disables the input;
+  script-initiated sends are no-ops).
+
+#### Script operations — `k.ai_chat.*`
+
+All operations take `(form, name, …)` and are safe to call from any handler.
+
+| Operation | Signature | Behavior |
+|-----------|-----------|----------|
+| `send` | `k.ai_chat.send(form, name, text)` | Starts a turn through the same path as a browser send, including `on_send` veto. Asynchronous; returns nothing |
+| `stop` | `k.ai_chat.stop(form, name)` | Cancels the in-flight turn; partial assistant text is kept |
+| `add_message` | `k.ai_chat.add_message(form, name, role, content[, name])` | Appends a message and pushes an `ai_chat_message` update |
+| `get_transcript` | `k.ai_chat.get_transcript(form, name)` → `table` | Returns the transcript array |
+| `set_transcript` | `k.ai_chat.set_transcript(form, name, messages)` | Replaces the transcript and pushes `ai_chat_transcript` |
+| `clear` | `k.ai_chat.clear(form, name)` | `set_transcript({})` |
+| `set_system` | `k.ai_chat.set_system(form, name, text)` | Replaces the system prompt for subsequent turns |
+| `is_busy` | `k.ai_chat.is_busy(form, name)` → `boolean` | Whether a turn is in flight |
+
+Message shape: `{role = "system"|"user"|"assistant"|"tool", content = string, name = string?}`.
+
+#### Control value semantics
+
+- `k.ctrl.get_value(form, name)` → the **last assistant text** (string), or `nil`.
+- `k.ctrl.set_value(form, name, …)` is a **no-op**; use `k.ai_chat.add_message`.
+- `k.ctrl.set_property` supports the styling keys (`bg`, `color`, `font`, `font_size`,
+  `style`, `visible`) and `title` / `placeholder` (re-render).
+- `k.ctrl.get_property` reads them back.
+
+### Example — a chat that drives the form it sits in
+
+```lua
+local customers = {
+    { id = 7,  name = "Ada Lovelace", city = "London" },
+    { id = 12, name = "Grace Hopper", city = "New York" },
+}
+
+function find_customer(id)
+    -- Look up a customer by numeric id from the form's list
+    for _, c in ipairs(customers) do
+        if c.id == id then return c end
+    end
+    return nil
+end
+
+function fill_customer(id)
+    -- Load a customer into the detail fields
+    local c = find_customer(id)
+    if not c then return { error = "no customer " .. tostring(id) } end
+    k.ctrl.set_value("main", "cust_name", c.name)
+    k.ctrl.set_value("main", "cust_city", c.city)
+    return c
+end
+
+function main()
+    k.form.new("main", {
+        title = "Customers",
+        layout = "grid",
+        cells = { { id = "list", width = 7 }, { id = "chat", width = 5 } },
+    })
+
+    k.ctrl.table("main", "customers", {
+        cell = "list", tabulator = true, data = customers,
+        columns = { { field = "id", title = "ID" }, { field = "name", title = "Name" } },
+    })
+
+    k.ctrl.ai_chat("main", "assistant", {
+        cell        = "chat",
+        title       = "Customer assistant",
+        welcome     = "Ask me to load a customer, e.g. *load customer 7*.",
+        system      = "You load customers into the form. Always call fill_customer.",
+        tools       = { "find_customer", "fill_customer" },
+        height      = "100%",
+        placeholder = "load customer 7…",
+    })
+
+    k.ctrl.textbox("main", "cust_name", { label = "Name" })
+    k.ctrl.textbox("main", "cust_city", { label = "City" })
+
+    k.form.on("main", "assistant", "on_tool", function(name, args, result)
+        k.print("ai tool " .. name .. " -> " .. k.jsonencode(result))
+    end)
+
+    k.form.show("main", { modal = false })
+end
+```
+
+Because `fill_customer` runs on the actor with the suspend-aware runner, a DB-backed
+version may call `k.db_select(...)` directly.
+
+### Rendering / DOM Contract
+
+`renderAIChat` (`internal/bindings/render.go`) emits:
+
+```html
+<div class="kalua-ai-chat kalua-ai-chat-inline" id="c:main:assistant"
+     data-k-ai-chat="1" data-k-form="main" data-k-ctrl="assistant"
+     data-k-ai-markdown="1" style="--kalua-ai-height:420px">
+  <div class="kalua-ai-header">
+    <div class="kalua-ai-title">Customer assistant</div>
+  </div>
+  <div class="kalua-ai-transcript" data-k-ai-transcript="1">
+    <div class="kalua-ai-bubble kalua-ai-bubble-assistant" data-k-md="1">Ask me to load a customer…</div>
+  </div>
+  <div class="kalua-ai-input-bar">
+    <input class="kalua-ai-input" data-k-ai-input="1" placeholder="load customer 7…">
+    <button type="button" class="kalua-ai-send" data-k-ai-send="1">Send</button>
+    <button type="button" class="kalua-ai-stop" data-k-ai-stop="1" hidden>Stop</button>
+  </div>
+  <div class="kalua-ai-status" data-k-ai-status="1" hidden></div>
+</div>
+```
+
+Rules:
+
+- `id` is the standard control id `c:<form>:<ctrl>`; the client targets by data
+  attributes, never by composed string ids.
+- The transcript is rendered **server-side** from the control's `ai_transcript`, so a
+  form re-render (e.g. `set_property`) preserves history. Bubbles carry raw text in a
+  text node plus `data-k-md="1"`; the client converts them with `mdRender` on init.
+  No Go Markdown dependency is introduced.
+- `--kalua-ai-height` is set only when `height` is provided; the inline class fills the
+  available cell/row height otherwise.
+- `show_header = false` omits `.kalua-ai-header`.
+- `show_apikey = true` adds the `[data-k-ai-apikey]` row (same markup as the modal).
+- `disabled` sets `disabled` on input/send/stop.
+- The shared visibility/alignment/style attributes are applied to the root element, as
+  with every other control.
+
+The modal shell reuses the same renderer with `data-k-ai-chat-mode="modal"`; its root
+is injected into the modal overlay and keeps the close button (`data-k-ai-close`).
+
+### WebSocket Protocol
+
+`OutboxMsg` already carries `Form`, `Ctrl` and `Data`/`Text`, so **no outbox struct
+change** is needed. `inboxMsg` gains one field — a reply channel for the suspend-aware
+tool call (`inboxAIToolCall`); the existing `form`/`ctrl`/`data` fields carry the rest.
+
+| Direction | Type | Payload |
+|-----------|------|---------|
+| Browser → Go | `ai_chat_send` | `{form, ctrl, text, api_key?}` |
+| Browser → Go | `ai_chat_stop` | `{form, ctrl}` |
+| Browser → Go | `ai_chat_close` | `{form}` — modal only (unchanged) |
+| Go → Browser | `ai_chat_delta` | `{form, ctrl, text}` — one streamed token |
+| Go → Browser | `ai_chat_status` | `{form, ctrl, text}` — "Thinking…" / "Calling fill_customer(7)…" |
+| Go → Browser | `ai_chat_done` | `{form, ctrl}` — turn finished (also on error/stop) |
+| Go → Browser | `ai_chat_message` | `{form, ctrl, data}` — `{role, content, name?}` appended |
+| Go → Browser | `ai_chat_transcript` | `{form, ctrl, data}` — full array, replaces the panel |
+| Go → Browser | `ai_chat_open` | `{form, html, modal}` — modal shell only (unchanged) |
+
+Routing rule: **`ctrl` present → in-form control; `ctrl` absent → legacy modal**. This
+keeps existing modal clients working while one client implementation serves both.
+
+### Session Engine
+
+#### State ownership
+
+Per control (on the Lua control table):
+
+| Field | Meaning |
+|-------|---------|
+| `ai_transcript` | Array of `{role, content, name?}` — the single source of truth |
+| `ai_system` | System prompt |
+| `ai_title`, `ai_welcome`, `ai_placeholder` | Render inputs |
+| `ai_max_turns` | Tool-loop bound |
+| `ai_tools_opt` | Raw `tools` option (bool or table) |
+| `ai_model`, `ai_base_url`, `ai_api_key` | Resolved overrides |
+| `ai_markdown` | Markdown toggle |
+| `ai_busy` | In-flight indicator (for `is_busy` and re-render) |
+| `value` | Last assistant text (`k.ctrl.get_value`) |
+
+Per session (Go side):
+
+| Field | Meaning |
+|-------|---------|
+| `aiTurns map[string]context.CancelFunc` | In-flight turns, keyed `form + "\x00" + ctrl`, mutex-guarded |
+| `pendingToolCalls map[*lua.LState]chan toolResult` | Coroutines awaiting a tool result |
+
+#### Turn lifecycle
+
+1. `ai_chat_send` reaches the actor (`inboxWSEvent`); `aiChatDispatch` recognises
+   `isAIChatControl(form, ctrl)` (or the legacy `__kai_chat` transcript).
+2. Dispatch `on_send(text)` synchronously. `false` → stop here.
+3. Append `{role="user", content=text}` to `ai_transcript`; refresh `ai_busy`.
+4. Snapshot the transcript for the agent loop (Go slice of `common.ChatMessage`).
+5. Build schemas **once, here**: `ai.CollectSchemas` filtered by `ai_tools_opt`, merged
+   with `k.ai.tools` overrides. (Removes the current double-append: the modal
+   currently collects at construction *and* at send time, so every tool is listed
+   twice in the system prompt.)
+6. Build the system prompt: `ai_system` + `Available tools:\n<json>` (only when tools
+   are enabled) + the `function {"name":…,"arguments":{…}}` instruction.
+7. `context.WithCancel`; store it in `aiTurns[form+"\x00"+ctrl]`; emit
+   `ai_chat_status "Thinking…"`.
+8. Spawn a worker goroutine (`s.wg.Add(1)`) running `ai.AgentRun`:
+   - `onDelta` → `ai_chat_delta` outbox;
+   - `onStatus` → `ai_chat_status` outbox;
+   - tool executor → `s.executeAITool` (see below).
+9. On completion (or error/stop): via `s.Query` append the accumulated assistant text,
+   set `ai_busy=false` and `value`; remove the cancel entry; emit `ai_chat_done`; post
+   `inboxAIChatEvent` for `on_reply` (or `on_error`) then `on_done`, so Lua handlers run
+   on the actor.
+
+The transcript is always written on the actor (`s.Query` or an inbox message). The
+existing modal code writes it from the worker goroutine
+(`bindings.AppendAITranscript(s.L, …)`) — that is an `LState` race and is removed.
+
+#### Cancellation and lifecycle
+
+- `ai_chat_stop` → cancel the context; the agent loop returns; partial text is kept.
+- `close_form` (and `teardown`, which fires it for every stacked form) cancels all
+  turns whose key starts with that form, and clears `ai_busy`.
+- Session teardown also cancels every remaining turn before `s.wg.Wait()`.
+- `k.ai_chat.send` posts an internal send event rather than running the loop inline
+  (the actor must never block on network I/O).
+
+#### Suspend-aware tool execution
+
+`ai.AgentRun` calls its executor from the worker goroutine and expects a synchronous
+result. `Session.Query` cannot suspend, so DB/HTTP tools would fail. The control uses
+a new path:
+
+```go
+// worker goroutine
+reply := make(chan toolResult, 1)
+s.inbox <- inboxMsg{typ: inboxAIToolCall, form: f, ctrl: c,
+                    data: toolCall{name, args}, replyChan: reply}
+select {
+case r := <-reply:            // actor drove the tool to completion
+    return r.value, r.err
+case <-s.done:                // session ended
+    return nil, errSessionClosed
+}
+```
+
+Actor side:
+
+1. Resolve the tool (explicit `fn` from `k.ai.tool`, else the global by name).
+2. `co, cancel := s.L.NewThread()`; store `pendingToolCalls[co] = reply`.
+3. Resume with a single args table. `ResumeOK` → convert the return value to a Go
+   value, reply, delete the entry, fire `on_tool`.
+4. `ResumeYield` → leave it parked. The tool's own `RunAsync` completion arrives as
+   `inboxAsyncDone`; after `resumeAsyncResp` resumes `co`, the engine checks
+   `pendingToolCalls[co]`: `ResumeOK` → reply; still yielding → keep waiting;
+   `ResumeError` → reply the error (surfaced to the model as a tool error, never a
+   session crash).
+5. Missing tool / bad name → immediate error result (the model may retry).
+
+This is a general "call a function to completion, allowing yields" primitive; the
+agent loop is its first user.
+
+Tool results must be JSON-serializable (`nil`, bool, number, string, table-as-array,
+table-as-map); other types are stringified.
+
+### Client Behavior
+
+`internal/web/assets/app.js`:
+
+- `aiChatFor(msg)`: `document.querySelector('[data-k-ai-chat][data-k-form="<form>"][data-k-ctrl="<ctrl>"]')`;
+  when `msg.ctrl` is empty, fall back to the modal overlay `#aichat:<form>`.
+- Send: click on `[data-k-ai-send]` or Enter in `[data-k-ai-input]` (Shift+Enter inserts
+  a newline). Trim; ignore empty. Emit `{type:'ai_chat_send', form, ctrl, text, api_key?}`
+  (the key comes from `[data-k-ai-apikey]` when present).
+- While busy: disable input/send, show Stop, clear the input on send.
+- `ai_chat_delta`: append to `bubble.dataset.raw` and set
+  `innerHTML = mdRender(raw) + '<span class="md-cursor"></span>'`; keep the transcript
+  pinned to the bottom when it already was.
+- `ai_chat_status`: show/hide the status line.
+- `ai_chat_done`: drop the cursor, re-enable input/send, hide Stop, hide status.
+- `ai_chat_message`: append a bubble (markdown for assistant, text for user).
+- `ai_chat_transcript`: replace all bubbles from the JSON array.
+- `initAIChats(scope)`: for every `[data-k-md]` bubble not yet initialised, read
+  `textContent` (raw, already escaped by the server) and set `innerHTML = mdRender(raw)`.
+  Wired into `renderForm` / `updateControl` / component scan alongside
+  `initCharts` / `initDatePickers` so re-renders re-apply Markdown.
+- Enter/stop/close handlers stop propagation so they never fall through to the generic
+  control-click path.
+
+User bubbles stay `textContent`; **all model output goes through `mdRender`**, which
+escapes before transforming.
+
+### CSS
+
+Additions to `kalua.css` (and the builder copy via `make sync-assets`):
+
+| Selector | Purpose |
+|----------|---------|
+| `.kalua-ai-chat-inline` | `width:100%`, `height:var(--kalua-ai-height, 320px)`, no modal shadow/max-width, `resize:vertical` optional |
+| `.kalua-ai-stop` | Secondary/ghost button matching `.kalua-ai-send` |
+| `.kalua-ai-bubble p`, `h1`–`h6`, `ul`, `ol`, `blockquote`, `pre.md-code`, `code` | Markdown typography inside bubbles |
+| `.md-cursor` | Blinking caret while streaming |
+
+`make check-assets` keeps `internal/web/assets/kalua.css` and
+`internal/builder/assets/kalua.css` identical.
+
+### Builder Integration
+
+- `internal/builder/model.go` `Types` grows to 17 (`ai_chat`).
+- `builder.js`: `PALETTE` entry `['ai_chat','AI Chat']`; `TYPE_OPTS.ai_chat`
+  (`title`, `welcome`, `system`, `placeholder`, `max_turns`, `tools` as JSON,
+  `height`, `show_header`, `show_apikey`, `markdown`); `LABELS` entries.
+- `lua_export.go` `defaultEventsForControl` → `on_send`, `on_reply`, `on_tool`,
+  `on_error`, `on_done`.
+- Import/export works through the existing `k.ctrl.<type>` path; no special-casing.
+- Preview renders the **static shell** (header, welcome bubble as plain text, input and
+  buttons disabled). The builder never loads `app.js`, so the panel is intentionally
+  inert in the canvas, like other interactive controls.
+
+### Checker, Serve Mode & WASM
+
+- `registerKnown` (`internal/bindings/bindings.go`): `ctrl.ai_chat`, `ai_chat`,
+  `ai_chat.send/stop/add_message/get_transcript/set_transcript/clear/set_system/is_busy`.
+- `api_doc.go`: `ctrl.ai_chat` Info (options + example) and one entry per operation so
+  LSP completion/hover works.
+- `serve.go` `ctrlFuncs`: add `ai_chat`, so `k.ctrl.ai_chat` raises the standard
+  "not available in serve mode" error. `k.ai_chat.*` are registered from
+  `registerControls` (run mode only) and are absent in serve.
+- `ai/knowledge.go` `runModeBindings`: add `ctrl.ai_chat` and the operations so
+  generated apps know they exist.
+- **WASM: out of scope.** Neither `k.form.ai_agent` nor `k.ctrl.ai_chat` is registered
+  in the wasm build (matching today's `registerAIChat` being `!wasm`). The static
+  checker still accepts the names (shared known registry); the wasm runtime reports an
+  unknown binding. Documented, not stubbed.
+- `common.RouteOutbox` needs **no** changes because the AI chat messages are not routed
+  through the WASM brain (native-only feature); if WASM support is added later, the
+  `ai_chat_*` cases must be added there.
+
+### File Changes
+
+| File | Changes |
+|------|---------|
+| `internal/bindings/aichat.go` | `k.ctrl.ai_chat` registration; option storage; `tools` normalization; reusable helpers; `k.form.ai_agent` re-implemented over the control |
+| `internal/bindings/render.go` | `renderAIChat` (inline + modal variants); `case "ai_chat"` in `renderControl` |
+| `internal/bindings/ai_chat_ops.go` | **New** — the eight `k.ai_chat.*` bindings and their outbox pushes |
+| `internal/session/aichat.go` | Control-scoped send/stop; streaming; per-turn cancel map; form-close cleanup; `ai_chat_*` outbox |
+| `internal/session/session.go` | `isAIChatControl`; extended `aiChatDispatch`; `inboxAIChatEvent`; `inboxAIToolCall` + suspend-aware runner; close/teardown cancellation |
+| `internal/session/types.go` | New inbox kinds and their payload fields |
+| `internal/web/server.go` | Route `ctrl` for `ai_chat_send` / new `ai_chat_stop`; default modal path when `ctrl` is empty |
+| `internal/web/assets/app.js` | Control-aware target resolution, send/stop, Markdown init + streaming, transcript replacement |
+| `internal/web/assets/kalua.css` | Inline variant, Stop button, Markdown typography, cursor |
+| `internal/builder/assets/kalua.css` | Synced copy (`make sync-assets`) |
+| `internal/builder/model.go` | `Types` += `ai_chat` |
+| `internal/builder/assets/builder.js` | Palette entry, option schema, labels |
+| `internal/builder/lua_export.go` | Default event stubs |
+| `internal/bindings/bindings.go` | `registerKnown` entries |
+| `internal/bindings/serve.go` | `ctrlFuncs` += `ai_chat` |
+| `internal/bindings/api_doc.go` | `ctrl.ai_chat` + operations |
+| `internal/ai/knowledge.go` | `runModeBindings` entries |
+| `docs/USER_GUIDE.md` | New control section, events, operations, example |
+| `docs/spec/kforms_enhancements.md` | This section |
+| `testdata/apps/ai_chat_control_demo.lua` | **New** — grid form with a chat that fills the form |
+
+### Implementation Phases
+
+| Phase | Description | Gate |
+|-------|-------------|------|
+| 1 | `k.ctrl.ai_chat` registration + option storage + `renderAIChat` + inline CSS + Markdown init + builder entry + known/docs | Render tests; `KALUA check` on the demo; `node --check`; `make check-assets` |
+| 2 | Turn engine: control-scoped send/stop, transcript via actor, events, cancel-on-close, tolerant of session teardown | Real-session tests with a fake LLM; `-race` |
+| 3 | Suspend-aware tool runner (`inboxAIToolCall`) + schema allowlist + dedupe fix | Tool test using `k.db_select` against a live SQLite file |
+| 4 | Re-implement `k.form.ai_agent` over the control (public API unchanged) | Existing modal tests still pass |
+| 5 | Docs (`api_doc`, USER_GUIDE, `make gen-api`) + demo | `make check-api`; `go test ./...`; `go vet ./...` |
+
+### Tests
+
+**`internal/bindings/aichat_test.go` (extend)**
+
+- `TestRenderAIChatControl` — root attrs (`data-k-ai-chat`, form/ctrl, id `c:f:c`),
+  title/welcome/placeholder, `height` var, `show_header=false`, `show_apikey`, disabled,
+  shared style/visibility attributes.
+- `TestAIChatToolsOption` — `nil`/`false`/`true`/allowlist/schema-table normalization;
+  modal default stays auto.
+- `TestAIChatControlValue` — `get_value` = last assistant text; `set_value` is a no-op.
+- `TestFormAIAgentIsControl` — `__kai_chat` contains exactly one `ai_chat` control with
+  the expected options.
+
+**`internal/session/aichat_control_e2e_test.go` (new)**
+
+- `TestAIChatControlTurn` — send → status → ordered deltas → done; transcript has
+  user+assistant; `value` set; `on_reply` receives text+messages.
+- `TestAIChatControlVeto` — `on_send` returning `false` performs no HTTP request
+  (hit counter on the fake server), appends nothing, fires no `on_error`/`on_done`.
+- `TestAIChatControlToolsDisabled` — default sends no tool block; a tool-shaped reply is
+  plain text.
+- `TestAIChatControlToolLoop` — allowlisted tool → args decoded → `on_tool` fired with
+  result → final prose.
+- `TestAIChatControlToolSuspends` — tool calls `k.db_select` on a temp SQLite DB; result
+  reaches the model (exercises the coroutine runner).
+- `TestAIChatControlStop` — cancel mid-stream; done; busy false; partial kept.
+- `TestAIChatControlCloseCancels` — `close_form` cancels; no goroutine leak.
+- `TestAIChatControlIsolation` — two controls in one form keep separate transcripts and
+  events.
+- Race suite (`make test-race`) proves no `LState` access from the worker goroutine.
+
+**`internal/builder` (extend)**
+
+- `TestExportAIChatControl` — import → export round-trip of `k.ctrl.ai_chat` options and
+  generated event stubs.
+
+**Client**
+
+- `node --check internal/web/assets/app.js`,
+  `node --check internal/builder/assets/builder.js`.
+
+### Known Limitations (v1)
+
+- No blocking `k.ai_chat.ask()` (deferred).
+- One turn per control; a send while busy is ignored (the client also disables Send).
+- No per-tool timeout. A tool that never returns keeps its turn open until
+  `k.ai_chat.stop`, `close_form` or session teardown.
+- A full form re-render during streaming keeps the committed transcript but may drop
+  the in-flight token tail; the client re-renders on the next delta.
+- `on_send` cannot suspend (synchronous veto path).
+- Tool-call extraction is brace-flat (`ToolCallBlockRE`), so a tool whose arguments
+  contain a nested object will not be recognized. Keep tool parameters scalar
+  (strings/numbers/bools) until the parser is replaced.
+- WASM and serve mode exclude the control, matching the modal form.
+- `common.RouteOutbox` has no `ai_chat_*` cases (native-only); WASM parity, if ever
+  added, must add them.
+
+### Implementation Status
+
+Implemented:
+
+- **Phase 1 — control registration + renderer**: `k.ctrl.ai_chat` in
+  `internal/bindings/aichat.go`; `renderAIChat` + `case "ai_chat"` in
+  `internal/bindings/render.go`; inline + modal variants; `kalua.css`
+  (inline layout, Stop button, Markdown typography, `.md-cursor`); builder
+  `Types`/palette/`TYPE_OPTS`/labels + default event stubs; `registerKnown`;
+  `api_doc.go` entries; serve-mode raise; `ai/knowledge.go`.
+- **Phase 2 — turn engine**: control-scoped `ai_chat_send`/`ai_chat_stop`
+  routing (browser via `internal/web/server.go`, script via
+  `k.ai_chat.send`); per-control transcript + `ai_busy`/`value` written on the
+  actor; `on_send` synchronous veto; `on_reply`/`on_tool`/`on_error`/`on_done`
+  posted as actor events; per-turn cancel map keyed `form\0ctrl`; cancel on
+  `close_form` and session teardown; `ai_chat_delta/_status/_done/_message/
+  _transcript` outbox. Client (`app.js`) control-aware targeting, Markdown init
+  + streaming, Stop button, transcript replacement. `-race` green.
+- **Phase 3 — suspend-aware tool runner**: `inboxAIToolCall` + coroutine
+  parking in `pendingToolCalls`, resumed by `handleAsyncDone`; tools may call
+  `k.db_select`/`k.sql`/`k.http_request`. Also fixed the shipped
+  `ToolCallBlockRE` (it required a literal `)` after the arguments object, so
+  the documented `function {...}` block never matched or parsed).
+- **Phase 4 — modal remains separate** (not re-implemented over the control in
+  this pass): `k.form.ai_agent` keeps its own path; both share the same
+  provider/agent loop and `markdown.js`.
+- **Phase 5 — docs + demo**: `api_doc.go` + `make gen-api` in sync;
+  USER_GUIDE §5.4 (Controls) + §6.14; `testdata/apps/ai_chat_control_demo.lua`;
+  `KALUA check` passes.
+
+Known limitations (v1) from the design above apply: no blocking
+`k.ai_chat.ask()`, one turn per control, no per-tool timeout, `on_send` cannot
+suspend, brace-flat tool extraction, WASM/serve excluded.
 
 ---
 

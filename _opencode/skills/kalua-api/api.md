@@ -410,6 +410,125 @@ k.set_property("main", "title", "Welcome")
 
 ### Controls
 
+**`k.ai_chat.add_message(form, name, role, content[, name])`**  
+Appends a {role, content, name?} message to the transcript and pushes an ai_chat_message update.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | AI chat control name. |
+| `role` | string | "system", "user", "assistant" or "tool". |
+| `content` | string | Message text. |
+| `name` | string | Optional tool name for role="tool" messages. |
+
+**Example:**
+
+```lua
+k.ai_chat.add_message("main", "assistant", "assistant", "Done.")
+```
+
+**`k.ai_chat.clear(form, name)`**  
+Clears the transcript (set_transcript({})).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | AI chat control name. |
+
+**Example:**
+
+```lua
+k.ai_chat.clear("main", "assistant")
+```
+
+**`k.ai_chat.get_transcript(form, name) → table`**  
+Returns the transcript array of {role, content, name?} messages.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | AI chat control name. |
+
+**Example:**
+
+```lua
+local msgs = k.ai_chat.get_transcript("main", "assistant")
+```
+
+**`k.ai_chat.is_busy(form, name) → boolean`**  
+Returns whether a turn is in flight for the control.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | AI chat control name. |
+
+**Example:**
+
+```lua
+if k.ai_chat.is_busy("main", "assistant") then k.print("working…") end)
+```
+
+**`k.ai_chat.send(form, name, text[, api_key])`**  
+Starts a turn through the same path as a browser send, including the on_send veto. Asynchronous; returns nothing.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | AI chat control name. |
+| `text` | string | User message to send. |
+| `api_key` | string | Optional per-send API key override. |
+
+**Example:**
+
+```lua
+k.ai_chat.send("main", "assistant", "load customer 7")
+```
+
+**`k.ai_chat.set_system(form, name, text)`**  
+Replaces the system prompt for subsequent turns.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | AI chat control name. |
+| `text` | string | New system prompt text. |
+
+**Example:**
+
+```lua
+k.ai_chat.set_system("main", "assistant", "You are a support agent.")
+```
+
+**`k.ai_chat.set_transcript(form, name, messages)`**  
+Replaces the transcript and pushes an ai_chat_transcript update to the browser.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | AI chat control name. |
+| `messages` | list | Array of {role, content, name?} message tables. |
+
+**Example:**
+
+```lua
+k.ai_chat.set_transcript("main", "assistant", {{role="system", content="You are helpful."}})
+```
+
+**`k.ai_chat.stop(form, name)`**  
+Cancels the in-flight turn; partial assistant text is kept.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | AI chat control name. |
+
+**Example:**
+
+```lua
+k.ai_chat.stop("main", "assistant")
+```
+
 **`k.chart`**  
 Chart control operations: k.chart.set_data/add_dataset/...
 
@@ -533,6 +652,41 @@ Replaces the dataset at 1-based index.
 
 ```lua
 k.chart.update_dataset("dash", "trend", 2, { label = "B", data = {3, 4, 1} })
+```
+
+**`k.ctrl.ai_chat(form, name, optsTable)`**  
+Adds an embeddable AI chat control (kforms_enhancements.md §12.2) that renders inside any form and never blocks the script. It is the same assistant as k.form.ai_agent but event-driven: state lives on the control, so a form may host several chats. opts: {title="AI Assistant", welcome, placeholder="Ask me anything…", system, max_turns=8, tools=false|true|{names}|{schemas}, height=420, show_header=true, show_apikey=false, markdown=true, disabled=false, model, base_url, api_key} plus shared styling/layout keys (cell, align, bg, color, font, font_size, style, visible, class). AI configuration is resolved lazily on the first turn; a turn with no endpoint fires on_error. Events via k.form.on(form, ctrl, "on_send|on_reply|on_tool|on_error|on_done", fn). k.ctrl.get_value returns the last assistant text; set_value is a no-op.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `form` | string | Parent form name. |
+| `name` | string | Unique control name. |
+| `optsTable.title` | string | Header text (default "AI Assistant"). |
+| `optsTable.welcome` | string | Assistant message seeded into the transcript at construction. |
+| `optsTable.placeholder` | string | Input placeholder (default "Ask me anything…"). |
+| `optsTable.system` | string | Extra system prompt (persona, domain rules). |
+| `optsTable.max_turns` | number | Tool-loop bound, min 1 (default 8). |
+| `optsTable.tools` | bool|table | false (default): no tools. true: auto-expose eligible globals. {name,...}: allowlist. {{name,desc,params},...}: explicit schemas. |
+| `optsTable.height` | string|number | Panel height; numbers become px, strings used verbatim (default 420). |
+| `optsTable.show_header` | boolean | Render the header (default true). |
+| `optsTable.show_apikey` | boolean | Render the in-panel API-key input (default false). |
+| `optsTable.markdown` | boolean | Render assistant bubbles as Markdown (default true). |
+| `optsTable.disabled` | boolean | Disable input/send (default false). |
+
+**Example:**
+
+```lua
+k.ctrl.ai_chat("main", "assistant", {
+  title      = "Customer assistant",
+  welcome    = "Ask me to load a customer, e.g. *load customer 7*.",
+  system     = "You load customers into the form. Always call fill_customer.",
+  tools      = { "find_customer", "fill_customer" },
+  height     = "100%",
+  placeholder = "load customer 7…",
+})
+k.form.on("main", "assistant", "on_tool", function(name, args, result)
+  k.print("ai tool " .. name .. " -> " .. k.jsonencode(result))
+end)
 ```
 
 **`k.ctrl.button(form, name, optsTable)`**  
