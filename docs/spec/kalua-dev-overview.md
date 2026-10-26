@@ -349,7 +349,8 @@ extension (Phase 5 LSP & editor).
 | `AI_builder.md` | AI phases 1–4, agentic P0–P2 | ✅ complete |
 | `kform_builder_plan.md` | Webview builder phases 1–7, table/looper editor, **builder palette (grid + layout controls)** | 🔁 superseded; table/looper + named DBs ✅; palette plan → Phase 1 grid/CRUD-tab, Phase 2 layout controls |
 | `kforms_enhancements.md` | §§1–12 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳, §10 tab ⏳, §11 layout controls ⏳, §12 AI chat: form ✅, **§12.2 control (`k.ctrl.ai_chat`) ⏳ spec only** |
-| `kalua_security_plan.md` | Security assessment (intranet model) | ⏳ assessment complete; mitigations P0–P10 pending |
+| `kalua_security_plan.md` | Security assessment (intranet model) | 🔶 Phase A ✅ (C7 `connect_db` sandbox, DenyFS, P4 session IDs, P6 WS caps, L5 pbkdf2); Phases B/C pending |
+| `.opencode/plan/kalua_optimization_plan.md` | Dead/ineffective/overcomplicated code review (P1–P5) | ⏳ plan only — no implementation yet |
 | `serve-communication-plan.md` | Serve: REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP + structured logging | ⏳ plan only; phases 0–8 not started |
 | `kalua-serve-enhancements.deprecated.md` | Old serve flow primitives (superseded) | 🔁 superseded |
 | `vscode-ext.md` | Extension guide | ✅ shipped |
@@ -359,7 +360,31 @@ codebase cleanup C/D (§13) · WASM M5 JS simplification · `k.ctrl.login` (§8)
 `k.ctrl.tree` (§9) · **`k.ctrl.tab` (§10) · Layout Controls: Topbar, Sidebar, Footer (§11) · Image onclick handling (§4.3) · builder palette: `grid` missing + dead CRUD tab (Phase 1 plan)** ·
 **AI chat form `k.form.ai_agent` — auto-exposed script-function tools (§12)**, and its embeddable successor **`k.ctrl.ai_chat` (§12.2, spec only — non-blocking, in-form, suspend-aware tools)** ·
 **Serve communication — Phase 0 correctness, then REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP, then structured logging to `klog.db` (§18)** ·
-**Security hardening (P0–P3: network/SQL allowlists, auth middleware, path sandbox; C7 `k.connect_db` sandbox escape is fixed in Phase 5 §8.11)**.
+**Security hardening — Phases B/C (network/SQL allowlists, auth middleware, O_NOFOLLOW, TLS); Phase A shipped 2026-10-26 (C7 `k.connect_db` sandbox escape, DenyFS, crypto session IDs, WS caps, pbkdf2 100k)** ·
+**Code optimization plan — `.opencode/plan/kalua_optimization_plan.md` (dead `serveCmd` help block, `addRunFlags` dedup, `Sscanf`/`openBrowser` error handling, `runCmd`/`serveCmd` dedup, lint tooling)**.
+
+---
+
+## 22. Code optimization — dead / ineffective / overcomplicated code review
+
+Full plan: `.opencode/plan/kalua_optimization_plan.md` (kept outside `docs/spec/`; roll-up
+below for status tracking). `go build ./...` and `go vet ./...` are clean — the issues are
+semantic, not compiler-visible.
+
+| Pri | Item | Status |
+|-----|------|--------|
+| P1.1 | Delete dead `serveCmd` help block (`cli.go:444-469`) — disposable flag set whose values are never read | ⏳ |
+| P1.2 | Dedup `addRunFlags` (`cli.go:725-743`) — duplicates every `runCmd` flag solely for `--help`; can drift | ⏳ |
+| P2.1 | Check ignored `fmt.Sscanf` errors in port parsing (`server.go:126-134`) — stale port values on failure | ⏳ |
+| P2.2 | Log `openBrowser` error instead of `_ =` swallow (`web/server.go:227`) | ⏳ |
+| P3.1 | Deduplicate `runCmd`/`serveCmd` (~200 lines of shared flag/server/reload/signal logic) | ⏳ |
+| P3.2 | Standing rule: keep `session.go` ↔ `session_wasm.go` in parity when adding session features | ⏳ (rule) |
+| P4 | Tooling: wire `unused`/`gocyclo`/`staticcheck` + `make lint` into CI | ⏳ |
+
+Deferred (justified complexity — do not refactor): `internal/format/printer.go`
+(gofmt-compatible token formatter), `internal/builder/rebuild.go` (surgical line splicing),
+two-pass `parseArgsScript` (enables `check app.lua -w`), session WASM/native duplication
+(build-tag-separated actors — mirroring is the correct pattern).
 
 ---
 
