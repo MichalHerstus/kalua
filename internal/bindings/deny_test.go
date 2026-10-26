@@ -154,6 +154,46 @@ k.disconnect_db(mem)
 	}
 }
 
+// TestKlogDBDenied pins Phase 8 security: the host-owned klog.db structured-log
+// file is in the default DenyFS list — scripts cannot read/write it through the
+// file bindings or open it via connect_db, while a sibling (klog.db.bak) and
+// in-workdir app.db remain allowed.
+func TestKlogDBDenied(t *testing.T) {
+	e, L := newDenyEnv(t)
+	tmp := e.workdir
+
+	// resolvePath denies klog.db (default DenyFS now includes it).
+	if _, err := e.resolvePath("klog.db"); err == nil || !strings.Contains(err.Error(), "denied") {
+		t.Errorf("resolvePath(klog.db) = %v, want denial", err)
+	}
+	if _, err := e.resolvePath("klog.db.bak"); err != nil {
+		t.Errorf("resolvePath(klog.db.bak) denied: %v", err)
+	}
+
+	// file_load / csv_load deny the artefact.
+	if err := os.WriteFile(filepath.Join(tmp, "app.db"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := `
+assert(k.file_load("app.db") == "x", "file_load(app.db) denied")
+assert(k.file_load("klog.db") == nil, "file_load read klog.db")
+assert(k.file_save("klog.db", "x") == nil, "file_save wrote klog.db")
+assert(k.csv_load("klog.db") == nil, "csv_load read klog.db")
+local db = k.connect_db("sqlite://klog.db")
+assert(db == nil, "connect_db opened klog.db: " .. tostring(ERRORMSG))
+local mem = k.connect_db("sqlite://:memory:")
+assert(mem ~= nil, ":memory: denied")
+k.sql(mem, "CREATE TABLE m (id INTEGER PRIMARY KEY)")
+k.disconnect_db(mem)
+`
+	if err := L.DoString(src); err != nil {
+		t.Fatalf("script failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "klog.db")); !os.IsNotExist(err) {
+		t.Error("klog.db was created on disk by a denied write")
+	}
+}
+
 // TestZipExtractMemberDenied verifies zip_extract refuses to write a member
 // named after a host artefact (L16/P11) without touching the disk, while a
 // benign archive extracts normally.

@@ -12,11 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/yuin/gopher-lua"
 
 	"kalua/internal/coerce"
 	"kalua/internal/common"
+	"kalua/internal/klog"
 	"kalua/internal/vm"
 )
 
@@ -57,11 +59,42 @@ type Options struct {
 	// AIConfig configures the LLM for k.form.ai_agent. Nil means the chat form
 	// will fail with a clear error.
 	AIConfig *common.AIConfig
+
+	// Quit stops the whole serve-mode server (wired from the serve command's
+	// runner). Nil keeps the pre-setup behavior where k.quit only flags the
+	// single worker.
+	Quit func()
+
+	// Stats receives serve-mode HTTP router/metrics state (Phase 1:
+	// k.http_stats). Nil disables k.http_stats (run mode).
+	Stats *HTTPStats
+
+	// LogDB is the structured-log sink for serve mode (Phase 8: k.log.*).
+	// Nil disables k.log.*.
+	LogDB *klog.DB
+
+	// MQTT is the serve-mode MQTT client hub (Phase 2: k.mqtt_*). Nil
+	// disables the MQTT bindings.
+	MQTT MQTTHub
+
+	// AllowNet gates outbound MQTT client connections (serve-communication
+	// plan Phase 2 security). k.mqtt_connect refuses when false.
+	AllowNet bool
 }
 
 // DefaultMaxFileSize bounds k.file_load/k.json_load reads unless Options
 // overrides it.
 const DefaultMaxFileSize int64 = 16 << 20
+
+// HTTPStats accumulates serve-mode HTTP metrics readable from k.http_stats().
+// The server increments it per request; bindings only read it.
+type HTTPStats struct {
+	RequestsTotal  atomic.Int64
+	ErrorsTotal    atomic.Int64
+	LatencySumMs   atomic.Int64
+	LatencyCount   atomic.Int64
+	ActiveConns    atomic.Int64
+}
 
 // Env carries the host context every binding acts on. Bindings receive the
 // coroutine LState as their LGFunction first argument; Env surfaces the app
@@ -108,6 +141,13 @@ type Env struct {
 	// binding fails it is invoked with (ERRORCODE, ERRORMSG) so the script can
 	// show the error and continue. See e.fail / fireError.
 	onErr lua.LValue
+
+	// mqttHandlers is the k.mqtt_on registration list (Phase 2); inbound
+	// messages are dispatched in registration order.
+	mqttHandlers []mqttHandler
+
+	// allowNet gates outbound network clients (k.mqtt_connect) — Options.
+	allowNet bool
 
 	// onErrBusy guards against re-entrancy: while a hook runs, further errors
 	// (from the hook itself) set ERRORCODE/ERRORMSG but skip re-invoking it.
@@ -401,6 +441,31 @@ var registerKnown = map[string]string{
 	"rows_to_csv":  "rows",
 	"xml_to_rows":  "rows",
 	"rows_to_xml":  "rows",
+	// Phase 1 REST router + HTTP helpers (serve-communication-plan.md §1)
+	"http_routes":               "server", // script-set declarative route table
+	"http_middleware":           "server", // script-set middleware chain
+	"http_response_json":        "server",
+	"http_response_text":        "server",
+	"http_response_redirect":     "server",
+	"http_request_parse_multipart": "server",
+	"http_auth_middleware":       "server",
+	"http_stats":                 "server",
+	// Phase 8 structured logging (serve-communication-plan.md §8)
+	"log":         "server", // namespace
+	"log.info":    "server",
+	"log.warn":    "server",
+	"log.error":   "server",
+	"log.debug":   "server",
+	"log.trace":   "server",
+	"log.stats":   "server",
+	// Phase 2 MQTT client (serve-communication-plan.md §2)
+	"mqtt_connect":    "comm",
+	"mqtt_subscribe":  "comm",
+	"mqtt_publish":    "comm",
+	"mqtt_unsubscribe": "comm",
+	"mqtt_close":      "comm",
+	"mqtt_on":         "comm",
+	"mqtt_stats":      "comm",
 }
 
 // register puts a k.* binding into the env's k namespace.
@@ -549,9 +614,9 @@ func allowFSOf(opts Options) []string {
 }
 
 // defaultDenyFS returns the list of host-owned artefacts living in the sandbox
-// home that scripts must never read or write, even through AllowFS. Today that
-// is the k.param_set/get persistence file; klog.db is appended when Phase 8
-// (structured logging, serve-communication-plan.md) lands. Entries are
+// home that scripts must never read or write, even through AllowFS. Today these
+// are the k.param_set/get persistence file and the serve-mode structured-log
+// sink (klog.db, serve-communication-plan.md Phase 8). Entries are
 // symlink-canonicalized so they compare equal to resolvePath output (which
 // resolves the same way on macOS /var -> /private/var).
 func defaultDenyFS(workdir string) []string {
@@ -559,7 +624,11 @@ func defaultDenyFS(workdir string) []string {
 	if resolved, err := evalSymlinksBestEffort(params); err == nil {
 		params = resolved
 	}
-	return []string{params}
+	klogPath := filepath.Join(workdir, klog.DefaultPath)
+	if resolved, err := evalSymlinksBestEffort(klogPath); err == nil {
+		klogPath = resolved
+	}
+	return []string{params, klogPath}
 }
 
 // denyFSOf resolves the operator-supplied DenyFS entries to absolute,

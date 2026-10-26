@@ -1,6 +1,6 @@
 # KALUA Serve Communication Capabilities — Implementation Plan
 
-**Status**: Plan only — not implemented.
+**Status**: Partial — Phase 0 (serve correctness), Phase 1 (REST router + HTTP helpers), Phase 2 (MQTT client) and Phase 8 (structured logging to klog.db) are **implemented**. Phases 3 (GraphQL), 4 (SOAP server), 5 (SFTP), 6 (WS rooms/sessions) and 7 (UDP) remain planned.
 
 **Scope**: Add REST, GraphQL, SOAP servers; SFTP server; MQTT client; WebSocket enhancements; UDP server to `kalua serve` mode.
 
@@ -22,20 +22,24 @@
 
 *From `kalua-serve-enhancements.md` — must complete first*
 
-| Task | Files |
-|------|-------|
-| 0.1 Register `k.http_request`, `k.json_*`, `k.xml_*` in `SetupServe` | `internal/bindings/serve.go` |
-| 0.2 Fix `k.sleep` → `time.Sleep` | `internal/bindings/serve.go` |
-| 0.3 Fix `k.exec` / `k.assign(table)` | `internal/bindings/flow.go` |
-| 0.4 Replace instant 503 with bounded wait + `Retry-After` | `internal/server/worker.go` |
-| 0.5 `k.quit` stops server | `internal/bindings/serve.go`, `internal/server/server.go` |
-| 0.6 Register flow subset: `k.param_get/set`, `k.net_ok`, `k.locale`, `k.ping`, `k.yield`, `k.error` | `internal/bindings/serve.go` |
+**Status: ✅ implemented** — see the AGENTS.md "Serve Communication (Phase 0/1/8)" section.
+
+| Task | Files | Status |
+|------|-------|--------|
+| 0.1 Register `k.http_request`, `k.json_*`, `k.xml_*` in `SetupServe` | `internal/bindings/serve.go` | ✅ `registerJSON`/`registerXML` wired; blocking serve-mode `k.http_request` in `serve_flow.go` |
+| 0.2 Fix `k.sleep` → `time.Sleep` | `internal/bindings/serve.go` | ✅ blocking `time.Sleep` |
+| 0.3 Fix `k.exec` / `k.assign(table)` | `internal/bindings/flow.go` | ✅ assign/set/exec registered from `SetupServe` (`registerAssignSetExec`) |
+| 0.4 Replace instant 503 with bounded wait + `Retry-After` | `internal/server/worker.go` | ✅ slot semaphore + `busyTimeout` bounded wait + `Retry-After: 1` |
+| 0.5 `k.quit` stops server | `internal/bindings/serve.go`, `internal/server/server.go` | ✅ `Options.Quit` wired to `Server.Stop()` |
+| 0.6 Register flow subset: `k.param_get/set`, `k.net_ok`, `k.locale`, `k.ping`, `k.yield`, `k.error` | `internal/bindings/serve.go` | ✅ `registerServeFlow` in `serve_flow.go` |
 
 **Validation**: `KALUA serve app.lua --test` passes; `k.http_request` works in serve mode.
 
 ---
 
 ## Phase 1: REST Router + HTTP Enhancements
+
+**Status: ✅ implemented** — `internal/server/router.go` (httprouter-based declarative router), `internal/bindings/http_router.go` (helpers), `internal/server/rest_e2e_test.go` + `internal/server/router_test.go`. Dependency `github.com/julienschmidt/httprouter v1.3.0` added.
 
 ### API Design
 
@@ -93,6 +97,8 @@ end
 ---
 
 ## Phase 2: MQTT Client
+
+**Status: ✅ implemented** — `internal/server/mqtt.go` (MQTTHub on paho), `internal/bindings/mqtt.go` + `mqtt_types.go` (k.mqtt_* bindings + shared interface), wired in `SetupServe`; new `serve --allow-net` flag + `[SERVE] allow-net` INI key gates `k.mqtt_connect` (permission error when disabled). Dependency `github.com/eclipse/paho.mqtt.golang v1.4.3` added. Tests: bindings-level fake-hub tests, server hub + full e2e against an in-process mochi-mqtt broker (no Docker): `mqtt_test.go`, `mqtt_hook_test.go`, `mqtt_e2e_test.go`.
 
 *Per `kalua-serve-enhancements.md` §5*
 
@@ -304,6 +310,8 @@ k.udp_stats(handle) -> {packets_in, packets_out, bytes_in, bytes_out, errors}
 
 ## Phase 8: Structured Logging to SQLite (`klog.db`)
 
+**Status: ✅ implemented** — `internal/klog` package (klog.go/size.go/sqlite.go/sqlite_wasm.go), bindings (`sqllogger.go`, `log_ops.go`), CLI flags (`internal/cli/logflags.go` wired into `serveCmd`), `[SERVE]` INI keys, `klog.db` added to the sandbox DenyFS list. Tests: `klog/sqlite_test.go`, `klog/size_test.go`, `internal/bindings/deny_test.go`, `internal/bindings/sqllogger_test.go`, `internal/server/log_e2e_test.go`, `internal/cli/logflags_test.go`. Full doc-comment coverage in `api_doc.go` (k.log.*).
+
 *From `kalua-serve-enhancements.md` Phase 4 — self-maintained structured log, off by default, no new dependency*
 
 ### Why SQLite
@@ -433,7 +441,7 @@ log-max-row = 16k
 // Phase 1: REST Router
 github.com/julienschmidt/httprouter v1.3.0
 
-// Phase 2: MQTT
+// Phase 2: MQTT  ✅ added
 github.com/eclipse/paho.mqtt.golang v1.4.3
 
 // Phase 3: GraphQL
@@ -474,10 +482,12 @@ golang.org/x/crypto v0.20.0
 
 ## File Summary
 
-### New Files (17)
+### New Files (18)
 ```
 internal/server/mqtt.go
+internal/server/mqtt_hook_test.go
 internal/bindings/mqtt.go
+internal/bindings/mqtt_types.go        (shared MQTTHub interface — wasm-safe)
 internal/server/graphql.go
 internal/bindings/graphql.go
 internal/server/soap.go
@@ -498,13 +508,13 @@ internal/cli/logflags.go
 ### Modified Files (8)
 ```
 internal/bindings/serve.go      (phases 0-6, 8)
-internal/server/worker.go       (phases 0-1)
-internal/server/server.go       (phase 0)
+internal/server/worker.go       (phases 0-2)   + Worker.CallMQTT
+internal/server/server.go       (phases 0, 2, 8) + MQTTHub wiring, --allow-net
 internal/bindings/flow.go       (phase 0)
-internal/bindings/api_doc.go    (phases 1-6, 8)
+internal/bindings/api_doc.go    (phases 1-6, 8) + Phase 2 MQTT
 internal/checker/checker.go     (phase 1)
 internal/bindings/serve.go      (phase 8 - register log_ops)
-internal/cli/cli.go             (phase 8 - log flags)
+internal/cli/cli.go             (phases 8-2 - log flags, --allow-net)
 ```
 
 ---

@@ -4,6 +4,8 @@ package bindings
 
 import (
 	"context"
+	"time"
+
 	"github.com/yuin/gopher-lua"
 
 	"kalua/internal/vm"
@@ -36,6 +38,12 @@ type TCPHub interface {
 // This registers k.shared_*, k.ws_*, k.tcp_* bindings and disables UI bindings.
 // Expression-function globals (§5.9) and K.* helpers (§2.3) are installed too,
 // because serve and run modes share the coerce layer and expression surface.
+//
+// Phase 0 serve-correctness (serve-communication-plan.md) makes the serve-mode
+// surface match run mode where a session is not required: k.http_request,
+// k.json_*, k.xml_*, and the flow subset (yield/error/param/net/locale/ping)
+// are all available. A blocking k.sleep maps to time.Sleep, and k.quit stops
+// the whole server (opts.Quit) instead of merely flagging the single worker.
 func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, wsHub WSHub, tcpHub TCPHub, logger Logger) *Env {
 	// Create k table first
 	L.SetGlobal("k", L.NewTable())
@@ -57,16 +65,25 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 		return 0
 	}))
 
-	// k.sleep for delays
+	// k.sleep for delays — serve mode has no coroutine scheduler, so this
+	// blocks the worker with a plain time.Sleep (Phase 0.2). A fresh coroutine
+	// would need a resume path that does not exist in serve mode.
 	k.RawSetString("sleep", L.NewFunction(func(L *lua.LState) int {
-		L.CheckInt(1) // ms
-		// In serve mode, sleep yields the coroutine
+		ms := L.ToInt64(1)
+		if ms > 0 {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
 		return 0
 	}))
 
-	// k.quit to stop the worker
+	// k.quit to stop the server (Phase 0.5). opts.Quit is set by the serve
+	// command to cancel the server's run context; the RequestQuit fallback
+	// covers headless/test embeddings that only own a single worker.
 	k.RawSetString("quit", L.NewFunction(func(L *lua.LState) int {
-		// Signal main to exit
+		if opts.Quit != nil {
+			opts.Quit()
+			return 0
+		}
 		app.RequestQuit()
 		return 0
 	}))
@@ -93,6 +110,7 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 		verbose:    opts.Verbose,
 		scriptName: opts.ScriptName,
 		aiConfig:   opts.AIConfig,
+		allowNet:   opts.AllowNet,
 	}
 	if e.maxFileSize <= 0 {
 		e.maxFileSize = DefaultMaxFileSize
@@ -124,8 +142,21 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 	registerFiles(e)
 	registerDB(e)
 
+	// Phase 0.1: JSON and XML groups and the flow subset are available in serve
+	// mode too (they are session-independent).
+	registerJSON(e)
+	registerXML(e)
+	registerServeFlow(e)
+	registerServeHTTP(e) // k.http_request (blocking, no session)
+	registerMQTT(e, opts.MQTT) // Phase 2: k.mqtt_* client (serve-communication-plan.md §2)
+
 	// Action set trio (assign/set/exec) — works in serve mode for headless logic.
 	registerAssignSetExec(e)
+
+	// Phase 1 REST router helpers (k.http_response_* / stats / middleware) and
+	// Phase 8 structured logging (k.log.*) hook into opts-provided state.
+	registerHTTPHelpers(e, opts)
+	registerLogOps(e, opts)
 
 	// Session-dependent UI/timer bindings are removed; SetupUIError installs
 	// the error-raising stubs for form/ctrl/msgbox/status. Timers and net/param

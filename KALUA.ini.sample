@@ -31,6 +31,14 @@ verbose = 1
 ws-max-message-size = 0     ; max inbound WebSocket message (bytes; 0 = 1 MiB default)
 ; db    = main=sqlite://app.db
 ; arg   = env=prod
+; Phase 8 structured logging (klog.db: queryable structured log, off by default).
+; log-sqlite = 1            ; enable the SQLite structured-log sink
+; log-level  = info         ; minimum severity: error, warn, info, debug, trace
+; log-retain = 7d           ; record age to keep (0 = keep forever; d/h/m/s)
+; log-max-mb = 50           ; log file size cap in MB (0 = unlimited)
+; log-max-row = 16k         ; per-row message+data cap in bytes
+; Phase 2 MQTT client gate (k.mqtt_*); off by default for egress safety.
+; allow-net = 1             ; enable outbound MQTT client connections
 
 [BUILDER]
 port       = 9001

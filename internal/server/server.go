@@ -11,6 +11,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +21,7 @@ import (
 
 	"kalua/internal/bindings"
 	"kalua/internal/host"
+	"kalua/internal/klog"
 )
 
 // Config holds the server configuration.
@@ -37,6 +40,20 @@ type Config struct {
 	MaxWSMessageSize int64
 	Verbose          bool
 	Logger           *host.Logger
+
+	// Phase 8 structured logging (serve-communication-plan.md §8). When
+	// LogSQLite is set, records flow into klog.db (path <cwd>/klog.db);
+	// LogLevel is the minimum severity, LogRetain the age prune (0 = forever),
+	// LogMaxMB the size cap (0 = unlimited), LogMaxRow the per-row cap.
+	LogSQLite bool
+	LogLevel  string
+	LogRetain time.Duration
+	LogMaxMB  int64
+	LogMaxRow int64
+
+	// AllowNet gates outbound MQTT client connections (Phase 2 security).
+	// k.mqtt_connect refuses when false.
+	AllowNet bool
 }
 
 // Server is the KALUA serve mode server with worker pool.
@@ -45,6 +62,9 @@ type Server struct {
 	shared        *SharedState
 	wsHub         *WSHub
 	tcpHub        *TCPHub
+	mqttHub       *MQTTHub
+	httpStats     *bindings.HTTPStats
+	klog          *klog.DB
 	workers       []*Worker
 	workerMu      sync.RWMutex // guards s.workers and s.retired
 	retired       []*Worker    // superseded by hot reload, drained on shutdown
@@ -61,6 +81,7 @@ type Server struct {
 	shutdownRan   atomic.Bool
 	wg            sync.WaitGroup
 	stopCh        chan struct{}
+	stopOnce      sync.Once
 }
 
 // NewServer creates a new serve mode server.
@@ -82,16 +103,55 @@ func NewServer(cfg Config) *Server {
 	workerCh := make(chan *Worker, cfg.Workers)
 	wsHub := NewWSHub(workerCh)
 	tcpHub := NewTCPHub(workerCh)
+	mqttHub := NewMQTTHub()
 
-	return &Server{
-		cfg:      cfg,
-		shared:   shared,
-		wsHub:    wsHub,
-		tcpHub:   tcpHub,
-		workerCh: workerCh,
-		stopCh:   make(chan struct{}),
-		readyCh:  make(chan struct{}),
+	s := &Server{
+		cfg:       cfg,
+		shared:    shared,
+		wsHub:     wsHub,
+		tcpHub:    tcpHub,
+		mqttHub:   mqttHub,
+		httpStats: &bindings.HTTPStats{},
+		workerCh:  workerCh,
+		stopCh:    make(chan struct{}),
+		readyCh:   make(chan struct{}),
 	}
+
+	// Phase 8: open the structured-log sink when --log-sqlite is set. A failed
+	// open aborts startup (bad permissions, unusable path) rather than
+	// silently degrading to a no-op logger.
+	if cfg.LogSQLite {
+		level := klog.LevelInfo
+		if cfg.LogLevel != "" {
+			lv, err := klog.ParseLevel(cfg.LogLevel)
+			if err != nil {
+				cfg.Logger.Errorf("klog: invalid --log-level %q: %v (continuing without structured logging)", cfg.LogLevel, err)
+				return s
+			}
+			level = lv
+		}
+		wd, _ := os.Getwd()
+		db, err := klog.Open(klog.Config{
+			Path:   filepath.Join(wd, klog.DefaultPath),
+			Level:  level,
+			MaxRow: cfg.LogMaxRow,
+			Retain: cfg.LogRetain,
+			MaxMB:  cfg.LogMaxMB,
+		})
+		if err == nil {
+			s.klog = db
+			db.Emit(klog.Record{
+				Level:    klog.LevelInfo,
+				Category: "lifecycle",
+				Message:  "structured logging started",
+			})
+			db.Flush()
+		} else {
+			cfg.Logger.Errorf("klog open: %v (continuing without structured logging)", err)
+		}
+	}
+
+	return s
 }
 
 // Run starts the server and blocks until context is cancelled.
@@ -140,11 +200,21 @@ func (s *Server) Run(ctx context.Context) error {
 	// can read the real (possibly ephemeral) addresses without polling.
 	s.signalReady()
 
-	// Wait for context cancellation
-	<-ctx.Done()
+	// Wait for context cancellation or k.quit (Stop).
+	select {
+	case <-ctx.Done():
+	case <-s.stopCh:
+	}
 	s.runShutdownHandlers()
 	s.shutdown()
 	return nil
+}
+
+// Stop requests a clean shutdown of the running server (wired to k.quit via
+// bindings.Options.Quit). It cancels the Run wait below; Run then runs the
+// shutdown() callback and tears down listeners/workers.
+func (s *Server) Stop() {
+	s.stopOnce.Do(func() { close(s.stopCh) })
 }
 
 // Ready returns a channel that is closed once every listener required by the
@@ -205,6 +275,15 @@ func (s *Server) startWorkers(ctx context.Context) error {
 	for _, w := range workers {
 		s.workerCh <- w
 	}
+	// Wire the MQTT inbound pump to the (new) worker pool.
+	s.mqttHub.SetDeliver(func(msg bindings.MQTTMessage) {
+		worker, release := s.leaseWorker()
+		if worker == nil {
+			return
+		}
+		defer release()
+		worker.CallMQTT(msg)
+	})
 
 	// Run the optional init(config) callback once, on the first worker. A
 	// handler error aborts startup (spec §2.2 init).
@@ -273,6 +352,17 @@ func (s *Server) startHTTP(ctx context.Context) error {
 }
 
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	s.httpStats.ActiveConns.Add(1)
+	s.httpStats.RequestsTotal.Add(1)
+	defer func() {
+		s.httpStats.ActiveConns.Add(-1)
+		if ms := time.Since(start).Milliseconds(); ms >= 0 {
+			s.httpStats.LatencySumMs.Add(ms)
+			s.httpStats.LatencyCount.Add(1)
+		}
+	}()
+
 	// Security headers
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'self'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -282,6 +372,8 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Get next worker (round-robin), leased for this request
 	worker, release := s.leaseWorker()
 	if worker == nil {
+		s.httpStats.ErrorsTotal.Add(1)
+		s.emitHTTPLog(r, time.Since(start), http.StatusServiceUnavailable)
 		http.Error(w, "no available workers", http.StatusServiceUnavailable)
 		return
 	}
@@ -293,6 +385,8 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		limited := http.MaxBytesReader(w, r.Body, 16<<20) // 16 MiB
 		data, err := io.ReadAll(limited)
 		if err != nil {
+			s.httpStats.ErrorsTotal.Add(1)
+			s.emitHTTPLog(r, time.Since(start), http.StatusBadRequest)
 			s.cfg.Logger.Errorf("read body: %v", err)
 			http.Error(w, "body too large or read error", http.StatusBadRequest)
 			return
@@ -321,8 +415,10 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := worker.CallHTTP(r.Context(), req)
 	if err != nil {
+		s.httpStats.ErrorsTotal.Add(1)
 		s.cfg.Logger.Errorf("handle_http error: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.emitHTTPLog(r, time.Since(start), http.StatusInternalServerError)
 		return
 	}
 
@@ -331,7 +427,29 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.Status)
 	w.Write([]byte(resp.Body))
+	s.emitHTTPLog(r, time.Since(start), resp.Status)
 }
+
+// emitHTTPLog records a Phase 8 http-category row when structured logging is
+// enabled. start→now gives the request duration; status + duration_ms ride in
+// the data JSON object.
+func (s *Server) emitHTTPLog(r *http.Request, dur time.Duration, status int) {
+	if s.klog == nil {
+		return
+	}
+	durMs := dur.Milliseconds()
+	if durMs < 1 {
+		durMs = 1
+	}
+	s.klog.Emit(klog.Record{
+		Level:      klog.LevelInfo,
+		Category:   "http",
+		RemoteAddr: r.RemoteAddr,
+		Message:    fmt.Sprintf("%s %s -> %d", r.Method, r.URL.Path, status),
+		Data:       fmt.Sprintf(`{"method":%s,"path":%s,"status":%d,"duration_ms":%d}`, jsonQuote(r.Method), jsonQuote(r.URL.Path), status, durMs),
+	})
+}
+
 
 func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
 	// Upgrade to WebSocket
@@ -555,6 +673,11 @@ func (s *Server) buildWorkers(count int) ([]*Worker, error) {
 		AllowFS:     s.cfg.AllowFS,
 		MaxFileSize: s.cfg.MaxFileSize,
 		Verbose:     s.cfg.Verbose,
+		Quit:        s.Stop,
+		Stats:       s.httpStats,
+		LogDB:       s.klog,
+		MQTT:        s.mqttHub,
+		AllowNet:    s.cfg.AllowNet,
 	}
 	var workers []*Worker
 	for i := 0; i < count; i++ {
@@ -571,7 +694,7 @@ func (s *Server) buildWorkers(count int) ([]*Worker, error) {
 }
 
 func (s *Server) shutdown() {
-	close(s.stopCh)
+	s.Stop() // idempotent (sync.Once); also closes stopCh for k.quit
 	s.netMu.RLock()
 	hs, hln, tln := s.httpServer, s.httpListener, s.tcpListener
 	s.netMu.RUnlock()
@@ -585,7 +708,9 @@ func (s *Server) shutdown() {
 		tln.Close()
 	}
 	// Close every current and retired worker. Retired workers may already
-	// have been closed by their last lease release; Close is idempotent.
+	// have been closed by their last lease release; Close is idempotent. Wait
+	// for an in-flight call (e.g. the one that invoked k.quit) to release the
+	// slot before closing the LState so we never race a live Lua frame.
 	s.workerMu.Lock()
 	all := make([]*Worker, 0, len(s.workers)+len(s.retired))
 	all = append(all, s.workers...)
@@ -594,9 +719,28 @@ func (s *Server) shutdown() {
 	s.retired = nil
 	s.workerMu.Unlock()
 	for _, w := range all {
+		w.waitIdle(5 * time.Second)
 		w.Close()
 	}
+	if s.klog != nil {
+		s.klog.Close()
+	}
+	s.mqttHub.CloseAll() // disconnect any k.mqtt_* clients (Phase 2)
 	s.wg.Wait()
+}
+
+// waitIdle blocks until the worker's slot is free (any in-flight CallX has
+// returned) or the deadline passes. Called only during shutdown so a live
+// mutation can never Race with LState.Close().
+func (w *Worker) waitIdle(timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-w.slot:
+		w.freeSlot() // re-seed; the caller closes the worker next
+	case <-timer.C:
+		// Best effort: the connection is being torn down anyway; proceed.
+	}
 }
 
 // randomID returns a 16-byte crypto/rand token hex-encoded with the given
@@ -610,6 +754,30 @@ func randomID(prefix string) string {
 		return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 	}
 	return fmt.Sprintf("%s-%s", prefix, hex.EncodeToString(b))
+}
+
+// jsonQuote returns s as a JSON-escaped string literal (for klog data rows).
+func jsonQuote(s string) string {
+	buf := make([]byte, 0, len(s)+2)
+	buf = append(buf, '"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			buf = append(buf, '\\', '"')
+		case '\\':
+			buf = append(buf, '\\', '\\')
+		case '\n':
+			buf = append(buf, '\\', 'n')
+		case '\r':
+			buf = append(buf, '\\', 'r')
+		case '\t':
+			buf = append(buf, '\\', 't')
+		default:
+			buf = append(buf, string(r)...)
+		}
+	}
+	buf = append(buf, '"')
+	return string(buf)
 }
 
 // HTTPAddr returns the actual bound HTTP/WS address ("host:port"), useful

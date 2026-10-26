@@ -31,6 +31,53 @@ func TestCheck(t *testing.T) {
 			src:      `function main(`,
 			wantErrs: []string{"syntax error"},
 		},
+		{
+			name: "phase1-rest-serve",
+			src: `k.http_routes = {
+  {method="GET", path="/api/u/:id", handler="get_user"},
+}
+k.http_middleware = {"auth_mw"}
+function auth_mw(req) return nil end
+function get_user(req) return "ok" end
+function main() end`,
+			wantErrs: nil,
+		},
+		{
+			name: "phase1-helpers",
+			src: `function handle_http(req)
+  local a = k.http_response_json({ok=true}, 201)
+  local b = k.http_response_text("hi")
+  local c = k.http_response_redirect("/x")
+  local s = k.http_stats()
+  k.http_auth_middleware("mw")
+end
+function mw(req) return nil end`,
+			wantErrs: nil,
+		},
+		{
+			name: "phase8-log",
+			src: `function handle_http(req)
+  k.log.info("msg", {k=1})
+  k.log.warn("w")
+  k.log.error("e")
+  k.log.debug("d")
+  k.log.trace("t")
+  local st = k.log.stats()
+end`,
+			wantErrs: nil,
+		},
+		{
+			name: "phase2-mqtt",
+			src: `local h = k.mqtt_connect{broker="b", port=1883}
+k.mqtt_on("sensors/#", "on_sensor")
+function on_sensor(t, p) end
+function handle_http(req)
+  k.mqtt_subscribe(h, "sensors/#", 1)
+  k.mqtt_publish(h, "s/t", "x")
+  k.mqtt_stats(h)
+end`,
+			wantErrs: nil,
+		},
 	}
 	for _, tc := range cases {
 		res := Check(tc.src, "test.lua")
@@ -46,8 +93,7 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-func TestIssuePositions(t *testing.T) {
-	// Unknown k.* must carry the offending line and a good-effort column so
+func TestIssuePositions(t *testing.T) {	// Unknown k.* must carry the offending line and a good-effort column so
 	// the LSP can draw a squiggle under the token.
 	res := Check("function main()\n  k.bogus()\n  k.form.new(\"f\")\n  k.no_such_api()\nend", "test.lua")
 	var gotLine, gotCol int

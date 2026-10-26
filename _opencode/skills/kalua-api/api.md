@@ -2533,6 +2533,166 @@ local name = k.xml_root(doc)  -- "book"
 
 ### Server
 
+**`k.http_auth_middleware(fn)`**  
+Appends a middleware function (or global function name) to the k.http_middleware chain at runtime. Equivalent to setting the k.http_middleware table entry.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `fn` | function|string | Middleware function or the name of a global function. |
+
+**Example:**
+
+```lua
+k.http_auth_middleware(auth_middleware)
+```
+
+**`k.http_middleware = {...}`**  
+Middleware chain for serve-mode HTTP: a list of global function names (or function values, registered via k.http_auth_middleware). Each runs with the request table before the route handler; returning nil continues the chain, returning a response (e.g. k.http_response_json) short-circuits it. Middleware may attach data to req (e.g. req.user) for the handler. Runs before k.http_routes handlers only.
+
+**Example:**
+
+```lua
+k.http_middleware = {"auth_middleware"}
+function auth_middleware(req)
+  local token = req.headers["authorization"]
+  if not token then return k.http_response_json({error="unauthorized"}, 401) end
+  req.user = token  -- visible to the route handler
+  return nil        -- continue
+end
+```
+
+**`k.http_request_parse_multipart(req)`**  
+Parses a multipart/form-data request table and returns {fields={...}, files={name={filename, content_type, data}}}. The request table must carry headers (with content-type boundary) and body.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req` | table | Serve-mode request table (headers + body). |
+
+**Example:**
+
+```lua
+local mp = k.http_request_parse_multipart(req)
+```
+
+**`k.http_response_json(data[, status])`**  
+Builds a JSON HTTP response: status defaults to 200, headers carry content-type application/json. Return it from a route handler or middleware.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `data` | any | Value encoded as JSON body. |
+| `status` | number | HTTP status (default 200). |
+
+**Example:**
+
+```lua
+return k.http_response_json({ok=true}, 200)
+```
+
+**`k.http_response_redirect(url[, status])`**  
+Builds an HTTP redirect response (Location header; status defaults to 302).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `url` | string | Redirect target. |
+| `status` | number | HTTP status (default 302). |
+
+**Example:**
+
+```lua
+return k.http_response_redirect("/login")
+```
+
+**`k.http_response_text(text[, status])`**  
+Builds a plain-text HTTP response (content-type text/plain).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `text` | string | Response body. |
+| `status` | number | HTTP status (default 200). |
+
+**Example:**
+
+```lua
+return k.http_response_text("hello", 200)
+```
+
+**`k.http_routes = {...}`**  
+Declarative REST routes for serve mode. Each entry is {method, path, handler} where path uses :param segments (/api/users/:id) and handler names a global Lua function called with the request table (req.params exposes the matched segments). Declared at the top level of the script.
+
+**Example:**
+
+```lua
+k.http_routes = {
+  {method="GET",  path="/api/users/:id", handler="get_user"},
+  {method="POST", path="/api/users",     handler="create_user"},
+}
+function get_user(req)
+  local id = req.params.id
+  return k.http_response_json({id=id, name="John"})
+end
+```
+
+**`k.http_stats()`**  
+Returns serve-mode HTTP metrics: {requests_total, errors_total, avg_latency_ms, active_connections}.
+
+**Example:**
+
+```lua
+local s = k.http_stats()
+```
+
+**`k.log`**  
+Structured logging: k.log.info/warn/error/debug/trace(msg[, data]) and k.log.stats(). Records land in klog.db when serve runs with --log-sqlite.
+
+**`k.log.debug(msg[, data])`**  
+Records a debug-level structured log entry (dropped unless --log-level debug).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `msg` | string | Log message. |
+| `data` | table | Optional structured fields stored as JSON. |
+
+**`k.log.error(msg[, data])`**  
+Records an error-level structured log entry.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `msg` | string | Log message. |
+| `data` | table | Optional structured fields stored as JSON. |
+
+**`k.log.info(msg[, data])`**  
+Records an info-level structured log entry (category app). data is a table stored as JSON.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `msg` | string | Log message. |
+| `data` | table | Optional structured fields stored as JSON. |
+
+**`k.log.stats()`**  
+Returns structured-log sink stats: {rows, dropped, oldest, newest, path}.
+
+**Example:**
+
+```lua
+local st = k.log.stats()
+```
+
+**`k.log.trace(msg[, data])`**  
+Records a trace-level structured log entry (dropped unless --log-level trace).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `msg` | string | Log message. |
+| `data` | table | Optional structured fields stored as JSON. |
+
+**`k.log.warn(msg[, data])`**  
+Records a warn-level structured log entry.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `msg` | string | Log message. |
+| `data` | table | Optional structured fields stored as JSON. |
+
 **`k.shared.del(key)`**  
 Deletes a key from shared state.
 
@@ -2597,6 +2757,111 @@ Renames a remote file or folder (RNFR/RNTO).
 
 **`k.ftp_set_cwd(handle, path)`**  
 Changes the remote working directory (CWD).
+
+**`k.mqtt_close(handle)`**  
+Disconnects the MQTT client and releases its handle.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handle` | string | Client handle. |
+
+**Example:**
+
+```lua
+k.mqtt_close(h)
+```
+
+**`k.mqtt_connect{broker, port, user?, password?, client_id?, tls?}`**  
+Connects to an MQTT broker and returns a client handle for the other k.mqtt_* calls. broker is a host (with port) or a full mqtt:// / ssl:// URL; tls=true switches to ssl. Gated by the server's --allow-net flag; raises ERROR_PERMISSION when network egress is disabled.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `broker` | string | Broker host (e.g. broker.local) or full URL (mqtt://host:port). |
+| `port` | number | Broker port (default 1883 when broker is a bare host). |
+| `user` | string | Optional username. |
+| `password` | string | Optional password. |
+| `client_id` | string | Optional MQTT client id (random when omitted). |
+| `tls` | boolean | Use TLS (ssl://) when broker is a bare host. |
+
+**Example:**
+
+```lua
+local h = k.mqtt_connect{broker="broker.local", port=1883, user="app", password="secret"}
+```
+
+**`k.mqtt_on(pattern, fn_name)`**  
+Registers an inbound message handler: a global function named fn_name is called with (topic, payload) for every message whose topic matches pattern (MQTT + / # wildcards). Multiple handlers may match; all run in registration order. Serve mode only.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `pattern` | string | Topic filter (e.g. sensors/+/temp or sensors/#). |
+| `fn_name` | string | Global function invoked as fn(topic, payload). |
+
+**Example:**
+
+```lua
+k.mqtt_on("sensors/#", "on_sensor")
+function on_sensor(topic, payload) k.log.info(topic, {data=payload}) end
+```
+
+**`k.mqtt_publish(handle, topic, payload[, qos[, retain]])`**  
+Publishes payload to a topic.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handle` | string | Client handle. |
+| `topic` | string | Topic to publish to. |
+| `payload` | string | Message payload. |
+| `qos` | number | QoS 0 (default), 1 or 2. |
+| `retain` | boolean | Retain the message (default false). |
+
+**Example:**
+
+```lua
+k.mqtt_publish(h, "sensors/1/temp", "21.5", 1)
+```
+
+**`k.mqtt_stats(handle)`**  
+Returns client connection state: {connected, subscriptions, messages_in, messages_out}.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handle` | string | Client handle. |
+
+**Example:**
+
+```lua
+local st = k.mqtt_stats(h)
+```
+
+**`k.mqtt_subscribe(handle, topic[, qos])`**  
+Subscribes the client to a topic filter (MQTT wildcards + / #). Inbound messages matching a k.mqtt_on(pattern) handler are delivered to it.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handle` | string | Client handle from k.mqtt_connect. |
+| `topic` | string | Topic filter (e.g. sensors/+/temp). |
+| `qos` | number | QoS 0 (default), 1 or 2. |
+
+**Example:**
+
+```lua
+k.mqtt_subscribe(h, "sensors/#")
+```
+
+**`k.mqtt_unsubscribe(handle, topic)`**  
+Unsubscribes from a topic filter.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handle` | string | Client handle. |
+| `topic` | string | Topic filter to drop. |
+
+**Example:**
+
+```lua
+k.mqtt_unsubscribe(h, "sensors/#")
+```
 
 **`k.socket_close(handle)`**  
 Closes an open socket.

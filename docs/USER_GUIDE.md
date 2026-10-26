@@ -197,6 +197,7 @@ KALUA serve <app.lua> [--host 127.0.0.1] [--port 8080] [--workers 4]
              [--mode http|ws|tcp] [--verbose] [--debug] [--debug-worker]
              [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]... [--ini PATH]
              [--ws-max-message-size N]
+             [--log-sqlite] [--log-level LVL] [--log-retain D] [--log-max-mb N] [--log-max-row N]
 ```
 
 | Flag | Short | Default | Description |
@@ -208,12 +209,115 @@ KALUA serve <app.lua> [--host 127.0.0.1] [--port 8080] [--workers 4]
 | `--verbose` | `-v` | off | Verbose k.* tracing |
 | `--debug` / `--debug-worker` | | off | EmmyLua debugger stubs (not yet implemented) |
 | `--ws-max-message-size N` | | 1 MiB | Max inbound WebSocket message size in bytes (matches `run`'s built-in 1 MiB cap) |
+| `--log-sqlite` | | off | Enable structured logging to `klog.db` in the working directory (Phase 8). |
+| `--log-level LVL` | | `info` | Minimum severity: `error`, `warn`, `info`, `debug`, `trace`. |
+| `--log-retain D` | | `7d` | How long to keep records (`0` = keep forever; `d`/`h`/`m`/`s` units combine, e.g. `2d12h`). |
+| `--log-max-mb N` | | `50` | Log file size cap in MB (`0` = unlimited; pruned to 80% low-water). |
+| `--log-max-row N` | | `16k` | Per-row message+data cap in bytes (`0` = unlimited). |
+| `--allow-net` | | off | Enable outbound MQTT client connections (`k.mqtt_*`); refused with a permission error otherwise. |
 | `--db`, `--arg`, `--allow-fs` | `-d -a -f` | | Same as `run` |
 | `--ini PATH` | | | Read persistent flag values from a `KALUA.INI` file (see §3.7) |
 
 Signals:
 - `SIGTERM` / `SIGINT` — graceful shutdown (runs optional `shutdown()` hook once).
 - `SIGHUP` — **hot reload**: recompiles the script and atomically swaps the worker pool; in-flight requests and open connections finish on the old workers.
+- A script calling `k.quit()` also stops the server cleanly (same path as SIGTERM).
+
+### Structured logging (`--log-sqlite`)
+
+Serve mode can capture a queryable, self-maintained structured log into
+`klog.db` (a SQLite file in the working directory; `WAL` journal, pruned hourly
+by age and size). Scripts write rows with `k.log.info/warn/error/debug/trace(msg[, data])`
+where `data` is a table stored as JSON; the server itself records an `http`
+row per request (`{method, path, status, duration_ms}` and the remote address).
+`k.log.stats()` returns `{rows, dropped, oldest, newest, path}`. `k.print`
+stays stdout-only and never lands in `klog.db`. The file is host-owned: scripts
+cannot read or write `klog.db` through `k.file_*`, `k.csv_load`, or
+`k.connect_db` (part of the sandbox deny list).
+
+### Declarative REST routes & middleware
+
+```
+KALUA serve api.lua --mode http
+```
+
+```lua
+k.http_routes = {
+  {method = "GET",  path = "/api/users/:id", handler = "get_user"},
+  {method = "POST", path = "/api/users",     handler = "create_user"},
+}
+k.http_middleware = {"auth_mw", "log_mw"}  -- run in order, before the handler
+
+function auth_mw(req)
+  if not req.headers["Authorization"] then
+    return k.http_response_json({error = "unauthorized"}, 401) -- short-circuit
+  end
+  req.user = "alice"  -- attach data the handler can read
+  return nil          -- continue the chain
+end
+
+function get_user(req)
+  return k.http_response_json({id = tonumber(req.params.id), user = req.user})
+end
+
+function create_user(req)
+  local body = k.json_parse(req.body)
+  return k.http_response_json({created = body.name}, 201)
+end
+
+function main() k.print("REST demo up") end
+```
+
+A matched `k.http_routes` entry takes priority over `handle_http`; unmatched
+paths fall back to `handle_http` (or 404 when absent). `:param` segments become
+`req.params.<name>`. Middleware may be added dynamically with
+`k.http_auth_middleware(fn)`. Response helpers: `k.http_response_json(data[, status])`,
+`k.http_response_text(text[, status])`, `k.http_response_redirect(url[, status])`;
+`k.http_request_parse_multipart(req)` parses a multipart body into
+`{fields, files}`. `k.http_stats()` returns `{requests_total, errors_total,
+avg_latency_ms, active_connections}`.
+
+See `testdata/apps/rest_api_demo.lua` for a complete example.
+
+### MQTT client
+
+Serve mode can act as an **MQTT client** (Phase 2): connect to a broker,
+subscribe to topic filters, publish, and receive inbound messages through
+registered handlers.
+
+```
+KALUA serve mqtt_app.lua --mode http --allow-net
+```
+
+```lua
+local h = k.mqtt_connect{ broker = "broker.local", port = 1883,
+                          user = "app", password = "secret" }
+
+k.mqtt_on("sensors/#", "on_sensor")       -- (topic, payload) on match
+function on_sensor(topic, payload)
+  k.print(topic, payload)
+end
+
+k.mqtt_subscribe(h, "sensors/#", 1)       -- qos 0 (default), 1 or 2
+k.mqtt_publish(h, "sensors/1/temp", "21.5", 1)   -- qos, retain=false
+
+local st = k.mqtt_stats(h)                -- {connected, subscriptions,
+                                          --  messages_in, messages_out}
+-- k.mqtt_unsubscribe(h, "sensors/#")
+-- k.mqtt_close(h)
+```
+
+Notes:
+- `k.mqtt_connect` returns a client handle; `tls = true` switches a bare host to
+  `ssl://`. A full `mqtt://`/`ssl://` URL may be passed as `broker` (port then
+  ignored). `client_id` is random when omitted.
+- Outbound MQTT is gated: `k.mqtt_connect` raises a permission error unless the
+  server runs with `--allow-net` (or `[SERVE] allow-net = 1`).
+- `k.mqtt_on(pattern, fn)` registers a handler by MQTT topic filter (`+` one
+  level, `#` remaining levels); every matching handler runs in registration
+  order with `(topic, payload)`. Handlers are global functions in the script.
+
+See `testdata/apps/mqtt_demo.lua` for a complete example.
 
 ## 3.3 `check` — static validation
 
@@ -473,9 +577,9 @@ Everything beyond bare Lua lives on the `k` table, the `K` helpers, and the flat
 | JSON / XML | `k.json_*`, `k.xml_*` | Parse, navigate, serialize |
 | Formats | `k.csv_*`, `k.ini_*`, `k.yaml_*` | Data interchange formats |
 | Rows | `k.json_to_rows`, `k.csv_to_rows`, `k.rows_to_json`, … | Result-set ↔ format conversions |
-| Comm | `k.socket_*`, `k.ftp_*`, `k.smtp_*`, `k.pop3_*`, `k.webservice_run` | Networking & integrations |
+| Comm | `k.socket_*`, `k.ftp_*`, `k.smtp_*`, `k.pop3_*`, `k.webservice_run`, `k.mqtt_*` | Networking & integrations (incl. MQTT client in serve mode) |
 | Crypto | `k.checksum`, `k.encrypt`/`k.decrypt`, `k.crypt_*`, `k.sign`/`k.verify` | Hashing, AES/RSA, signatures |
-| Server (serve mode) | `k.shared.*`, `k.ws.*`, `k.tcp.*` | Cross-worker state, WS/TCP push |
+| Server (serve mode) | `k.shared.*`, `k.ws.*`, `k.tcp.*`, `k.http_routes`, `k.http_middleware`, `k.http_response_*`, `k.http_stats`, `k.log.*` | Cross-worker state, WS/TCP push, declarative REST routes + middleware, HTTP metrics, structured logging |
 
 ## 5.2 Conventions
 

@@ -464,6 +464,12 @@ func serveCmd(args []string) int {
 		fs.Var(&multiFlag{}, "a", "Shorthand for --arg")
 		fs.Var(&multiFlag{}, "allow-fs", "Allow filesystem access outside cwd (repeatable)")
 		fs.Var(&multiFlag{}, "f", "Shorthand for --allow-fs")
+		fs.Bool("log-sqlite", false, "Enable structured logging to klog.db (SQLite)")
+		fs.String("log-level", "info", "Minimum severity: error, warn, info, debug, trace")
+		fs.Var(&durValue{}, "log-retain", "How long to keep records (e.g. 7d, 24h; 0 = keep forever)")
+		fs.Var(&sizeValue{}, "log-max-mb", "Log file size cap in MB (e.g. 50; 0 = unlimited)")
+		fs.Var(&sizeValue{}, "log-max-row", "Per-row message+data cap (default 16k)")
+		fs.Bool("allow-net", false, "Enable outbound MQTT client connections (k.mqtt_*)")
 		fs.PrintDefaults()
 		return int(host.ExitOK)
 	}
@@ -489,10 +495,25 @@ func serveCmd(args []string) int {
 		tcpEcho    = fs.String("tcp-echo", "", "Payload sent to handle_tcp; any reply passes the tcp probe")
 		httpProbes = multiFlag{}
 		wsMaxSize  = fs.Int64("ws-max-message-size", 0, "Max WebSocket message size in bytes (default 1 MiB)")
+		logSQLite  = fs.Bool("log-sqlite", false, "Enable structured logging to klog.db (SQLite)")
+		logLevel   = fs.String("log-level", "info", "Minimum severity: error, warn, info, debug, trace")
+		allowNet   = fs.Bool("allow-net", false, "Enable outbound MQTT client connections (k.mqtt_*)")
+		logRetain  = durValue{}
+		logMaxMB   = sizeValue{}
+		logMaxRow  = sizeValue{}
 		dbFlag      = multiFlag{}
 		argFlag     = multiFlag{}
 		allowFSFlag = multiFlag{}
 	)
+	logRetain.value = new(time.Duration)
+	*logRetain.value = 7 * 24 * time.Hour
+	logMaxMB.value = new(int64)
+	*logMaxMB.value = 50 << 20
+	logMaxRow.value = new(int64)
+	*logMaxRow.value = 16 << 10
+	fs.Var(&logRetain, "log-retain", "How long to keep records (e.g. 7d, 24h; 0 = keep forever)")
+	fs.Var(&logMaxMB, "log-max-mb", "Log file size cap in MB (e.g. 50; 0 = unlimited)")
+	fs.Var(&logMaxRow, "log-max-row", "Per-row message+data cap (default 16k)")
 	fs.Var(&httpProbes, "http", "HTTP probe 'METHOD /path' against handle_http (repeatable, with --test)")
 	fs.Var(&dbFlag, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 	fs.Var(&dbFlag, "d", "Shorthand for --db")
@@ -552,6 +573,12 @@ func serveCmd(args []string) int {
 			ExpectContain: *expectContain,
 			WSEcho:        *wsEcho,
 			TCPEcho:       *tcpEcho,
+			LogSQLite:     *logSQLite,
+			LogLevel:      *logLevel,
+			LogRetain:     *logRetain.value,
+			LogMaxMB:      *logMaxMB.value,
+			LogMaxRow:     *logMaxRow.value,
+			AllowNet:      *allowNet,
 		})
 	}
 
@@ -567,6 +594,12 @@ func serveCmd(args []string) int {
 		MaxFileSize:      0,
 		MaxWSMessageSize: *wsMaxSize,
 		Verbose:          *verbose,
+		LogSQLite:        *logSQLite,
+		LogLevel:         *logLevel,
+		LogRetain:        *logRetain.value,
+		LogMaxMB:         *logMaxMB.value,
+		LogMaxRow:        *logMaxRow.value,
+		AllowNet:         *allowNet,
 	}
 	if *debugMode || *debugWorker {
 		fmt.Fprintln(os.Stderr, "warning: --debug/--debug-worker (EmmyLua debugger) not yet implemented")

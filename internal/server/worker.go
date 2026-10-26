@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/yuin/gopher-lua"
 
@@ -24,14 +25,22 @@ type Worker struct {
 	wsHub    *WSHub
 	tcpHub   *TCPHub
 	handlers WorkerHandlers
-	mu       sync.Mutex
-	busy     bool
-	logger   Logger
+	router   *httpRouter
+	// slot is a one-token semaphore serializing LState access: exactly one
+	// handler (HTTP/WS/TCP/init/shutdown) runs at a time per worker. HTTP
+	// waits a bounded time (busyTimeout) then answers 503 + Retry-After;
+	// WS/TCP block until free (their connections lease the worker already).
+	slot chan struct{}
+	logger Logger
 
 	refs      atomic.Int32 // active leases (HTTP handles, WS/TCP connections)
 	retired   atomic.Bool  // true once superseded by a hot reload
 	closeOnce sync.Once
 }
+
+// busyTimeout bounds how long CallHTTP waits for a busy worker before
+// answering 503 + Retry-After (serve-communication-plan.md Phase 0.4).
+const busyTimeout = 500 * time.Millisecond
 
 // WorkerHandlers holds the Lua callback functions for serve mode.
 type WorkerHandlers struct {
@@ -117,7 +126,7 @@ func NewWorker(id int, scriptPath string, opts bindings.Options, shared *SharedS
 		return nil, err
 	}
 
-	return &Worker{
+	w := &Worker{
 		id:     id,
 		L:      L,
 		app:    app,
@@ -132,26 +141,67 @@ func NewWorker(id int, scriptPath string, opts bindings.Options, shared *SharedS
 			Init:       initHandler,
 			Shutdown:   shutdownHandler,
 		},
+		slot:   make(chan struct{}, 1),
 		logger: logger,
-	}, nil
+	}
+	// Seed the slot token: the worker starts idle.
+	w.freeSlot()
+	// Build the Phase 1 REST router from k.http_routes / k.http_middleware
+	// (declared at the top level of the script).
+	w.router = newHTTPRouter(L)
+	return w, nil
 }
 
-// CallHTTP calls the handle_http callback with request data.
-// Returns response status, headers, body, and error.
-func (w *Worker) CallHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, error) {
-	// Hold w.mu for the whole invocation so concurrent WS/TCP dispatch can
-	// never touch the LState while a handler is running. Concurrent HTTP
-	// requests are rejected with 503 rather than queued.
-	w.mu.Lock()
-	if w.busy {
-		w.mu.Unlock()
-		return HTTPResponse{Status: 503, Body: "worker busy"}, fmt.Errorf("worker busy")
+// acquireSlot blocks until the worker's single Lua slot is free (WS/TCP/init/
+// shutdown: they lease the worker already, so they may wait indefinitely,
+// preserving the pre-Phase-0.4 behavior where w.mu serialized them).
+func (w *Worker) acquireSlot() { <-w.slot }
+
+// tryAcquireSlot claims the slot, waiting at most busyTimeout. On timeout (or
+// when ctx is cancelled) it returns false and the caller answers 503 +
+// Retry-After.
+func (w *Worker) tryAcquireSlot(ctx context.Context) bool {
+	timer := time.NewTimer(busyTimeout)
+	defer timer.Stop()
+	select {
+	case <-w.slot:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
 	}
-	w.busy = true
-	defer func() {
-		w.busy = false
-		w.mu.Unlock()
-	}()
+}
+
+// freeSlot returns the slot token.
+func (w *Worker) freeSlot() { w.slot <- struct{}{} }
+
+// CallHTTP calls the handle_http callback with request data, or dispatches to
+// a declarative REST route when one matches (Phase 1). Returns response status,
+// headers, body, and error.
+func (w *Worker) CallHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, error) {
+	// Phase 0.4: instead of failing a busy worker instantly with 503, wait a
+	// bounded time for it to free up (Retry-After advertises the wait). The
+	// worker pool is round-robin so a short spin usually lands on a free one.
+	if !w.tryAcquireSlot(ctx) {
+		return HTTPResponse{
+			Status:  503,
+			Headers: map[string]string{"Retry-After": "1"},
+			Body:    "worker busy, retry after 1s",
+		}, fmt.Errorf("worker busy")
+	}
+	defer w.freeSlot()
+
+	// Router first: a matched k.http_routes entry wins over handle_http.
+	if w.router != nil {
+		if resp, err, matched := w.callRoutedHTTP(req); matched {
+			if err != nil {
+				w.notifyError(err)
+				return resp, err
+			}
+			return resp, nil
+		}
+	}
 
 	if w.handlers.HandleHTTP == nil {
 		return HTTPResponse{Status: 404, Body: "no handle_http callback"}, nil
@@ -199,6 +249,93 @@ func (w *Worker) CallHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, e
 		resp.Headers = map[string]string{}
 	}
 	return resp, nil
+}
+
+// callRoutedHTTP dispatches a request to the declarative REST router: runs the
+// k.http_middleware chain (each may short-circuit with a response), then calls
+// the matched route's handler with a req table that includes params. Returns
+// (resp, err, matched) — matched=false when no route matches so CallHTTP falls
+// back to handle_http; a Lua error yields a 500 response plus the error.
+func (w *Worker) callRoutedHTTP(req HTTPRequest) (HTTPResponse, error, bool) {
+	idx, params, ok := w.router.Match(req.Method, req.Path)
+	if !ok {
+		return HTTPResponse{}, nil, false
+	}
+
+	// Build the req table (with params) once; middleware may extend it
+	// (e.g. req.user = ...) and the handler sees those mutations.
+	reqTable := w.L.NewTable()
+	reqTable.RawSetString("method", lua.LString(req.Method))
+	reqTable.RawSetString("path", lua.LString(req.Path))
+	reqTable.RawSetString("query_raw", lua.LString(req.Query))
+	reqTable.RawSetString("query", queryValuesTable(w.L, req.QueryValues))
+	reqTable.RawSetString("body", lua.LString(req.Body))
+	reqTable.RawSetString("remote_addr", lua.LString(req.RemoteAddr))
+	reqTable.RawSetString("tls", lua.LBool(req.TLS))
+	if params != nil {
+		pTbl := w.L.NewTable()
+		for _, p := range params {
+			pTbl.RawSetString(p.Key, lua.LString(p.Value))
+		}
+		reqTable.RawSetString("params", pTbl)
+	}
+	headersTable := w.L.NewTable()
+	for k, v := range req.Headers {
+		headersTable.RawSetString(k, lua.LString(v))
+	}
+	reqTable.RawSetString("headers", headersTable)
+
+	// Middleware chain: each middleware may short-circuit by returning a
+	// response value (per k.http_response_* helpers); returning nil continues.
+	for i := 0; i < w.router.MiddlewareCount(); i++ {
+		mw := w.router.MiddlewareFn(i)
+		if mw == nil {
+			continue
+		}
+		err := w.L.CallByParam(lua.P{Fn: mw, NRet: 1, Protect: true}, reqTable)
+		if err != nil {
+			w.L.SetTop(0)
+			return HTTPResponse{Status: 500, Body: err.Error()}, err, true
+		}
+		ret := w.L.Get(1)
+		w.L.SetTop(0)
+		if ret != nil && ret != lua.LNil {
+			return normalizeHTTPResponse(decodeHTTPResponse(w.L, ret)), nil, true
+		}
+	}
+
+	// Route handler.
+	handler := w.router.RouteHandler(idx)
+	if handler == nil {
+		return HTTPResponse{
+			Status:  500,
+			Headers: map[string]string{},
+			Body:    "route handler not found",
+		}, fmt.Errorf("route handler not found"), true
+	}
+	err := w.L.CallByParam(lua.P{Fn: handler, NRet: 1, Protect: true}, reqTable)
+	if err != nil {
+		w.L.SetTop(0)
+		return HTTPResponse{Status: 500, Body: err.Error()}, err, true
+	}
+	ret := w.L.Get(1)
+	w.L.SetTop(0)
+	resp := normalizeHTTPResponse(decodeHTTPResponse(w.L, ret))
+	if resp.Status == 0 {
+		resp.Status = 200
+	}
+	if resp.Headers == nil {
+		resp.Headers = map[string]string{}
+	}
+	return resp, nil, true
+}
+
+// normalizeHTTPResponse fills default headers for a decoded response.
+func normalizeHTTPResponse(resp HTTPResponse) HTTPResponse {
+	if resp.Headers == nil {
+		resp.Headers = map[string]string{}
+	}
+	return resp
 }
 
 // queryValuesTable converts parsed URL query values to a Lua table. Keys with a
@@ -306,14 +443,14 @@ type TCPMessage struct {
 }
 
 // CallWS delivers a WebSocket message to handle_ws(msg). The whole invocation
-// runs under w.mu so concurrent WS/TCP/HTTP dispatch never shares the LState;
-// a string return value is echoed back to the same client.
+// runs under the worker's slot so concurrent WS/TCP/HTTP dispatch never shares
+// the LState; a string return value is echoed back to the same client.
 func (w *Worker) CallWS(msg WSMessage, ws *WSConn) {
 	if w.handlers.HandleWS == nil {
 		return
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.acquireSlot()
+	defer w.freeSlot()
 
 	msgTable := msgLuaTable(w.L, msg.Type, msg.Data, msg.ClientID)
 
@@ -344,14 +481,14 @@ func (w *Worker) CallWS(msg WSMessage, ws *WSConn) {
 	}
 }
 
-// CallTCP delivers a TCP event to handle_tcp(msg). Runs under w.mu; a string
-// return value is echoed back to the same connection.
+// CallTCP delivers a TCP event to handle_tcp(msg). Runs under the worker's
+// slot; a string return value is echoed back to the same connection.
 func (w *Worker) CallTCP(msg TCPMessage, tcp *TCPConn) {
 	if w.handlers.HandleTCP == nil {
 		return
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.acquireSlot()
+	defer w.freeSlot()
 
 	msgTable := msgLuaTable(w.L, msg.Type, msg.Data, msg.ClientID)
 
@@ -377,15 +514,27 @@ func (w *Worker) CallTCP(msg TCPMessage, tcp *TCPConn) {
 	}
 }
 
+// CallMQTT delivers an inbound MQTT message to the worker's registered
+// k.mqtt_on handlers (Phase 2). Runs under the slot; a handler error is
+// reported via the error hook without crashing the worker.
+func (w *Worker) CallMQTT(msg bindings.MQTTMessage) {
+	if w.env == nil {
+		return
+	}
+	w.acquireSlot()
+	defer w.freeSlot()
+	w.env.DispatchMQTT(w.L, msg)
+}
+
 // CallInit runs the optional init(config) callback once at startup. Runs under
-// w.mu; a handler error is returned so startup can abort.
+// the worker's slot; a handler error is returned so startup can abort.
 func (w *Worker) CallInit(cfg Config) error {
 	if w.handlers.Init == nil {
 		return nil
 	}
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.acquireSlot()
+	defer w.freeSlot()
 
 	configTable := w.L.NewTable()
 	configTable.RawSetString("host", lua.LString(cfg.Host))
@@ -407,14 +556,14 @@ func (w *Worker) CallInit(cfg Config) error {
 }
 
 // CallShutdown runs the optional shutdown() callback once before exit. Runs
-// under w.mu; errors are logged, not returned.
+// under the worker's slot; errors are logged, not returned.
 func (w *Worker) CallShutdown() {
 	if w.handlers.Shutdown == nil {
 		return
 	}
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.acquireSlot()
+	defer w.freeSlot()
 
 	co, cancel := w.L.NewThread()
 	st, err, _ := w.L.Resume(co, w.handlers.Shutdown)

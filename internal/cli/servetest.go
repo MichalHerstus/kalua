@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"kalua/internal/host"
 	kaluaserver "kalua/internal/server"
@@ -27,22 +28,34 @@ type serveTestOptions struct {
 	ExpectContain string     // substring assertion on probe bodies
 	WSEcho        string     // payload; any reply proves the ws text round-trip
 	TCPEcho       string     // payload; any reply proves the tcp text round-trip
+	LogSQLite     bool
+	LogLevel      string
+	LogRetain     time.Duration
+	LogMaxMB      int64
+	LogMaxRow     int64
+	AllowNet      bool
 }
 
 // runServeTest boots the app with serve semantics against ephemeral sockets,
 // runs the HTTP/WS/TCP probes, and returns the exit code (0 = all pass).
 func runServeTest(opts serveTestOptions) int {
 	cfg := kaluaserver.Config{
-		Host:        opts.Host,
-		Port:        0, // ephemeral; addresses discovered by the smoke test
-		Workers:     opts.Workers,
-		Mode:        opts.Mode,
-		ScriptPath:  opts.ScriptPath,
-		DBs:         opts.DBs,
-		Args:        opts.Args,
-		AllowFS:     opts.AllowFS,
-		MaxFileSize: 0,
-		Verbose:     opts.Verbose,
+		Host:         opts.Host,
+		Port:         0, // ephemeral; addresses discovered by the smoke test
+		Workers:      opts.Workers,
+		Mode:         opts.Mode,
+		ScriptPath:   opts.ScriptPath,
+		DBs:          opts.DBs,
+		Args:         opts.Args,
+		AllowFS:      opts.AllowFS,
+		MaxFileSize:  0,
+		Verbose:      opts.Verbose,
+		LogSQLite:    opts.LogSQLite,
+		LogLevel:     opts.LogLevel,
+		LogRetain:    opts.LogRetain,
+		LogMaxMB:     opts.LogMaxMB,
+		LogMaxRow:    opts.LogMaxRow,
+		AllowNet:     opts.AllowNet,
 	}
 
 	probes := buildHTTPProbes(opts)

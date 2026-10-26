@@ -1057,6 +1057,59 @@ end)`},
 	"tcp.close":    {Name: "tcp.close", Group: "server", Signature: "k.tcp.close(client_id)", Docs: "Closes a TCP connection."},
 	"tcp.accept":   {Name: "tcp.accept", Group: "server", Signature: "k.tcp.accept()", Docs: "Waits for an incoming TCP connection and returns {id}. The connection can then be used with k.tcp.send and k.tcp.close. (Serve mode only.)"},
 
+	// Phase 1: declarative REST router + HTTP helpers (serve mode)
+	"http_routes": {Name: "http_routes", Group: "server", Signature: "k.http_routes = {...}",
+		Docs: "Declarative REST routes for serve mode. Each entry is {method, path, handler} where path uses :param segments (/api/users/:id) and handler names a global Lua function called with the request table (req.params exposes the matched segments). Declared at the top level of the script.",
+		Example: `k.http_routes = {
+  {method="GET",  path="/api/users/:id", handler="get_user"},
+  {method="POST", path="/api/users",     handler="create_user"},
+}
+function get_user(req)
+  local id = req.params.id
+  return k.http_response_json({id=id, name="John"})
+end`},
+	"http_middleware": {Name: "http_middleware", Group: "server", Signature: "k.http_middleware = {...}",
+		Docs: "Middleware chain for serve-mode HTTP: a list of global function names (or function values, registered via k.http_auth_middleware). Each runs with the request table before the route handler; returning nil continues the chain, returning a response (e.g. k.http_response_json) short-circuits it. Middleware may attach data to req (e.g. req.user) for the handler. Runs before k.http_routes handlers only.",
+		Example: `k.http_middleware = {"auth_middleware"}
+function auth_middleware(req)
+  local token = req.headers["authorization"]
+  if not token then return k.http_response_json({error="unauthorized"}, 401) end
+  req.user = token  -- visible to the route handler
+  return nil        -- continue
+end`},
+	"http_response_json": {Name: "http_response_json", Group: "server", Signature: "k.http_response_json(data[, status])",
+		Docs: "Builds a JSON HTTP response: status defaults to 200, headers carry content-type application/json. Return it from a route handler or middleware.",
+		Params: []Param{P("data", "any", "Value encoded as JSON body."), P("status", "number", "HTTP status (default 200).")},
+		Example: `return k.http_response_json({ok=true}, 200)`},
+	"http_response_text": {Name: "http_response_text", Group: "server", Signature: "k.http_response_text(text[, status])",
+		Docs: "Builds a plain-text HTTP response (content-type text/plain).",
+		Params: []Param{P("text", "string", "Response body."), P("status", "number", "HTTP status (default 200).")},
+		Example: `return k.http_response_text("hello", 200)`},
+	"http_response_redirect": {Name: "http_response_redirect", Group: "server", Signature: "k.http_response_redirect(url[, status])",
+		Docs: "Builds an HTTP redirect response (Location header; status defaults to 302).",
+		Params: []Param{P("url", "string", "Redirect target."), P("status", "number", "HTTP status (default 302).")},
+		Example: `return k.http_response_redirect("/login")`},
+	"http_request_parse_multipart": {Name: "http_request_parse_multipart", Group: "server", Signature: "k.http_request_parse_multipart(req)",
+		Docs: "Parses a multipart/form-data request table and returns {fields={...}, files={name={filename, content_type, data}}}. The request table must carry headers (with content-type boundary) and body.",
+		Params: []Param{P("req", "table", "Serve-mode request table (headers + body).")},
+		Example: `local mp = k.http_request_parse_multipart(req)`},
+	"http_auth_middleware": {Name: "http_auth_middleware", Group: "server", Signature: "k.http_auth_middleware(fn)",
+		Docs: "Appends a middleware function (or global function name) to the k.http_middleware chain at runtime. Equivalent to setting the k.http_middleware table entry.",
+		Params: []Param{P("fn", "function|string", "Middleware function or the name of a global function.")},
+		Example: `k.http_auth_middleware(auth_middleware)`},
+	"http_stats": {Name: "http_stats", Group: "server", Signature: "k.http_stats()",
+		Docs: "Returns serve-mode HTTP metrics: {requests_total, errors_total, avg_latency_ms, active_connections}.",
+		Example: `local s = k.http_stats()`},
+
+	// Phase 8: structured logging (serve mode)
+	"log": {Name: "log", Group: "server", Signature: "k.log", Docs: "Structured logging: k.log.info/warn/error/debug/trace(msg[, data]) and k.log.stats(). Records land in klog.db when serve runs with --log-sqlite."},
+	"log.info":    {Name: "log.info", Group: "server", Signature: "k.log.info(msg[, data])", Docs: "Records an info-level structured log entry (category app). data is a table stored as JSON.", Params: []Param{P("msg", "string", "Log message."), P("data", "table", "Optional structured fields stored as JSON.")}},
+	"log.warn":    {Name: "log.warn", Group: "server", Signature: "k.log.warn(msg[, data])", Docs: "Records a warn-level structured log entry.", Params: []Param{P("msg", "string", "Log message."), P("data", "table", "Optional structured fields stored as JSON.")}},
+	"log.error":   {Name: "log.error", Group: "server", Signature: "k.log.error(msg[, data])", Docs: "Records an error-level structured log entry.", Params: []Param{P("msg", "string", "Log message."), P("data", "table", "Optional structured fields stored as JSON.")}},
+	"log.debug":   {Name: "log.debug", Group: "server", Signature: "k.log.debug(msg[, data])", Docs: "Records a debug-level structured log entry (dropped unless --log-level debug).", Params: []Param{P("msg", "string", "Log message."), P("data", "table", "Optional structured fields stored as JSON.")}},
+	"log.trace":   {Name: "log.trace", Group: "server", Signature: "k.log.trace(msg[, data])", Docs: "Records a trace-level structured log entry (dropped unless --log-level trace).", Params: []Param{P("msg", "string", "Log message."), P("data", "table", "Optional structured fields stored as JSON.")}},
+	"log.stats":   {Name: "log.stats", Group: "server", Signature: "k.log.stats()", Docs: "Returns structured-log sink stats: {rows, dropped, oldest, newest, path}.", Example: `local st = k.log.stats()`},
+
 	// tier-2 flow
 	"timer_start": {Name: "timer_start", Group: "flow", Signature: "k.timer_start(id, ms[, repeats])",
 		Docs: "Starts a session timer; fires a Lua function named id every ms (repeats times when given, else forever).",
@@ -1132,6 +1185,44 @@ function refresh() k.form.refresh("main") end`},
 
 	// tier-2 web service (SOAP)
 	"webservice_run": {Name: "webservice_run", Group: "comm", Signature: "k.webservice_run(profile, params)", Docs: "Calls a SOAP web service. profile: {url,action[,method,timeout_ms]}; params is the body table. Returns {status,headers,body}."},
+
+	// Phase 2 MQTT client (serve mode; serve-communication-plan.md §2)
+	"mqtt_connect": {Name: "mqtt_connect", Group: "comm", Signature: "k.mqtt_connect{broker, port, user?, password?, client_id?, tls?}",
+		Docs: "Connects to an MQTT broker and returns a client handle for the other k.mqtt_* calls. broker is a host (with port) or a full mqtt:// / ssl:// URL; tls=true switches to ssl. Gated by the server's --allow-net flag; raises ERROR_PERMISSION when network egress is disabled.",
+		Params: []Param{
+			P("broker", "string", "Broker host (e.g. broker.local) or full URL (mqtt://host:port)."),
+			P("port", "number", "Broker port (default 1883 when broker is a bare host)."),
+			P("user", "string", "Optional username."),
+			P("password", "string", "Optional password."),
+			P("client_id", "string", "Optional MQTT client id (random when omitted)."),
+			P("tls", "boolean", "Use TLS (ssl://) when broker is a bare host."),
+		},
+		Example: `local h = k.mqtt_connect{broker="broker.local", port=1883, user="app", password="secret"}`},
+	"mqtt_subscribe": {Name: "mqtt_subscribe", Group: "comm", Signature: "k.mqtt_subscribe(handle, topic[, qos])",
+		Docs: "Subscribes the client to a topic filter (MQTT wildcards + / #). Inbound messages matching a k.mqtt_on(pattern) handler are delivered to it.",
+		Params: []Param{P("handle", "string", "Client handle from k.mqtt_connect."), P("topic", "string", "Topic filter (e.g. sensors/+/temp)."), P("qos", "number", "QoS 0 (default), 1 or 2.")},
+		Example: `k.mqtt_subscribe(h, "sensors/#")`},
+	"mqtt_publish": {Name: "mqtt_publish", Group: "comm", Signature: "k.mqtt_publish(handle, topic, payload[, qos[, retain]])",
+		Docs: "Publishes payload to a topic.",
+		Params: []Param{P("handle", "string", "Client handle."), P("topic", "string", "Topic to publish to."), P("payload", "string", "Message payload."), P("qos", "number", "QoS 0 (default), 1 or 2."), P("retain", "boolean", "Retain the message (default false).")},
+		Example: `k.mqtt_publish(h, "sensors/1/temp", "21.5", 1)`},
+	"mqtt_unsubscribe": {Name: "mqtt_unsubscribe", Group: "comm", Signature: "k.mqtt_unsubscribe(handle, topic)",
+		Docs: "Unsubscribes from a topic filter.",
+		Params: []Param{P("handle", "string", "Client handle."), P("topic", "string", "Topic filter to drop.")},
+		Example: `k.mqtt_unsubscribe(h, "sensors/#")`},
+	"mqtt_close": {Name: "mqtt_close", Group: "comm", Signature: "k.mqtt_close(handle)",
+		Docs: "Disconnects the MQTT client and releases its handle.",
+		Params: []Param{P("handle", "string", "Client handle.")},
+		Example: `k.mqtt_close(h)`},
+	"mqtt_on": {Name: "mqtt_on", Group: "comm", Signature: "k.mqtt_on(pattern, fn_name)",
+		Docs: "Registers an inbound message handler: a global function named fn_name is called with (topic, payload) for every message whose topic matches pattern (MQTT + / # wildcards). Multiple handlers may match; all run in registration order. Serve mode only.",
+		Params: []Param{P("pattern", "string", "Topic filter (e.g. sensors/+/temp or sensors/#)."), P("fn_name", "string", "Global function invoked as fn(topic, payload).")},
+		Example: `k.mqtt_on("sensors/#", "on_sensor")
+function on_sensor(topic, payload) k.log.info(topic, {data=payload}) end`},
+	"mqtt_stats": {Name: "mqtt_stats", Group: "comm", Signature: "k.mqtt_stats(handle)",
+		Docs: "Returns client connection state: {connected, subscriptions, messages_in, messages_out}.",
+		Params: []Param{P("handle", "string", "Client handle.")},
+		Example: `local st = k.mqtt_stats(h)`},
 
 	// tier-2 crypto
 	"crypt_symmetric":  {Name: "crypt_symmetric", Group: "crypto", Signature: "k.crypt_symmetric(alg, key, data[, iv])", Docs: "AES-CBC symmetric encrypt/decrypt (alg aes-encrypt/aes-decrypt). Returns base64."},
