@@ -179,60 +179,64 @@ lsp_complete, lsp_hover, run_scenario.
 
 | Phase | Work | Status |
 |-------|------|--------|
-| 1 | `forms.go`: Register `ctrl.tab`, parse options | ⏳ |
-| 2 | `render.go`: `renderTab()` with nested panels | ⏳ |
-| 3 | `tab.go`: `k.tab.*` operations (set_tab, get_tab, add/remove/insert, title/icon) | ⏳ |
-| 4 | `api_doc.go`: Document tab API | ⏳ |
-| 5 | `app.js`: Client init, click/swipe, `tab_set_tab` handling | ⏳ |
-| 6 | `session.go`: `tab_change` inbox, `onchange` handler dispatch | ⏳ |
-| 7 | `kalua.css`: Tab styles (headers, panels, active, swipe) | ⏳ |
-| 8 | Builder: Palette, editor modal, preview, export | ⏳ |
-| 9 | Tests: Unit + e2e session | ⏳ |
-| 10 | Demo app: `testdata/apps/tab_demo.lua` | ⏳ |
+| 1 | `forms.go`: Register `ctrl.tab`, parse options | ✅ |
+| 2 | `render.go`: `renderTab()` with nested panels | ✅ |
+| 3 | `tab.go`: `k.tab.*` operations (set_tab, get_tab, add/remove/insert, title/icon) | ✅ |
+| 4 | `api_doc.go`: Document tab API | ✅ |
+| 5 | `app.js`: Client init, click/swipe, `tab_set_tab` handling | ✅ |
+| 6 | `session.go`: `tab_change` inbox, `onchange` handler dispatch | ✅ |
+| 7 | `kalua.css`: Tab styles (headers, panels, active, swipe) | ✅ |
+| 8 | Builder: Palette, editor modal, preview, export | ✅ |
+| 9 | Tests: Unit + e2e session | ✅ |
+| 10 | Demo app: `testdata/apps/tab_demo.lua` | ✅ |
+
+Shipped 2026-10 as **Phase 18** (AGENTS.md).
 
 ## 15. `kforms_enhancements.md` — §11 Layout Controls: Topbar, Sidebar, Footer
 
 Three layout controls forming an application shell. Topbar/Footer are fixed-position
-elements spanning the viewport; Sidebar behaves differently per form layout mode
-(grid cell, or horizontal tabs in vertical layout). Build plan: see
-`kform_builder_plan.md` § "Builder Palette: Add Missing Controls" — **Phase 2**
-(runtime first, then palette).
+elements spanning the viewport; the Sidebar is a fixed collapsible nav panel anchored to
+the viewport's left/right edge (outside the form flow — it is NOT a grid cell), spanning
+the space between the topbar and footer via CSS vars. Shipped 2026-10 as **Phase 19**.
 
 | Phase | Work | Status |
 |-------|------|--------|
-| 1 | `k.ctrl.topbar` — fixed header, branding, user info, `logout` | ⏳ |
-| 2 | `k.ctrl.sidebar` — collapsible nav (grid cell or horizontal tabs), `items[]` | ⏳ |
-| 3 | `k.ctrl.footer` — fixed bottom bar, version/copyright, `links[]` | ⏳ |
-| 4 | `render.go` renderers + `kalua.css` layout/shell styles (+ `#preview`-scoped positioning for the builder canvas) | ⏳ |
-| 5 | Session events (`sidebar_select`/`logout` alias `select`), `app.js` | ⏳ |
-| 6 | Builder palette + `TYPE_OPTS` + defaults + preview, api_doc/`gen-api`, tests, demo | ⏳ |
+| 1 | `k.ctrl.topbar` — fixed header, branding, user info, `logout` | ✅ |
+| 2 | `k.ctrl.sidebar` — collapsible nav, `items[]`, `on_select`, `sidebar_select` event | ✅ |
+| 3 | `k.ctrl.footer` — fixed bottom bar, version/script_name auto-fill, `links[]` | ✅ |
+| 4 | `render.go` renderers + `kalua.css` layout/shell styles (+ `#preview`-scoped positioning for the builder canvas) | ✅ |
+| 5 | Session events (`sidebar_select`/`logout`), `app.js` + WASM `app.minimal.js` | ✅ |
+| 6 | Builder palette + `TYPE_OPTS` + defaults + preview, api_doc/`gen-api`, tests, demo (`shell_demo.lua`) | ✅ |
 
-> Builder side of `grid` (the *implemented* control still missing from the palette) and the
-> dead CRUD tab are tracked as Phase 1 of the same `kform_builder_plan.md` section.
+> Layout controls are in the builder palette (as are `tree`/`tab`/`ai_chat`). The **`grid`
+> control is still missing from the builder palette** and the CRUD tab in §13 is dead —
+> tracked as Phase 1 of `kform_builder_plan.md` § "Builder Palette".
 
 ## 16. `kforms_enhancements.md` — §8 Login control
 
 | Phase | Work | Status |
 |-------|------|--------|
-| 1 | Textbox `{password=true}` | ⏳ |
-| 2 | Verification core (`login.go`: `LookupLoginUser`, `VerifyLoginPassword`, pbkdf2) | ⏳ |
-| 3 | Rendering (`renderLoginPanel`) | ⏳ |
-| 4 | Registration & plumbing (registry, checker, api_doc, serve, AI knowledge) | ⏳ |
-| 5 | Client (submit/cancel, Enter-to-submit) | ⏳ |
-| 6 | Session (`loginDispatch`, retry re-render) | ⏳ |
-| 7 | Tests, docs, demo (~8 days total) | ⏳ |
+| 1 | Textbox `{password=true}` | ✅ |
+| 2 | Verification core (`login.go`: `LookupLoginUser`, `VerifyLoginPassword`, pbkdf2, iterations default 100k) | ✅ |
+| 3 | Rendering (`renderLoginPanel`) | ✅ |
+| 4 | Registration & plumbing (registry, checker, api_doc, serve, AI knowledge) | ✅ |
+| 5 | Client (submit/cancel, Enter-to-submit) | ✅ |
+| 6 | Session (`loginDispatch`, retry re-render, `on_login_submit`/`on_login`/`on_login_error`/`on_login_cancel`) | ✅ |
+| 7 | Tests, docs, demo (`testdata/apps/login_demo.lua`) | ✅ |
 
 ## 17. `kforms_enhancements.md` — §9 Tree control
 
 | Phase | Work | Status |
 |-------|------|--------|
-| 1 | `tree.go` — `TreeLinkFromControl` + `FetchTreeRows` + `BuildTree` (2 d) | ⏳ |
-| 2 | `renderTree` in `forms.go` + registry/api-doc surfaces (1 d) | ⏳ |
-| 3 | Builder palette + property editor + export/import + preview (1.5 d) | ⏳ |
-| 4 | Client `app.js` — `initTrees`/`handleTreeData`/toggle/click (1.5 d) | ⏳ |
-| 5 | Session handlers — `tree_data_request`, `treeDispatch`, events (1 d) | ⏳ |
-| 6 | Tests — bindings unit + session e2e (1 d) | ⏳ |
-| 7 | Docs + demo app + `make gen-api` (1 d) | ⏳ |
+| 1 | `tree.go` — `TreeLinkFromControl` + `FetchTreeRows` + `BuildTree` | ✅ |
+| 2 | `renderTree` in `forms.go`/`render.go` + registry/api-doc surfaces | ✅ |
+| 3 | Builder palette + property editor + export/import + preview | ✅ |
+| 4 | Client `app.js` — `initTrees`/`handleTreeData`/toggle/click | ✅ |
+| 5 | Session handlers — `tree_data_request`, `treeDispatch`, events (`on_click`/`on_select`/`on_expand`/`on_error`) | ✅ |
+| 6 | Tests — bindings unit + session e2e | ✅ |
+| 7 | Docs + demo app (`tree_demo.lua`) + `make gen-api` | ✅ |
+
+Shipped 2026-10 as **Phase 17** (AGENTS.md).
 
 ## 18. `kforms_enhancements.md` — §12 AI Chat form (`k.form.ai_agent`)
 
@@ -255,33 +259,34 @@ escape-first `markdown.js` and prior-art chat UX.
 
 | Phase | Work | Status |
 |-------|------|--------|
-| 1 | `internal/ai/tools.go` — `ToolCall`/`ToolSchema` + `ExtractToolCalls` parser (1 d) | ⏳ |
-| 2 | `internal/ai/agent.go` — `AgentRun` loop, `ToolExecutor`, turn bound; no `lua` import (1 d) | ⏳ |
-| 3 | `internal/ai/collect.go` — `_G` walk, `Proto` introspection, comment extraction (1 d) | ⏳ |
-| 4 | `common/ai.go` `AIConfig` + `Options.AIConfig` + `runCmd` `resolveAI` wiring (0.5 d) | ⏳ |
-| 5 | `vm/app.go` `PendingFormShowValue` + `Session.ResumeFormCoroWith` (0.5 d) | ⏳ |
-| 6 | `bindings/aichat.go` — `k.form.ai_agent`, `k.ai.tool`, `__kai_chat` materialization (1.5 d) | ⏳ |
-| 7 | `session/aichat.go` — agent loop, `ai_chat_*` inbox/outbox, `Query` tool exec (2 d) | ⏳ |
-| 8 | `markdown.js` → `web/assets/`; `app.js` handlers; `kalua.css`; `shell.html` (1.5 d) | ⏳ |
-| 9 | WASM parity — `common/brain.go` `RouteOutbox` + `session_wasm.go` stubs (0.5 d) | ⏳ |
-| 10 | `registerKnown` + `api_doc.go` + `USER_GUIDE.md` + `make gen-api` (0.5 d) | ⏳ |
-| 11 | Tests — `ai/{tools,agent,collect}_test.go`, `session/aichat_test.go`, `cli/ai_test.go` (1.5 d) | ⏳ |
-| 12 | Demo app `testdata/apps/ai_agent_demo.lua` (0.5 d) | ⏳ |
+| 1 | `internal/ai/tools.go` — `ToolCall`/`ToolSchema` + `ExtractToolCalls` parser | ✅ |
+| 2 | `internal/ai/agent.go` — `AgentRun` loop, `ToolExecutor`, turn bound; no `lua` import | ✅ |
+| 3 | `internal/ai/collect.go` — `_G` walk, `Proto` introspection, comment extraction | ✅ |
+| 4 | `common/ai.go` `AIConfig` + `Options.AIConfig` + `runCmd` `resolveAI` wiring | ✅ |
+| 5 | `vm/app.go` `PendingFormShowValue` + `Session.ResumeFormCoroWith` | ✅ |
+| 6 | `bindings/aichat.go` — `k.form.ai_agent`, `k.ai.tool`, `__kai_chat` materialization | ✅ |
+| 7 | `session/aichat.go` — agent loop, `ai_chat_*` inbox/outbox, `Query` tool exec | ✅ |
+| 8 | `markdown.js` → `web/assets/`; `app.js` handlers; `kalua.css`; `shell.html` | ✅ |
+| 9 | WASM parity — `common/brain.go` `RouteOutbox` + `session_wasm.go` stubs | ✅ |
+| 10 | `registerKnown` + `api_doc.go` + `USER_GUIDE.md` + `make gen-api` | ✅ |
+| 11 | Tests — `ai/{tools,agent,collect}_test.go`, `session/aichat_test.go`, `cli/ai_test.go` | ✅ |
+| 12 | Demo app `testdata/apps/ai_agent_demo.lua` | ✅ |
 
 **§12.2 — AI Chat Control (`k.ctrl.ai_chat`).** The modal form is re-framed as sugar over
 an ordinary control that can live inside any form (vertical, grid cell, tab panel) and
 never blocks the script. Turns are event-driven (`on_send`/`on_reply`/`on_tool`/`on_error`/
 `on_done`) with `k.ai_chat.*` operations; state lives on the control (several chats per
 session); tools are off by default for the control and auto for the modal; Markdown is
-rendered client-side via the existing `markdown.js`; WASM and serve remain out of scope.
-A suspend-aware tool runner (coroutine + `asyncOps` completion, `inboxAIToolCall`) makes
-`k.db_select`/`k.sql`/`k.http_request` usable inside tools, removing the phase-1
-\"tools are synchronous\" limitation. Spec only — see
-`kforms_enhancements.md` §12.2 for the full design, protocol, file change and test plan.
+rendered client-side via the existing `markdown.js`. A suspend-aware tool runner
+(coroutine + `asyncOps` completion, `inboxAIToolCall`) makes `k.db_select`/`k.sql`/
+`k.http_request` usable inside tools, removing the modal's phase-1
+"tools are synchronous" limitation. **Implemented** (shipped 2026-10, `k.ctrl.ai_chat` +
+`ai_chat_*` ops, builder `Types` entry, demo `testdata/apps/ai_chat_control_demo.lua`);
+WASM and serve remain out of scope.
 
 ---
 
-## 18. `serve-communication-plan.md` — Serve communication capabilities (REST, GraphQL, SOAP, SFTP, MQTT, WS, UDP, structured logging)
+## 19. `serve-communication-plan.md` — Serve communication capabilities (REST, GraphQL, SOAP, SFTP, MQTT, WS, UDP, structured logging)
 
 | Phase | Work | Status |
 |-------|------|--------|
@@ -299,7 +304,7 @@ A suspend-aware tool runner (coroutine + `asyncOps` completion, `inboxAIToolCall
 
 ---
 
-## 19. `kalua-serve-enhancements.deprecated.md` — Old serve flow primitives (Node-RED-inspired)
+## 20. `kalua-serve-enhancements.deprecated.md` — Old serve flow primitives (Node-RED-inspired)
 
 Superseded by `serve-communication-plan.md`. The only remaining items from the old plan were:
 - Phase 3: Zebra RFID (ZIOTC) reader input (now a separate future plan)
@@ -309,7 +314,7 @@ The old plan's Phases 0–2 (serve correctness, flow primitives, MQTT) are now P
 
 ---
 
-## 20.
+## 21. `kform_builder_plan.md` — Webview form builder (superseded by the standalone Builder)
 
 | Phase | Work | Status |
 |-------|------|--------|
@@ -327,7 +332,7 @@ The old plan's Phases 0–2 (serve correctness, flow primitives, MQTT) are now P
 
 ---
 
-## 21. `vscode-ext.md` — VS Code extension
+## 22. `vscode-ext.md` — VS Code extension
 
 | Area | Status |
 |------|--------|
@@ -340,32 +345,7 @@ extension (Phase 5 LSP & editor).
 
 ---
 
-## Cross-document summary
-
-| Document | Plan | Overall status |
-|----------|------|----------------|
-| `kalua_spec.md` | §8 build-out phases 1–14, §11 debug, §13 cleanup, §14 WASM | 🔶 REPL (11) pending; debug Tier 2/3 pending; cleanup C/D pending; WASM M5 pending |
-| `kalua_wasm_plan.md` | M0–M5 | 🔶 M0–M4 ✅, M5 ⏳ |
-| `AI_builder.md` | AI phases 1–4, agentic P0–P2 | ✅ complete |
-| `kform_builder_plan.md` | Webview builder phases 1–7, table/looper editor, **builder palette (grid + layout controls)** | 🔁 superseded; table/looper + named DBs ✅; palette plan → Phase 1 grid/CRUD-tab, Phase 2 layout controls |
-| `kforms_enhancements.md` | §§1–12 | 🔶 §§1–7 ✅, §8 login ⏳, §9 tree ⏳, §10 tab ⏳, §11 layout controls ⏳, §12 AI chat: form ✅, **§12.2 control (`k.ctrl.ai_chat`) ⏳ spec only** |
-| `kalua_security_plan.md` | Security assessment (intranet model) | 🔶 Phase A ✅ (C7 `connect_db` sandbox, DenyFS, P4 session IDs, P6 WS caps, L5 pbkdf2); Phases B/C pending |
-| `.opencode/plan/kalua_optimization_plan.md` | Dead/ineffective/overcomplicated code review (P1–P5) | ⏳ plan only — no implementation yet |
-| `serve-communication-plan.md` | Serve: REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP + structured logging | ⏳ plan only; phases 0–8 not started |
-| `kalua-serve-enhancements.deprecated.md` | Old serve flow primitives (superseded) | 🔁 superseded |
-| `vscode-ext.md` | Extension guide | ✅ shipped |
-
-**Top pending plan items (no code yet):** REPL mode (§8 #11) · DAP debugger (§11 B/C) ·
-codebase cleanup C/D (§13) · WASM M5 JS simplification · `k.ctrl.login` (§8) ·
-`k.ctrl.tree` (§9) · **`k.ctrl.tab` (§10) · Layout Controls: Topbar, Sidebar, Footer (§11) · Image onclick handling (§4.3) · builder palette: `grid` missing + dead CRUD tab (Phase 1 plan)** ·
-**AI chat form `k.form.ai_agent` — auto-exposed script-function tools (§12)**, and its embeddable successor **`k.ctrl.ai_chat` (§12.2, spec only — non-blocking, in-form, suspend-aware tools)** ·
-**Serve communication — Phase 0 correctness, then REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP, then structured logging to `klog.db` (§18)** ·
-**Security hardening — Phases B/C (network/SQL allowlists, auth middleware, O_NOFOLLOW, TLS); Phase A shipped 2026-10-26 (C7 `k.connect_db` sandbox escape, DenyFS, crypto session IDs, WS caps, pbkdf2 100k)** ·
-**Code optimization plan — `.opencode/plan/kalua_optimization_plan.md` (dead `serveCmd` help block, `addRunFlags` dedup, `Sscanf`/`openBrowser` error handling, `runCmd`/`serveCmd` dedup, lint tooling)**.
-
----
-
-## 22. Code optimization — dead / ineffective / overcomplicated code review
+## 23. Code optimization — dead / ineffective / overcomplicated code review
 
 Full plan: `.opencode/plan/kalua_optimization_plan.md` (kept outside `docs/spec/`; roll-up
 below for status tracking). `go build ./...` and `go vet ./...` are clean — the issues are
@@ -385,6 +365,29 @@ Deferred (justified complexity — do not refactor): `internal/format/printer.go
 (gofmt-compatible token formatter), `internal/builder/rebuild.go` (surgical line splicing),
 two-pass `parseArgsScript` (enables `check app.lua -w`), session WASM/native duplication
 (build-tag-separated actors — mirroring is the correct pattern).
+
+---
+
+## Cross-document summary
+
+| Document | Plan | Overall status |
+|----------|------|----------------|
+| `kalua_spec.md` | §8 build-out phases 1–14, §11 debug, §13 cleanup, §14 WASM | 🔶 REPL (11) pending; debug Tier 2/3 pending; cleanup C/D pending; WASM M5 ✅ |
+| `kalua_wasm_plan.md` | M0–M5 | ✅ M0–M5 complete |
+| `AI_builder.md` | AI phases 1–4, agentic P0–P2 | ✅ complete |
+| `kform_builder_plan.md` | Webview builder phases 1–7, table/looper editor, **builder palette (`grid` missing + dead CRUD tab)** | 🔁 superseded; table/looper + named DBs ✅; `grid` still missing from palette + CRUD tab dead (Phase 1 fix pending) |
+| `kforms_enhancements.md` | §§1–12 | ✅ §§1–12 complete (Tabulator, looper, chart, form controls, builder, layout, grid, tab, login, tree, layout controls, AI chat form + `k.ctrl.ai_chat` control) |
+| `kalua_security_plan.md` | Security assessment (intranet model) | 🔶 Phase A ✅ (C7 `connect_db` sandbox, DenyFS, P4 session IDs, P6 WS caps, L5 pbkdf2); Phases B/C pending |
+| `.opencode/plan/kalua_optimization_plan.md` | Dead/ineffective/overcomplicated code review (P1–P5) | ⏳ plan only — no implementation yet |
+| `serve-communication-plan.md` | Serve: REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP + structured logging | ⏳ plan only; phases 0–8 not started |
+| `kalua-serve-enhancements.deprecated.md` | Old serve flow primitives (superseded) | 🔁 superseded |
+| `vscode-ext.md` | Extension guide | ✅ shipped |
+
+**Top pending plan items (no code yet):** REPL mode (§8 #11) · DAP debugger (§11 B/C) ·
+codebase cleanup C/D (§13) · **builder palette: `grid` control missing + dead CRUD tab (Phase 1 fix)** ·
+**Serve communication — Phase 0 correctness, then REST/GraphQL/SOAP/SFTP/MQTT/WS/UDP, then structured logging to `klog.db` (§19)** ·
+**Security hardening — Phases B/C (network/SQL allowlists, auth middleware, O_NOFOLLOW, TLS); Phase A shipped 2026-10-26 (C7 `k.connect_db` sandbox escape, DenyFS, crypto session IDs, WS caps, pbkdf2 100k)** ·
+**Code optimization plan — §23 above / `.opencode/plan/kalua_optimization_plan.md` (dead `serveCmd` help block, `addRunFlags` dedup, `Sscanf`/`openBrowser` error handling, `runCmd`/`serveCmd` dedup, lint tooling)**.
 
 ---
 
