@@ -55,7 +55,9 @@ func registerCrypto(e *Env) {
 			out = []byte(hex.EncodeToString(mac.Sum(nil)))
 		case "pbkdf2":
 			salt := []byte(L.OptString(3, ""))
-			iterations := L.OptInt(4, 10000)
+			// Default 100,000 iterations (L5: previously 10,000, low by modern
+			// standards) — matches the login control's default.
+			iterations := L.OptInt(4, 100000)
 			keylen := L.OptInt(5, 32)
 			if iterations < 1 || keylen < 1 {
 				return e.fail(L, KErrorInvalidParam, "checksum error: pbkdf2 requires positive iterations and keylen")

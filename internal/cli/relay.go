@@ -49,6 +49,9 @@ func relayCmd(args []string) int {
 		}
 		defer c.CloseNow()
 
+		// P6 (H5): cap inbound messages so a large frame cannot OOM the relay.
+		c.SetReadLimit(1 << 20)
+
 		handleRelayConnection(ctx, c, logger)
 	})
 

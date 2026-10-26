@@ -488,6 +488,7 @@ func serveCmd(args []string) int {
 		wsEcho     = fs.String("ws-echo", "", "Payload sent to handle_ws; any reply passes the ws probe")
 		tcpEcho    = fs.String("tcp-echo", "", "Payload sent to handle_tcp; any reply passes the tcp probe")
 		httpProbes = multiFlag{}
+		wsMaxSize  = fs.Int64("ws-max-message-size", 0, "Max WebSocket message size in bytes (default 1 MiB)")
 		dbFlag      = multiFlag{}
 		argFlag     = multiFlag{}
 		allowFSFlag = multiFlag{}
@@ -555,16 +556,17 @@ func serveCmd(args []string) int {
 	}
 
 	cfg := server.Config{
-		Host:        *hostFlag,
-		Port:        *port,
-		Workers:     *workers,
-		Mode:        *mode,
-		ScriptPath:  script,
-		DBs:         dbFlag.values,
-		Args:        argFlag.values,
-		AllowFS:     allowFSFlag.values,
-		MaxFileSize: 0,
-		Verbose:     *verbose,
+		Host:             *hostFlag,
+		Port:             *port,
+		Workers:          *workers,
+		Mode:             *mode,
+		ScriptPath:       script,
+		DBs:              dbFlag.values,
+		Args:             argFlag.values,
+		AllowFS:          allowFSFlag.values,
+		MaxFileSize:      0,
+		MaxWSMessageSize: *wsMaxSize,
+		Verbose:          *verbose,
 	}
 	if *debugMode || *debugWorker {
 		fmt.Fprintln(os.Stderr, "warning: --debug/--debug-worker (EmmyLua debugger) not yet implemented")

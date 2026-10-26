@@ -4,7 +4,9 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -30,8 +32,11 @@ type Config struct {
 	Args        []string
 	AllowFS     []string
 	MaxFileSize int64
-	Verbose     bool
-	Logger      *host.Logger
+	// MaxWSMessageSize caps inbound WebSocket frames (H5/P6). Zero means the
+	// default of 1 MiB.
+	MaxWSMessageSize int64
+	Verbose          bool
+	Logger           *host.Logger
 }
 
 // Server is the KALUA serve mode server with worker pool.
@@ -68,6 +73,9 @@ func NewServer(cfg Config) *Server {
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = "http"
+	}
+	if cfg.MaxWSMessageSize <= 0 {
+		cfg.MaxWSMessageSize = 1 << 20 // 1 MiB
 	}
 
 	shared := NewSharedState()
@@ -335,7 +343,11 @@ func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	connID := fmt.Sprintf("ws-%d", time.Now().UnixNano())
+	// P6 (H5): cap inbound WebSocket frames (config.MaxWSMessageSize, default
+	// 1 MiB) so a large message cannot OOM the worker's inbox.
+	c.SetReadLimit(s.cfg.MaxWSMessageSize)
+
+	connID := randomID("ws")
 	closeFn := func() { c.CloseNow() }
 
 	ws := s.wsHub.Register(connID, c, closeFn)
@@ -585,6 +597,19 @@ func (s *Server) shutdown() {
 		w.Close()
 	}
 	s.wg.Wait()
+}
+
+// randomID returns a 16-byte crypto/rand token hex-encoded with the given
+// label as prefix, used for connection identifiers (P4: previously
+// time.Now().UnixNano(), which was predictable from the startup time).
+func randomID(prefix string) string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand must not fail on supported platforms; a timestamp is a
+		// defensible last resort so the server can still start.
+		return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s-%s", prefix, hex.EncodeToString(b))
 }
 
 // HTTPAddr returns the actual bound HTTP/WS address ("host:port"), useful

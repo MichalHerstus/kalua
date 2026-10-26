@@ -30,9 +30,21 @@ type Options struct {
 	// besides the working directory. Paths are resolved at Setup time.
 	AllowFS []string
 
+	// DenyFS lists absolute paths (or directories) of host-owned artefacts
+	// scripts may never read or write, even when they fall inside AllowFS or
+	// the working directory (see kalua_security_plan.md L16/P11). Every entry
+	// is matched against the fully-resolved absolute path, so it also covers
+	// k.zip_extract member targets and k.connect_db("sqlite://…") DSNs, both
+	// of which resolve through the sandbox.
+	DenyFS []string
+
 	// MaxFileSize bounds how many bytes k.file_load / k.json_load may read.
 	// Zero means the default of 16 MiB.
 	MaxFileSize int64
+
+	// MaxWSMessageSize caps WebSocket messages from the browser (run mode).
+	// Zero means the default of 1 MiB (H5/P6: prevents large-message OOM).
+	MaxWSMessageSize int64
 
 	// Verbose enables enhanced tracing of k.* API calls (Tier 1 debugging).
 	Verbose bool
@@ -66,8 +78,11 @@ type Env struct {
 
 	// workdir is the sandbox's home directory; relative file paths resolve
 	// against it. allowFS holds the absolute roots scripts may write to.
+	// denyFS holds the absolute paths of host-owned artefacts scripts may
+	// never touch (evaluated before allowFS in resolvePath).
 	workdir     string
 	allowFS     []string
+	denyFS      []string
 	maxFileSize int64
 
 	// kNULL is the K.NULL sentinel table representing JSON null.
@@ -531,6 +546,60 @@ func allowFSOf(opts Options) []string {
 		}
 	}
 	return out
+}
+
+// defaultDenyFS returns the list of host-owned artefacts living in the sandbox
+// home that scripts must never read or write, even through AllowFS. Today that
+// is the k.param_set/get persistence file; klog.db is appended when Phase 8
+// (structured logging, serve-communication-plan.md) lands. Entries are
+// symlink-canonicalized so they compare equal to resolvePath output (which
+// resolves the same way on macOS /var -> /private/var).
+func defaultDenyFS(workdir string) []string {
+	params := filepath.Join(workdir, ".kalua.params.json")
+	if resolved, err := evalSymlinksBestEffort(params); err == nil {
+		params = resolved
+	}
+	return []string{params}
+}
+
+// denyFSOf resolves the operator-supplied DenyFS entries to absolute,
+// symlink-resolved paths.
+func denyFSOf(opts Options) []string {
+	var out []string
+	for _, p := range opts.DenyFS {
+		abs, err := filepathAbs(p)
+		if err != nil {
+			continue
+		}
+		if resolved, err := evalSymlinksBestEffort(abs); err == nil {
+			out = append(out, resolved)
+		} else {
+			out = append(out, abs)
+		}
+	}
+	return out
+}
+
+// denyFSFor combines the operator-supplied DenyFS entries with the host
+// artefact defaults for the given sandbox home.
+func denyFSFor(opts Options, workdir string) []string {
+	return append(denyFSOf(opts), defaultDenyFS(workdir)...)
+}
+
+// deniedPath reports whether the absolute path p equals or lies inside a
+// DenyFS entry. Entries are exact files or directories; a sibling of a file
+// entry (e.g. "klog.db.bak" vs "klog.db") is not denied.
+func (e *Env) deniedPath(p string) bool {
+	for _, d := range e.denyFS {
+		rel, err := filepath.Rel(d, p)
+		if err != nil {
+			continue
+		}
+		if rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..") {
+			return true
+		}
+	}
+	return false
 }
 
 // lvalue converts a Go value (as produced by coerce helpers) into a Lua value.

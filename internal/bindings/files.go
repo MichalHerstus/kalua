@@ -359,6 +359,12 @@ func registerFiles(e *Env) {
 				if err != nil || strings.HasPrefix(rel, "..") {
 					return nil, fmt.Errorf("zip error: unsafe path %q", zf.Name)
 				}
+				// DenyFS (L16/P11): a member named after a host-owned artefact
+				// (e.g. .kalua.params.json, later klog.db) must not be written,
+				// even though it stays inside dest.
+				if e.deniedPath(target) {
+					return nil, fmt.Errorf("zip error: unsafe path %q", zf.Name)
+				}
 				if zf.FileInfo().IsDir() {
 					if err := os.MkdirAll(target, 0o755); err != nil {
 						return nil, fmt.Errorf("zip error: %v", err)
@@ -542,6 +548,13 @@ func (e *Env) resolvePath(path string) (string, error) {
 	resolved, err := evalSymlinksBestEffort(p)
 	if err != nil {
 		return "", fmt.Errorf("file error: cannot resolve %s: %w", path, err)
+	}
+
+	// DenyFS (L16/P11): host-owned artefacts are never script-accessible,
+	// even when they sit inside an allowed root. Checked before the roots
+	// allowlist so deny always wins.
+	if e.deniedPath(resolved) {
+		return "", fmt.Errorf("file error: access denied: %s is a protected host artefact", path)
 	}
 
 	roots := []string{e.workdir}

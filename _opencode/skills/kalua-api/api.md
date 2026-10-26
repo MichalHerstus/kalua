@@ -1827,7 +1827,7 @@ k.table.set_selected_column("main", "grid", 2)
 ### Database
 
 **`k.connect_db(dsn)`**  
-Opens a database connection (DSN scheme: sqlite://, mysql://, postgres://, sqlserver://) and returns a handle. Supported drivers: SQLite (built-in), MySQL (github.com/go-sql-driver/mysql), PostgreSQL (github.com/jackc/pgx/v5/stdlib), SQL Server (github.com/microsoft/go-mssqldb).
+Opens a database connection (DSN scheme: sqlite://, mysql://, postgres://, sqlserver://) and returns a handle. Supported drivers: SQLite (built-in), MySQL (github.com/go-sql-driver/mysql), PostgreSQL (github.com/jackc/pgx/v5/stdlib), SQL Server (github.com/microsoft/go-mssqldb). SQLite paths resolve through the filesystem sandbox (workdir + --allow-fs); use a path inside it.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -1836,20 +1836,20 @@ Opens a database connection (DSN scheme: sqlite://, mysql://, postgres://, sqlse
 **Example:**
 
 ```lua
-local h = k.connect_db("sqlite:///tmp/app.db")
+local h = k.connect_db("sqlite://app.db")
 ```
 
 **`k.connect_sqlite(path)`**  
-Opens a SQLite database file; returns a handle usable with k.sql/k.db_*.
+Opens a SQLite database file; returns a handle usable with k.sql/k.db_*. The path resolves through the filesystem sandbox (workdir + --allow-fs).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `path` | string | SQLite database file path. |
+| `path` | string | SQLite database file path, relative to the sandbox root or an --allow-fs root. |
 
 **Example:**
 
 ```lua
-local h = k.connect_sqlite("/tmp/app.db")
+local h = k.connect_sqlite("app.db")
 ```
 
 **`k.db_delete(handle, table, whereTable)`**  

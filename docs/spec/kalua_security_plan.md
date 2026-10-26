@@ -2,9 +2,12 @@
 
 **Threat Model**: Intranet apps only. Internet exposure only via reverse proxy (Caddy/nginx) with TLS termination, auth, rate limiting.
 
-**Status**: Assessment only — not yet implemented. **C7** and **L16** are scoped and
-scheduled in `kalua-serve-enhancements.md` §8.11 (Phase 5, logging), which also
-lands the **P11** deny-list mitigation. See that section for the C7/L16/P11 details.
+**Status**: Assessment → **Phase A of the [Final Implementation Plan](#final-implementation-plan) is
+implemented** (C7/P11 SQLite sandbox escape closed, DenyFS deny-list, P4
+crypto/rand session IDs, P6 WS message caps, PBKDF2 default 100k). Phases B/C
+remain open. The old C7/L16/P11 note below is historical; the P11 details that
+were scheduled into `kalua-serve-enhancements.md` §8.11 are now tracked in the
+Final Implementation Plan instead (that section no longer exists).
 
 ---
 
@@ -99,12 +102,54 @@ lands the **P11** deny-list mitigation. See that section for the C7/L16/P11 deta
 
 ## Quick Wins (Can implement in < 1 day each)
 
-1. **Session ID**: `crypto/rand` instead of timestamp
-2. **WebSocket max message size**: `websocket.AcceptOptions{MaxMessageSize: 1<<20}`
-3. **INI file warning**: Log warning if `KALUA.INI` world-readable
-4. **PBKDF2 default**: Bump to 100,000 everywhere
-5. **CSP nonce**: Generate per-request nonce for inline styles (requires render.go changes)
-6. **Route `connect_db` sqlite DSNs through `resolvePath`**: a small diff that closes **C7** entirely (sheds with `kalua-serve-enhancements.md` §8.11)
+1. **Session ID**: `crypto/rand` instead of timestamp — ✅ shipped as **P4**
+2. **WebSocket max message size**: `conn.SetReadLimit(n)` on the accepted connection (note: `AcceptOptions.MaxMessageSize` does **not** exist in coder/websocket) — ✅ shipped as **P6**
+3. **INI file warning**: Log warning if `KALUA.INI` world-readable — ⏳ open (Phase C)
+4. **PBKDF2 default**: Bump to 100,000 everywhere — ✅ default in `k.checksum` is now 100k, matching the login control
+5. **CSP nonce**: Generate per-request nonce for inline styles (requires render.go changes) — ⏳ open (Phase C)
+6. **Route `connect_db` sqlite DSNs through `resolvePath`**: closes **C7** — ✅ shipped as **P11**
+
+---
+
+## Final Implementation Plan
+
+Split into three phases. **Phase A is implemented**; Phases B and C remain open.
+Each mitigation row links to the finding it closes; all file refs were re-verified
+against the current tree in October 2026. Note: `kalua-serve-enhancements.md`
+no longer exists — P11 is tracked here (its §8.11 only ever existed in the
+deprecated plan).
+
+### Phase A — close the exploitable holes (DONE)
+
+| Item | Status | What shipped |
+|------|--------|--------------|
+| **P11 / C7** — `k.connect_db` SQLite sandbox escape | ✅ | `connect_db` routes file-backed `sqlite://` DSNs through `resolvePath` (`internal/bindings/db.go`); `:memory:` / `file::memory:` DSNs bypass (no file). `k.connect_sqlite` got the same memory guard (was writing a literal `<cwd>/:memory:` file). |
+| **P11 / L16** — `DenyFS` deny-list | ✅ | `bindings.Options.DenyFS` + automatic host-artefact defaults (`defaultDenyFS`: `<workdir>/.kalua.params.json`; `klog.db` is appended when Phase 8 lands). Enforced in `resolvePath`, in `k.zip_extract` member targets, and transitively in `k.connect_db`/`k.connect_sqlite`. Deny beats allow: a denied path inside an allowed root still errors. (`internal/bindings/bindings.go`, `files.go`, `db.go`) |
+| **P4 / Quick win 1** — session/conn IDs | ✅ | `sess-*` / `ws-*` IDs are now 16 bytes from `crypto/rand` (hex), not `time.Now().UnixNano()` (`internal/web/server.go`, `internal/server/server.go`). |
+| **P6 / H5 / Quick win 2** — WebSocket message caps | ✅ | `c.SetReadLimit` on the run-mode, serve-mode, and relay sockets; serve exposes `--ws-max-message-size` (default 1 MiB); run-mode default 1 MiB via `bindings.Options.MaxWSMessageSize`. |
+| **L5 / Quick win 4** — PBKDF2 default | ✅ | `k.checksum("pbkdf2", …)` default iterations 10,000 → 100,000 (`internal/bindings/crypto.go`), matching the login control. |
+| **C7 proof** — regression tests | ✅ | `internal/bindings/deny_test.go` (resolvePath deny table incl. sibling-of-denied-file allowed; file_load/file_save deny; connect_db outside/artefact/in-workdir/`:memory:`; zip_extract member deny), `internal/host/db_test.go` (`TestRun_ConnectDB_SandboxDenied`, `TestRun_ConnectDB_InWorkdir`). `TestRun_DBFlow` now passes `AllowFS` for its external temp DB, as the sandbox now requires. |
+
+### Phase B — the allowlists (largest; touches every outbound binding)
+
+| Pri | Action |
+|-----|--------|
+| **P0** | `--allow-net` `host:port`/CIDR allowlist enforced in `k.http_request`, `k.socket_open`, FTP, SMTP, POP3, SOAP (and the WASM relay, `internal/cli/relay.go`, today relays arbitrary destinations on localhost). Empty default = deny all is a **breaking change** — decide compat (e.g. empty = allow-all + warn, `--no-net` to lock down) before implementing. |
+| **P1** | `--allow-sql` regex allowlist in `k.sql`; `k.db_select/insert/update/delete` stay allowed by default. |
+| **P2** | `auth_hook(req) → (user, ok)` called before `handle_http`/`handle_ws`/`handle_tcp`; thread `user` into the event table. |
+| **P8** | `--no-net` / `--no-sql` / `--readonly-fs` presets expanding to the P0/P1/readonly equivalents. |
+
+### Phase C — hardening + docs
+
+| Pri | Action |
+|-----|--------|
+| **P3 / L7** | Harden `resolvePath`: `os.OpenFile(path, O_NOFOLLOW|O_RDONLY)` + `fstat` under the allowed root (closes the symlink TOCTOU). |
+| **P5 / H9** | `--require-tls` wired to the existing `WithTLS` + `--cert`/`--key` flags. |
+| **P7 / L6** | Per-script rate limit on outbound calls + a cap on `k.http_request` response body reads (today unbounded, `flow.go`). |
+| **P9 / L12** | `--builder-token` (bearer) on every builder endpoint; bind stays `127.0.0.1` by default. |
+| **P10** | USER_GUIDE "Secure deployment" section: Caddy reverse-proxy sample, INI 0600, `--allow-fs` scoping, `KALUA.ini.sample` `[SECURITY]` keys. |
+| Quick win 3 | Warn when `KALUA.INI` is world-readable. |
+| Quick win 5 | Nonce-based CSP for inline styles (render.go work). |
 
 ---
 

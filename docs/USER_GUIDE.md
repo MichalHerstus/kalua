@@ -196,6 +196,7 @@ KALUA run <app.lua> [--port 9000] [--no-browser] [--session-limit 8] [--test] [-
 KALUA serve <app.lua> [--host 127.0.0.1] [--port 8080] [--workers 4]
              [--mode http|ws|tcp] [--verbose] [--debug] [--debug-worker]
              [--db NAME=DSN]... [--arg K=V]... [--allow-fs PATH]... [--ini PATH]
+             [--ws-max-message-size N]
 ```
 
 | Flag | Short | Default | Description |
@@ -206,6 +207,7 @@ KALUA serve <app.lua> [--host 127.0.0.1] [--port 8080] [--workers 4]
 | `--mode m` | `-m` | `http` | Comma-separated: `http`, `ws`, `tcp`, or any combination |
 | `--verbose` | `-v` | off | Verbose k.* tracing |
 | `--debug` / `--debug-worker` | | off | EmmyLua debugger stubs (not yet implemented) |
+| `--ws-max-message-size N` | | 1 MiB | Max inbound WebSocket message size in bytes (matches `run`'s built-in 1 MiB cap) |
 | `--db`, `--arg`, `--allow-fs` | `-d -a -f` | | Same as `run` |
 | `--ini PATH` | | | Read persistent flag values from a `KALUA.INI` file (see §3.7) |
 
@@ -2264,11 +2266,12 @@ Opens a database connection (DSN scheme: sqlite://, mysql://, postgres://, sqlse
 **Example:**
 
 ```lua
-local h = k.connect_db("sqlite:///tmp/app.db")
+local h = k.connect_db("sqlite://app.db")  -- relative to the sandbox root (workdir / --allow-fs)
 ```
 
 **`k.connect_sqlite(path)`**  
-Opens a SQLite database file; returns a handle usable with k.sql/k.db_*.
+Opens a SQLite database file; returns a handle usable with k.sql/k.db_*. The path
+resolves through the filesystem sandbox (workdir + `--allow-fs`), like `k.connect_db`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

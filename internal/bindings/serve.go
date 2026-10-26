@@ -80,14 +80,16 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 
 	// Build the Env so expression functions and helpers share the same
 	// kNULL/coerce surface as run mode.
+	wd := workdirOf(opts)
 	e := &Env{
 		L:          L,
 		App:        app,
 		known:      map[string]string{},
 		Logger:     logger,
 		k:          k,
-		workdir:    workdirOf(opts),
+		workdir:    wd,
 		allowFS:    allowFSOf(opts),
+		denyFS:     denyFSFor(opts, wd),
 		verbose:    opts.Verbose,
 		scriptName: opts.ScriptName,
 		aiConfig:   opts.AIConfig,

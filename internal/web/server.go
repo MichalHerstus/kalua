@@ -3,6 +3,7 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -86,6 +87,19 @@ func noCache(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// randomID returns a 16-byte crypto/rand token hex-encoded with the given
+// label as prefix, used for session/connection identifiers (P4: previously
+// time.Now().UnixNano(), which was predictable from the startup time).
+func randomID(prefix string) string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand must not fail on supported platforms; a timestamp is a
+		// defensible last resort so the server can still start.
+		return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s-%s", prefix, hex.EncodeToString(b))
 }
 
 // Run starts the HTTP server and blocks until context is cancelled.
@@ -281,8 +295,16 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.CloseNow()
 
-	// Create session ID
-	sessionID := fmt.Sprintf("sess-%d", time.Now().UnixNano())
+	// P6 (H5): cap inbound WebSocket messages so a large frame cannot OOM the
+	// session bridge. Default 1 MiB, configurable via bindings.Options.
+	readLimit := s.opts.MaxWSMessageSize
+	if readLimit <= 0 {
+		readLimit = 1 << 20
+	}
+	c.SetReadLimit(readLimit)
+
+	// Create session ID (P4: crypto/rand instead of a predictable timestamp)
+	sessionID := randomID("sess")
 
 	// Get script path from query or use default
 	scriptPath := r.URL.Query().Get("script")

@@ -52,6 +52,20 @@ func registerDB(e *Env) {
 			return e.fail(L, KErrorInvalidParam, "unsupported database driver in DSN: "+dsn)
 		}
 
+		// C7 (kalua_security_plan.md): k.connect_db previously handed the DSN
+		// straight to sql.Open, so "sqlite://../../secret.db" opened any file
+		// on disk (a sandbox escape). Route file-backed SQLite DSNs through
+		// resolvePath — the same sandbox k.connect_sqlite already honors.
+		// In-memory SQLite (":memory:" / file::memory:…) touches no file and
+		// stays unrestricted.
+		if driver == "sqlite" && !isMemorySQLiteDSN(cleanDSN) {
+			resolved, err := e.resolvePath(cleanDSN)
+			if err != nil {
+				return e.fail(L, KErrorGeneric, "connect_db: "+err.Error())
+			}
+			cleanDSN = resolved
+		}
+
 		db, err := sql.Open(driver, cleanDSN)
 		if err != nil {
 			return e.fail(L, KErrorComm, "failed to connect to database: "+err.Error())
@@ -370,15 +384,21 @@ func registerDB(e *Env) {
 	// Returns a handle usable with k.sql/k.db_select/...
 	e.register("connect_sqlite", "database", func(L *lua.LState) int {
 		path := L.CheckString(1)
-		// Sandbox: resolve path through the environment's resolvePath
-		resolved, err := e.resolvePath(path)
-		if err != nil {
-			return e.fail(L, KErrorGeneric, "connect_sqlite: "+err.Error())
-		}
-		driver, cleanDSN := parseSQLiteDSN(resolved)
+		driver, cleanDSN := parseSQLiteDSN(path)
 		if driver == "" {
 			return e.fail(L, KErrorInvalidParam, "connect_sqlite: invalid path "+path)
 		}
+		// Sandbox: resolve file-backed paths through resolvePath. In-memory
+		// SQLite (":memory:", "file::memory:…") touches no file and must not
+		// be turned into a real "<cwd>/:memory:" file.
+		if !isMemorySQLiteDSN(cleanDSN) {
+			resolved, err := e.resolvePath(cleanDSN)
+			if err != nil {
+				return e.fail(L, KErrorGeneric, "connect_sqlite: "+err.Error())
+			}
+			cleanDSN = resolved
+		}
+
 		db, err := sql.Open(driver, cleanDSN)
 		if err != nil {
 			return e.fail(L, KErrorGeneric, "connect_sqlite: "+err.Error())
@@ -457,6 +477,13 @@ func parseSQLiteDSN(p string) (string, string) {
 		return "sqlite", p[len("sqlite://"):]
 	}
 	return "sqlite", p
+}
+
+// isMemorySQLiteDSN reports whether a cleaned SQLite DSN is an in-memory
+// database (":memory:" or "file::memory:…") with no backing file, so it must
+// not be routed through the filesystem sandbox.
+func isMemorySQLiteDSN(dsn string) bool {
+	return dsn == ":memory:" || strings.HasPrefix(dsn, "file::memory:")
 }
 
 // closeDB closes one handle (or all when handleID is empty). Returns int for

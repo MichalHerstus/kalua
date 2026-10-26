@@ -2,6 +2,7 @@ package host
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,7 +52,7 @@ end
 
 	log := NewLogger(false)
 	var buf bytes.Buffer
-	cfg := RunConfig{ScriptPath: script, Logger: log, Out: &buf}
+	cfg := RunConfig{ScriptPath: script, AllowFS: []string{tmp}, Logger: log, Out: &buf}
 	code := Run(cfg)
 	if code != ExitOK {
 		t.Errorf("Run = %d, want %d\noutput:\n%s", code, ExitOK, buf.String())
@@ -120,5 +121,63 @@ func TestRun_NamedDB_BadDSN(t *testing.T) {
 	}
 	if code := Run(cfg); code != ExitError {
 		t.Errorf("Run with bad --db = %d, want ExitError\noutput:\n%s", code, buf.String())
+	}
+}
+
+// TestRun_ConnectDB_SandboxDenied is the C7 regression test: k.connect_db with
+// a sqlite DSN pointing outside the sandbox must be denied (it used to hand
+// the DSN straight to sql.Open, silently bypassing resolvePath).
+func TestRun_ConnectDB_SandboxDenied(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "secret.db") // deliberately NOT in AllowFS
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "c7.lua")
+	src := fmt.Sprintf(`
+function main()
+  local db = k.connect_db(%q)
+  if db ~= nil then
+    k.error("connect_db escaped the sandbox (C7 regression)")
+  end
+  if ERRORCODE == nil or ERRORCODE == 0 then
+    k.error("connect_db denied without ERRORCODE")
+  end
+  k.quit()
+end
+`, "sqlite://"+outside)
+	if err := os.WriteFile(script, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := NewLogger(false)
+	var buf bytes.Buffer
+	cfg := RunConfig{ScriptPath: script, AllowFS: []string{tmp}, Logger: log, Out: &buf}
+	if code := Run(cfg); code != ExitOK {
+		t.Errorf("Run = %d, want %d (connect_db should fail cleanly)\noutput:\n%s", code, ExitOK, buf.String())
+	}
+}
+
+// TestRun_ConnectDB_InWorkdir verifies connect_db still opens sqlite files
+// inside the sandbox after the C7 routing.
+func TestRun_ConnectDB_InWorkdir(t *testing.T) {
+	tmp := t.TempDir()
+	dbFile := filepath.Join(tmp, "app.db")
+	script := filepath.Join(tmp, "ok.lua")
+	src := fmt.Sprintf(`
+function main()
+  local db = k.connect_db(%q)
+  if db == nil then
+    k.error("connect_db denied in-workdir: " .. tostring(ERRORMSG))
+  end
+  k.sql(db, "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, name TEXT)")
+  k.disconnect_db(db)
+  k.quit()
+end
+`, "sqlite://"+dbFile)
+	if err := os.WriteFile(script, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := NewLogger(false)
+	var buf bytes.Buffer
+	cfg := RunConfig{ScriptPath: script, AllowFS: []string{tmp}, Logger: log, Out: &buf}
+	if code := Run(cfg); code != ExitOK {
+		t.Errorf("Run = %d, want %d\noutput:\n%s", code, ExitOK, buf.String())
 	}
 }

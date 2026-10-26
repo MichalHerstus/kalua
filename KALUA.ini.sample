@@ -28,6 +28,7 @@ port    = 8080
 workers = 8
 mode    = http,ws           ; http, ws, tcp, or a comma-separated combination
 verbose = 1
+ws-max-message-size = 0     ; max inbound WebSocket message (bytes; 0 = 1 MiB default)
 ; db    = main=sqlite://app.db
 ; arg   = env=prod
 

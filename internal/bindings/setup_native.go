@@ -22,6 +22,7 @@ func Setup(L *lua.LState, app *vm.App, opts Options, sess common.SessionInterfac
 	}
 	e.workdir = workdirOf(opts)
 	e.allowFS = allowFSOf(opts)
+	e.denyFS = denyFSFor(opts, e.workdir)
 
 	k := L.NewTable()
 	L.SetGlobal("k", k)
