@@ -153,6 +153,68 @@ func TestGenerateFixLoop(t *testing.T) {
 	}
 }
 
+// TestGenerateProgressPassFirstAttempt verifies the Progress callback reports
+// the generating→validated milestones when the first attempt already passes.
+func TestGenerateProgressPassFirstAttempt(t *testing.T) {
+	srv := mockFencedProvider(t, "function main()\n  k.print(\"hi\")\n  k.quit()\nend")
+	defer srv.Close()
+	var stages []string
+	req := GenerateRequest{
+		Request:  "build hello",
+		Progress: func(s string) { stages = append(stages, s) },
+	}
+	res, err := Generate(context.Background(), ProviderConfig{BaseURL: srv.URL, Model: "m"}, req)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !res.Generated {
+		t.Error("expected Generated=true")
+	}
+	want := []string{"generating…", "validation passed (attempt 1)"}
+	if len(stages) != len(want) {
+		t.Fatalf("stages = %v, want %v", stages, want)
+	}
+	for i := range want {
+		if stages[i] != want[i] {
+			t.Errorf("stage[%d] = %q, want %q", i, stages[i], want[i])
+		}
+	}
+}
+
+// TestGenerateProgressFixRetry verifies the Progress callback reports the
+// validation-error and fixing milestones when the first attempt is invalid.
+func TestGenerateProgressFixRetry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Messages []struct{ Content string } }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		lastMsg := body.Messages[len(body.Messages)-1].Content
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(lastMsg, "Fix the following") {
+			fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":"function main()\n  k.print(\"ok\")\n  k.quit()\nend"}, "finish_reason":"stop"}]}`)
+			return
+		}
+		fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":"broken code"}, "finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	var stages []string
+	req := GenerateRequest{Request: "fix this", Progress: func(s string) { stages = append(stages, s) }}
+	res, err := Generate(context.Background(), ProviderConfig{BaseURL: srv.URL, Model: "m"}, req)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(res.Script, "main()") {
+		t.Errorf("fix did not produce main: %s", res.Script)
+	}
+	if len(stages) != 4 ||
+		stages[0] != "generating…" ||
+		!strings.HasPrefix(stages[1], "validation errors on attempt 1") ||
+		stages[2] != "fixing (attempt 1)…" ||
+		stages[3] != "validation passed (attempt 2)" {
+		t.Errorf("stages = %v", stages)
+	}
+}
+
 func TestKnowledgePackNoDrift(t *testing.T) {
 	// BuildSystemPrompt should not panic and should include all k.* names
 	// from bindings.Docs() — the sync is enforced by TestApiDocSync.

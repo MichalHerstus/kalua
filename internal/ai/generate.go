@@ -29,6 +29,12 @@ type GenerateRequest struct {
 	// ChatMessage must be Role "user" or "assistant"; the current Request is
 	// appended as the final user turn.
 	History []common.ChatMessage
+	// Progress, when non-nil, receives human-readable pipeline milestones
+	// ("generating…", "validation passed (attempt 1)", "fixing (attempt 1)…")
+	// so callers can surface progress in a terminal or UI. It is invoked
+	// synchronously from the caller's goroutine; leave nil for silent runs.
+	// GenerateStream has its own emit callback and ignores this field.
+	Progress func(string)
 }
 
 // GenerateResult holds the output of Generate.
@@ -58,6 +64,12 @@ func modeFor(req GenerateRequest) string {
 // messages are pre-assembled (system + user) so streaming and non-streaming
 // share the same pipeline.
 func generate(ctx context.Context, client *Client, messages []common.ChatMessage, req GenerateRequest) (*GenerateResult, error) {
+	report := func(stage string) {
+		if req.Progress != nil {
+			req.Progress(stage)
+		}
+	}
+	report("generating…")
 	script, err := client.Completion(ctx, messages)
 	if err != nil {
 		return nil, fmt.Errorf("initial generation: %w", err)
@@ -78,12 +90,15 @@ func generate(ctx context.Context, client *Client, messages []common.ChatMessage
 		lintResult := lint(script, mode)
 		if len(lintResult.Errors) == 0 {
 			result.Logs = append(result.Logs, fmt.Sprintf("Validation passed on attempt %d.", attempt))
+			report(fmt.Sprintf("validation passed (attempt %d)", attempt))
 			return result, nil
 		}
 		result.Logs = append(result.Logs, fmt.Sprintf("Validation errors on attempt %d: %s", attempt, strings.Join(lintResult.Errors, "; ")))
+		report(fmt.Sprintf("validation errors on attempt %d: %s", attempt, strings.Join(lintResult.Errors, "; ")))
 		if attempt == maxFixRetries {
 			break
 		}
+		report(fmt.Sprintf("fixing (attempt %d)…", attempt))
 		fixScript, fixErr := fix(client, script, lintResult.Errors, mode)
 		if fixErr != nil {
 			result.Logs = append(result.Logs, fmt.Sprintf("Fix attempt %d failed: %v", attempt, fixErr))

@@ -4782,13 +4782,20 @@ result before it is used. Two surfaces are available:
 
 ```bash
 ./KALUA ai generate "a form with name and email" -o myapp.lua
+./KALUA ai generate --prompt-file spec.txt -o myapp.lua  # request from a text file
 ./KALUA ai fix myapp.lua                       # auto-fix validation errors
 ./KALUA ai validate myapp.lua                  # static check (syntax + k.*)
 ```
 
 Flags: `--model`, `--base-url`,
 `--api-key-env`, `--full-doc` (include the full API reference in the prompt).
-`generate` writes to `-o app.lua` by default; when the base URL is an OpenRouter
+`generate` also accepts `--prompt-file <file>` to read the request from a text
+file instead of the first argument (mutually exclusive; missing or empty
+files exit with the I/O error code). Trailing flags after the request are
+honored (`./KALUA ai generate "a form" -o out.lua`). During generation the
+CLI shows pipeline milestones on stderr — an animated spinner with an elapsed
+timer on a terminal, plain `KALUA AI: …` lines when stderr is piped (e.g.
+CI logs). `generate` writes to `-o app.lua` by default; when the base URL is an OpenRouter
 endpoint and no API key is set, the `OPENAI_API_KEY` env var is used.
 
 Configuration (env, or the `[AI]` section of a `KALUA.INI` file — see §3.7;

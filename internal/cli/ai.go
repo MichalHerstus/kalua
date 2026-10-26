@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -56,6 +57,8 @@ Flags (all subcommands):
   --base-url string   LLM base URL (default from KALUA.INI / env)
   --api-key-env string Env var for API key (default: KALUA_AI_API_KEY)
   --full-doc          Include full API doc in prompt (default: run-mode subset)
+  --prompt-file string Read the generate request from a text file instead of
+                        the request argument (generate only)
   --mode string       App shape to generate: run (forms) or serve (headless API) (default run)
   --ini string        Path to KALUA.INI (default: ./KALUA.INI or $KALUA_INI)
 
@@ -69,6 +72,7 @@ Configuration sources (precedence: flags > KALUA.INI > env > defaults):
 
 Examples:
   KALUA ai generate "a form with name and email fields" -o myapp.lua
+  KALUA ai generate --prompt-file spec.txt -o myapp.lua
   KALUA ai fix myapp.lua
   KALUA ai validate myapp.lua
 `)
@@ -137,6 +141,7 @@ type aiFlags struct {
 	FullDoc    bool
 	Output     string
 	ScriptPath string
+	PromptFile string
 	Ini        string
 	Mode       string
 }
@@ -169,6 +174,41 @@ func aiProviderFor(fs *flag.FlagSet, f *aiFlags) (ai.ProviderConfig, error) {
 	return resolveAI(ini, o), nil
 }
 
+var (
+	// errGenRequestConflict marks a request that supplied both a positional
+	// argument and --prompt-file; errGenRequestMissing marks a request that
+	// supplied neither. Both map to exit code ExitUsage by the caller.
+	errGenRequestConflict = errors.New("provide either a request argument or --prompt-file, not both")
+	errGenRequestMissing  = errors.New("requires a natural language request (or --prompt-file <file>)")
+)
+
+// resolveGenerateRequest picks the generation request from either the first
+// positional argument or --prompt-file (mutually exclusive). It returns the
+// request text, a short description for the "generating from …" banner, and
+// an error. Usage conflicts return errGenRequestConflict/errGenRequestMissing
+// (the caller maps them to ExitUsage); a prompt file that cannot be read or
+// is empty returns an ordinary error (the caller maps it to ExitIOError).
+func resolveGenerateRequest(positional, promptFile string) (request, describe string, err error) {
+	if promptFile != "" {
+		if positional != "" {
+			return "", "", errGenRequestConflict
+		}
+		data, rerr := os.ReadFile(promptFile)
+		if rerr != nil {
+			return "", "", rerr
+		}
+		text := strings.TrimSpace(string(data))
+		if text == "" {
+			return "", "", fmt.Errorf("prompt file %s is empty", promptFile)
+		}
+		return text, fmt.Sprintf("%s (%d chars)", promptFile, len(text)), nil
+	}
+	if positional == "" {
+		return "", "", errGenRequestMissing
+	}
+	return positional, fmt.Sprintf("%q", positional), nil
+}
+
 func aiGenerate(args []string) int {
 	f := &aiFlags{}
 	fs := flag.NewFlagSet("ai generate", flag.ContinueOnError)
@@ -176,13 +216,29 @@ func aiGenerate(args []string) int {
 	setAIFlags(fs, f)
 	fs.StringVar(&f.Output, "o", "app.lua", "Output file")
 	fs.StringVar(&f.Output, "output", "app.lua", "Output file")
+	fs.StringVar(&f.PromptFile, "prompt-file", "", "Read the generation request from a text file (instead of the request argument)")
 	if err := fs.Parse(args); err != nil {
 		return int(host.ExitUsage)
 	}
-	request := fs.Arg(0)
-	if request == "" {
-		fmt.Fprintln(os.Stderr, "ai generate: requires a natural language request")
-		return int(host.ExitUsage)
+	rest := fs.Args()
+	// Two-pass parse so trailing flags after the request work
+	// (e.g. `ai generate "req" -o out.lua`); mirrors checkCmd.
+	if len(rest) > 0 {
+		if err := fs.Parse(rest[1:]); err != nil {
+			return int(host.ExitUsage)
+		}
+	}
+	positional := ""
+	if len(rest) > 0 {
+		positional = rest[0]
+	}
+	request, describe, rerr := resolveGenerateRequest(positional, f.PromptFile)
+	if rerr != nil {
+		fmt.Fprintf(os.Stderr, "ai generate: %v\n", rerr)
+		if errors.Is(rerr, errGenRequestConflict) || errors.Is(rerr, errGenRequestMissing) {
+			return int(host.ExitUsage)
+		}
+		return int(host.ExitIOError)
 	}
 
 	cfg, err := aiProviderFor(fs, f)
@@ -190,10 +246,18 @@ func aiGenerate(args []string) int {
 		fmt.Fprintf(os.Stderr, "ai generate: %v\n", err)
 		return int(host.ExitIOError)
 	}
-	fmt.Fprintf(os.Stderr, "KALUA AI: generating from \"%s\" (endpoint: %s, model: %s)\n", request, cfg.BaseURL, cfg.Model)
-	req := ai.GenerateRequest{Request: request, FullDoc: f.FullDoc, Mode: aiMode(f)}
+	pw := newProgressWriter(os.Stderr)
+	req := ai.GenerateRequest{
+		Request:  request,
+		FullDoc:  f.FullDoc,
+		Mode:     aiMode(f),
+		Progress: func(stage string) { pw.msg("KALUA AI: " + stage) },
+	}
+	fmt.Fprintf(os.Stderr, "KALUA AI: generating from %s (endpoint: %s, model: %s)\n", describe, cfg.BaseURL, cfg.Model)
+	pw.start()
 	ctx, cancel := aiCtx()
 	defer cancel()
+	defer pw.stop()
 	result, err := ai.Generate(ctx, cfg, req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ai: generation failed: %v\n", err)
@@ -247,10 +311,19 @@ func aiFix(args []string) int {
 		}
 		return int(host.ExitError)
 	}
-	req := ai.GenerateRequest{Request: "Fix the validation errors in this KALUA script", Script: string(src), FullDoc: f.FullDoc, Mode: aiMode(f)}
+	pw := newProgressWriter(os.Stderr)
+	req := ai.GenerateRequest{
+		Request:  "Fix the validation errors in this KALUA script",
+		Script:   string(src),
+		FullDoc:  f.FullDoc,
+		Mode:     aiMode(f),
+		Progress: func(stage string) { pw.msg("KALUA AI: " + stage) },
+	}
 	fmt.Fprintf(os.Stderr, "KALUA AI: fixing %s...\n", scriptPath)
+	pw.start()
 	ctx, cancel := aiCtx()
 	defer cancel()
+	defer pw.stop()
 	result, err := ai.Generate(ctx, cfg, req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ai: fix failed: %v\n", err)

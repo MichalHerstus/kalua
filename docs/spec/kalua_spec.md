@@ -591,10 +591,19 @@ KALUA version
 backed by an OpenAI-compatible chat endpoint (LM Studio local or OpenRouter):
 
 ```
-KALUA ai generate "<request>" [-o app.lua] [--model M] [--base-url U] [--api-key-env V] [--full-doc]
+KALUA ai generate "<request>" [-o app.lua] [--prompt-file FILE] [--model M] [--base-url U] [--api-key-env V] [--full-doc]
 KALUA ai fix <app.lua>   [same flags]     # auto-fix validation errors via LLM
 KALUA ai validate <app.lua>               # static check only (syntax + unknown k.*)
 ```
+
+- `generate` accepts the request as the first argument or, for longer prompts,
+  from a text file via `--prompt-file FILE` (mutually exclusive with the
+  positional request; missing/empty files exit with the I/O error code).
+  Trailing flags after the request work too (`ai generate "req" -o app.lua`).
+  During generation the CLI prints pipeline milestones to stderr
+  (`generating…`, `validation passed (attempt N)`, `fixing (attempt N)…`) — as
+  an animated spinner with an elapsed timer on a terminal, or as plain lines
+  when stderr is piped.
 
 - Config: `KALUA_AI_BASE_URL` (default `http://localhost:1234/v1`),
   `KALUA_AI_MODEL` (default `local-model`), `KALUA_AI_API_KEY` (required for
