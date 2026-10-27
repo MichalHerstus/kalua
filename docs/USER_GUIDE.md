@@ -170,13 +170,14 @@ accepts `--ini PATH` to load persistent flag values from a `KALUA.INI` file
 ## 3.1 `run` — interactive web app
 
 ```
-KALUA run <app.lua> [--port 9000] [--no-browser] [--session-limit 8] [--test] [--watch]
+KALUA run <app.lua> [--host 127.0.0.1] [--port 9000] [--no-browser] [--session-limit 8] [--test] [--watch]
             [--verbose] [--repl-on-error] [--debug] [--db NAME=DSN]...
             [--arg K=V]... [--allow-fs PATH]... [--ini PATH]
 ```
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
+| `--host H` | | `127.0.0.1` | Bind address (use `0.0.0.0` to listen on all interfaces for LAN access) |
 | `--port N` | `-p` | `9000` | HTTP port; `0` picks a free ephemeral port |
 | `--no-browser` | `-n` | off | Do not auto-open the browser |
 | `--session-limit N` | `-l` | `8` | Max concurrent browser tabs (sessions) |
@@ -189,6 +190,8 @@ KALUA run <app.lua> [--port 9000] [--no-browser] [--session-limit 8] [--test] [-
 | `--arg K=V` | `-a` | | Seed the `ARGS` global table |
 | `--allow-fs PATH` | `-f` | | Allow script file access outside the working directory (repeatable) |
 | `--ini PATH` | | | Read persistent flag values from a `KALUA.INI` file (see §3.7) |
+
+> **LAN access:** Use `--host 0.0.0.0` to make the app reachable from other devices on the local network (e.g. `http://<your-lan-ip>:9000`). This requires your firewall to allow incoming connections on the port. Only use on trusted networks; the WebSocket origin check is relaxed when binding to a non-loopback address.
 
 ## 3.2 `serve` — headless API
 

@@ -11,6 +11,7 @@
 ; Unknown keys are ignored, and repeated keys append (used by db/arg/allow-fs).
 
 [RUN]
+host          = 127.0.0.1    ; bind address (0.0.0.0 for LAN access)
 no-browser    = 1            ; don't auto-open the browser
 port          = 9000
 watch         = 1            ; hot-reload open tabs when the app script changes

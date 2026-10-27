@@ -122,6 +122,7 @@ func runCmd(args []string) int {
 	fs.SetOutput(os.Stderr)
 
 	var (
+		hostFlag     = fs.String("host", "127.0.0.1", "Host to bind to")
 		port         = fs.Int("port", 9000, "HTTP port (default 9000)")
 		noBrowser    = fs.Bool("no-browser", false, "Do not open browser")
 		sessionLimit = fs.Int("session-limit", 8, "Max concurrent browser tabs")
@@ -209,7 +210,7 @@ func runCmd(args []string) int {
 		return code
 	}
 
-	server := web.NewServer("127.0.0.1", *port, *sessionLimit,
+	server := web.NewServer(*hostFlag, *port, *sessionLimit,
 		bindings.Options{AllowFS: allowFSFlag.values, Verbose: *verbose, AIConfig: &common.AIConfig{
 			BaseURL: aiCfg.BaseURL,
 			APIKey:  aiCfg.APIKey,
@@ -223,7 +224,11 @@ func runCmd(args []string) int {
 
 	// Open browser with script parameter
 	if !*noBrowser {
-		url := fmt.Sprintf("http://127.0.0.1:%d/?script=%s", server.Port(), script)
+		browserHost := *hostFlag
+		if browserHost == "0.0.0.0" || browserHost == "::" {
+			browserHost = "127.0.0.1"
+		}
+		url := fmt.Sprintf("http://%s:%d/?script=%s", browserHost, server.Port(), script)
 		_ = openBrowser(url)
 	}
 
@@ -756,6 +761,7 @@ func (m *multiFlag) Set(s string) error {
 // addRunFlags registers the run-mode flags (used for --help output). The
 // values are discarded; only the definitions/usage text matter.
 func addRunFlags(fs *flag.FlagSet) {
+	fs.String("host", "127.0.0.1", "Host to bind to")
 	fs.Int("port", 9000, "HTTP port (default 9000)")
 	fs.Bool("no-browser", false, "Do not open browser")
 	fs.Bool("n", false, "Shorthand for --no-browser")

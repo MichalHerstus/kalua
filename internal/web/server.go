@@ -102,6 +102,13 @@ func randomID(prefix string) string {
 	return fmt.Sprintf("%s-%s", prefix, hex.EncodeToString(b))
 }
 
+// isLoopbackHost reports whether the given host is a loopback address
+// (127.0.0.1, ::1, localhost). Used to decide whether to restrict
+// WebSocket origin patterns to loopback only.
+func isLoopbackHost(host string) bool {
+	return host == "127.0.0.1" || host == "::1" || host == "localhost"
+}
+
 // Run starts the HTTP server and blocks until context is cancelled.
 func (s *Server) Run(ctx context.Context, defaultScript string) error {
 	s.defaultScript = defaultScript
@@ -151,6 +158,9 @@ func (s *Server) Run(ctx context.Context, defaultScript string) error {
 	}()
 
 	s.logger.Printf("KALUA web server listening on %s", addr)
+	if !isLoopbackHost(s.host) {
+		s.logger.Warnf("Server is bound to non-loopback address %s — accessible from network. Ensure this is a trusted network.", s.host)
+	}
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
@@ -286,8 +296,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.sessionsMu.Unlock()
 
 	// Upgrade to WebSocket
+	originPatterns := []string{"http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"}
+	if !isLoopbackHost(s.host) {
+		originPatterns = []string{"*"}
+	}
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{"http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"},
+		OriginPatterns: originPatterns,
 	})
 	if err != nil {
 		s.logger.Errorf("websocket accept: %v", err)
