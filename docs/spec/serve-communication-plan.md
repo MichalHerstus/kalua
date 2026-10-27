@@ -130,6 +130,8 @@ k.mqtt_stats(handle) -> {connected, subscriptions, messages_in, messages_out}
 
 ## Phase 3: GraphQL Server
 
+**Status: ✅ implemented** — `internal/server/graphql.go` (custom executor on gqlparser AST), `internal/bindings/graphql.go` + `graphql_types.go` (shared interface), wired in `SetupServe`; new `serve --allow-net` flag also gates GraphQL (uses same network egress permission as MQTT). Dependency `github.com/graph-gophers/graphql-go` + `github.com/vektah/gqlparser/v2` added. Tests: bindings-level fake schema test, server hub + full e2e against in-process GraphQL endpoint.
+
 *Schema-first, Lua table, `graphql-go/graphql`*
 
 ### API
@@ -482,14 +484,14 @@ golang.org/x/crypto v0.20.0
 
 ## File Summary
 
-### New Files (18)
+### New Files (19)
 ```
+internal/server/graphql.go
+internal/bindings/graphql.go
 internal/server/mqtt.go
 internal/server/mqtt_hook_test.go
 internal/bindings/mqtt.go
 internal/bindings/mqtt_types.go        (shared MQTTHub interface — wasm-safe)
-internal/server/graphql.go
-internal/bindings/graphql.go
 internal/server/soap.go
 internal/bindings/soap_server.go
 internal/server/sftp.go

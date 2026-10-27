@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/yuin/gopher-lua"
 
 	"kalua/internal/bindings"
 	"kalua/internal/host"
@@ -63,6 +64,7 @@ type Server struct {
 	wsHub         *WSHub
 	tcpHub        *TCPHub
 	mqttHub       *MQTTHub
+	graphqlServer *GraphQLServer
 	httpStats     *bindings.HTTPStats
 	klog          *klog.DB
 	workers       []*Worker
@@ -106,15 +108,16 @@ func NewServer(cfg Config) *Server {
 	mqttHub := NewMQTTHub()
 
 	s := &Server{
-		cfg:       cfg,
-		shared:    shared,
-		wsHub:     wsHub,
-		tcpHub:    tcpHub,
-		mqttHub:   mqttHub,
-		httpStats: &bindings.HTTPStats{},
-		workerCh:  workerCh,
-		stopCh:    make(chan struct{}),
-		readyCh:   make(chan struct{}),
+		cfg:           cfg,
+		shared:        shared,
+		wsHub:         wsHub,
+		tcpHub:        tcpHub,
+		mqttHub:       mqttHub,
+		graphqlServer: newGraphQLServer(),
+		httpStats:     &bindings.HTTPStats{},
+		workerCh:      workerCh,
+		stopCh:        make(chan struct{}),
+		readyCh:       make(chan struct{}),
 	}
 
 	// Phase 8: open the structured-log sink when --log-sqlite is set. A failed
@@ -275,6 +278,38 @@ func (s *Server) startWorkers(ctx context.Context) error {
 	for _, w := range workers {
 		s.workerCh <- w
 	}
+
+	// Build the GraphQL schema from k.graphql_schema if defined.
+	// This runs on the first worker before init().
+	if len(workers) > 0 {
+		if err := s.graphqlServer.BuildSchema(workers[0].L); err != nil {
+			return fmt.Errorf("GraphQL schema build failed: %w", err)
+		}
+
+		// Set the context function if k.graphql_context was defined.
+		// The function is stored as _graphql_context_fn in the worker's Lua state.
+		if fn := workers[0].L.GetGlobal("_graphql_context_fn"); fn != lua.LNil {
+			if fn, ok := fn.(*lua.LFunction); ok {
+				s.graphqlServer.SetContextFn(func(req *HTTPRequest) map[string]any {
+					// Create a Lua state to call the context function
+					L := lua.NewState()
+					defer L.Close()
+					L.Push(fn)
+					L.Push(httpReqToLuaTable(workers[0].L, req))
+					if err := L.PCall(1, 1, nil); err != nil {
+						return nil
+					}
+					ret := L.Get(-1)
+					L.SetTop(0)
+					if tbl, ok := ret.(*lua.LTable); ok {
+						return luaTableToMap(tbl)
+					}
+					return nil
+				})
+			}
+		}
+	}
+
 	// Wire the MQTT inbound pump to the (new) worker pool.
 	s.mqttHub.SetDeliver(func(msg bindings.MQTTMessage) {
 		worker, release := s.leaseWorker()
@@ -308,6 +343,9 @@ func (s *Server) startHTTP(ctx context.Context) error {
 
 	// WebSocket upgrade endpoint
 	mux.HandleFunc("/ws", s.handleWSUpgrade)
+
+	// GraphQL endpoint
+	mux.HandleFunc("/graphql", s.graphqlServer.GraphQLRequestHandler)
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
 
@@ -816,4 +854,83 @@ func (s *Server) WithTLS(cfg TLSConfig) error {
 		s.httpServer.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 	}
 	return nil
+}
+
+// httpReqToLuaTable converts an HTTPRequest to a Lua table.
+func httpReqToLuaTable(L *lua.LState, req *HTTPRequest) *lua.LTable {
+	tbl := L.NewTable()
+	tbl.RawSetString("method", lua.LString(req.Method))
+	tbl.RawSetString("path", lua.LString(req.Path))
+	tbl.RawSetString("query_raw", lua.LString(req.Query))
+	// Note: queryValuesTable is not available here, so we skip the parsed query
+	tbl.RawSetString("body", lua.LString(req.Body))
+	tbl.RawSetString("remote_addr", lua.LString(req.RemoteAddr))
+	tbl.RawSetString("tls", lua.LBool(req.TLS))
+
+	headersTable := L.NewTable()
+	for k, v := range req.Headers {
+		headersTable.RawSetString(k, lua.LString(v))
+	}
+	tbl.RawSetString("headers", headersTable)
+	return tbl
+}
+
+// toLuaTable converts a Go value to a Lua value using the given Lua state.
+func toLuaTable(L *lua.LState, val any) lua.LValue {
+	switch v := val.(type) {
+	case string:
+		return lua.LString(v)
+	case int:
+		return lua.LNumber(v)
+	case int64:
+		return lua.LNumber(v)
+	case float64:
+		return lua.LNumber(v)
+	case bool:
+		return lua.LBool(v)
+	case map[string]any:
+		tbl := L.NewTable()
+		for k, v := range v {
+			tbl.RawSetString(k, toLuaTable(L, v))
+		}
+		return tbl
+	case []any:
+		tbl := L.NewTable()
+		for i, v := range v {
+			tbl.RawSetInt(i+1, toLuaTable(L, v))
+		}
+		return tbl
+	case nil:
+		return lua.LNil
+	default:
+		return lua.LString(fmt.Sprintf("%v", v))
+	}
+}
+
+// luaTableToMap converts a Lua table to a Go map.
+func luaTableToMap(tbl *lua.LTable) map[string]any {
+	result := make(map[string]any)
+	tbl.ForEach(func(k, v lua.LValue) {
+		key := k.String()
+		result[key] = luaValueToGo(v)
+	})
+	return result
+}
+
+// luaValueToGo converts a Lua value to a Go value.
+func luaValueToGo(v lua.LValue) any {
+	switch v.Type() {
+	case lua.LTString:
+		return v.String()
+	case lua.LTNumber:
+		return float64(v.(lua.LNumber))
+	case lua.LTBool:
+		return bool(v.(lua.LBool))
+	case lua.LTTable:
+		return luaTableToMap(v.(*lua.LTable))
+	case lua.LTNil:
+		return nil
+	default:
+		return v.String()
+	}
 }
