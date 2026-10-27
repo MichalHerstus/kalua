@@ -55,6 +55,10 @@ type Config struct {
 	// AllowNet gates outbound MQTT client connections (Phase 2 security).
 	// k.mqtt_connect refuses when false.
 	AllowNet bool
+
+	// SOAPStats accumulates serve-mode SOAP metrics readable from k.soap_stats().
+	// The server increments it per request; bindings only read it.
+	SOAPStats *bindings.SOAPStats
 }
 
 // Server is the KALUA serve mode server with worker pool.
@@ -65,6 +69,7 @@ type Server struct {
 	tcpHub        *TCPHub
 	mqttHub       *MQTTHub
 	graphqlServer *GraphQLServer
+	soapServer    *SOAPServer
 	httpStats     *bindings.HTTPStats
 	klog          *klog.DB
 	workers       []*Worker
@@ -114,11 +119,13 @@ func NewServer(cfg Config) *Server {
 		tcpHub:        tcpHub,
 		mqttHub:       mqttHub,
 		graphqlServer: newGraphQLServer(),
+		soapServer:    newSOAPServer(),
 		httpStats:     &bindings.HTTPStats{},
 		workerCh:      workerCh,
 		stopCh:        make(chan struct{}),
 		readyCh:       make(chan struct{}),
 	}
+	s.cfg.SOAPStats = &bindings.SOAPStats{}
 
 	// Phase 8: open the structured-log sink when --log-sqlite is set. A failed
 	// open aborts startup (bad permissions, unusable path) rather than
@@ -286,6 +293,11 @@ func (s *Server) startWorkers(ctx context.Context) error {
 			return fmt.Errorf("GraphQL schema build failed: %w", err)
 		}
 
+		// Build the SOAP operations from k.soap_operations if defined.
+		if err := s.soapServer.BuildOperations(workers[0].L); err != nil {
+			return fmt.Errorf("SOAP operations build failed: %w", err)
+		}
+
 		// Set the context function if k.graphql_context was defined.
 		// The function is stored as _graphql_context_fn in the worker's Lua state.
 		if fn := workers[0].L.GetGlobal("_graphql_context_fn"); fn != lua.LNil {
@@ -346,6 +358,9 @@ func (s *Server) startHTTP(ctx context.Context) error {
 
 	// GraphQL endpoint
 	mux.HandleFunc("/graphql", s.graphqlServer.GraphQLRequestHandler)
+
+	// SOAP endpoint
+	mux.HandleFunc("/soap", s.soapServer.SOAPRequestHandler)
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
 
@@ -716,6 +731,7 @@ func (s *Server) buildWorkers(count int) ([]*Worker, error) {
 		LogDB:       s.klog,
 		MQTT:        s.mqttHub,
 		AllowNet:    s.cfg.AllowNet,
+		SOAPStats:   s.cfg.SOAPStats,
 	}
 	var workers []*Worker
 	for i := 0; i < count; i++ {

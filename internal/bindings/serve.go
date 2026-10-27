@@ -149,6 +149,7 @@ func SetupServe(L *lua.LState, app *vm.App, opts Options, shared SharedStore, ws
 	registerServeFlow(e)
 	registerServeHTTP(e) // k.http_request (blocking, no session)
 	registerMQTT(e, opts.MQTT) // Phase 2: k.mqtt_* client (serve-communication-plan.md §2)
+	registerSOAPServer(e, opts) // Phase 4: k.soap_operations, k.soap_fault, k.soap_stats (serve-communication-plan.md §4)
 
 	// Action set trio (assign/set/exec) — works in serve mode for headless logic.
 	registerAssignSetExec(e)

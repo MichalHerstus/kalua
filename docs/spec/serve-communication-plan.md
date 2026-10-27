@@ -180,7 +180,7 @@ k.graphql_stats() -> {queries_total, mutations_total, errors_total, avg_latency_
 
 ## Phase 4: SOAP Server
 
-*Raw envelope, custom lightweight parser*
+**Status: ✅ implemented** — `internal/server/soap.go` (custom lightweight parser), `internal/bindings/soap_server.go` (reads `k.soap_operations`), wired in `SetupServe`. Tests: server e2e with real HTTP POST. No new deps (stdlib `encoding/xml`).
 
 ### API
 

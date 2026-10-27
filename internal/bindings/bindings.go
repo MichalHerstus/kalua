@@ -80,6 +80,10 @@ type Options struct {
 	// AllowNet gates outbound MQTT client connections (serve-communication
 	// plan Phase 2 security). k.mqtt_connect refuses when false.
 	AllowNet bool
+
+	// SOAPStats accumulates serve-mode SOAP metrics readable from k.soap_stats().
+	// The server increments it per request; bindings only read it.
+	SOAPStats *SOAPStats
 }
 
 // DefaultMaxFileSize bounds k.file_load/k.json_load reads unless Options
