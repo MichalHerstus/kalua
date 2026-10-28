@@ -295,11 +295,47 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessionsMu.Unlock()
 
-	// Upgrade to WebSocket
-	originPatterns := []string{"http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"}
-	if !isLoopbackHost(s.host) {
-		originPatterns = []string{"*"}
+	// Auth token validation (LAN security)
+	if s.opts.AuthToken != "" {
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			token = r.Header.Get("X-Kalua-Token")
+		}
+		if token != s.opts.AuthToken {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `<!DOCTYPE html><html><body><h1>401 Unauthorized</h1><p>Invalid or missing token.</p></body></html>`)
+			return
+		}
 	}
+
+	// Detect WebSocket upgrade request (has "Upgrade: websocket" header)
+	isWSUpgrade := r.Header.Get("Upgrade") == "websocket"
+	if !isWSUpgrade {
+		// Non-WebSocket request (e.g., fetch check from client) - just return OK if auth passed
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+		return
+	}
+
+	// Build WebSocket origin patterns (LAN security)
+	// Default: allow localhost. When bound to specific IP, allow that host:port.
+	// When bound to 0.0.0.0/::, only localhost by default; use --allow-origin for LAN.
+	originPatterns := []string{"http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"}
+	host := s.host
+	if host != "0.0.0.0" && host != "::" && !isLoopbackHost(host) {
+		// Bound to a specific non-loopback IP - allow that host:port
+		originPatterns = []string{
+			fmt.Sprintf("http://%s:*", host),
+			fmt.Sprintf("http://%s:%d", host, s.port),
+		}
+	}
+	// Add explicit --allow-origin patterns
+	for _, o := range s.opts.AllowOrigin {
+		originPatterns = append(originPatterns, o)
+	}
+
+	// Upgrade to WebSocket
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: originPatterns,
 	})

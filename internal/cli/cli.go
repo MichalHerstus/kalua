@@ -122,23 +122,26 @@ func runCmd(args []string) int {
 	fs.SetOutput(os.Stderr)
 
 	var (
-		hostFlag     = fs.String("host", "127.0.0.1", "Host to bind to")
-		port         = fs.Int("port", 9000, "HTTP port (default 9000)")
-		noBrowser    = fs.Bool("no-browser", false, "Do not open browser")
-		sessionLimit = fs.Int("session-limit", 8, "Max concurrent browser tabs")
-		verbose      = fs.Bool("v", false, "Verbose logging")
-		testMode     = fs.Bool("test", false, "Run in test mode (headless, no server)")
-		jsonOutput   = fs.Bool("json", false, "Emit the headless result as JSON (with --test)")
-		replOnError  = fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
-		debugMode    = fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
-		watch        = fs.Bool("watch", false, "Reload the app automatically when the script changes on disk")
-		iniFlag      = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
-		aiBaseURL    = fs.String("ai-base-url", "", "AI base URL (overrides KALUA_AI_BASE_URL)")
-		aiModel      = fs.String("ai-model", "", "AI model (overrides KALUA_AI_MODEL)")
-		aiKeyEnv     = fs.String("ai-api-key-env", "KALUA_AI_API_KEY", "Env var holding the AI API key")
-		dbFlag       = multiFlag{}
-		argFlag      = multiFlag{}
-		allowFSFlag  = multiFlag{}
+		hostFlag      = fs.String("host", "127.0.0.1", "Host to bind to")
+		port          = fs.Int("port", 9000, "HTTP port (default 9000)")
+		noBrowser     = fs.Bool("no-browser", false, "Do not open browser")
+		sessionLimit  = fs.Int("session-limit", 8, "Max concurrent browser tabs")
+		verbose       = fs.Bool("v", false, "Verbose logging")
+		testMode      = fs.Bool("test", false, "Run in test mode (headless, no server)")
+		jsonOutput    = fs.Bool("json", false, "Emit the headless result as JSON (with --test)")
+		replOnError   = fs.Bool("repl-on-error", false, "Drop into REPL on runtime error")
+		debugMode     = fs.Bool("debug", false, "Enable EmmyLua debugger (Tier 2, not yet implemented)")
+		watch         = fs.Bool("watch", false, "Reload the app automatically when the script changes on disk")
+		iniFlag       = fs.String("ini", "", "Path to KALUA.INI (default ./KALUA.INI or $KALUA_INI)")
+		aiBaseURL     = fs.String("ai-base-url", "", "AI base URL (overrides KALUA_AI_BASE_URL)")
+		aiModel       = fs.String("ai-model", "", "AI model (overrides KALUA_AI_MODEL)")
+		aiKeyEnv      = fs.String("ai-api-key-env", "KALUA_AI_API_KEY", "Env var holding the AI API key")
+		dbFlag        = multiFlag{}
+		argFlag       = multiFlag{}
+		allowFSFlag   = multiFlag{}
+		allowOriginFlag = multiFlag{}
+		authToken     = fs.String("auth-token", "", "Shared token for WebSocket auth (query param or X-Kalua-Token header)")
+		authTokenFile = fs.String("auth-token-file", "", "Path to file containing auth token (supports rotation)")
 	)
 	fs.Var(&dbFlag, "db", "Pre-register DB connection: NAME=DSN (repeatable)")
 	fs.Var(&dbFlag, "d", "Shorthand for --db")
@@ -146,6 +149,7 @@ func runCmd(args []string) int {
 	fs.Var(&argFlag, "a", "Shorthand for --arg")
 	fs.Var(&allowFSFlag, "allow-fs", "Allow filesystem access outside cwd (repeatable)")
 	fs.Var(&allowFSFlag, "f", "Shorthand for --allow-fs")
+	fs.Var(&allowOriginFlag, "allow-origin", "Additional Origin pattern to accept for WebSocket (repeatable, e.g. http://192.168.1.*)")
 	fs.IntVar(port, "p", 9000, "Shorthand for --port")
 	fs.BoolVar(noBrowser, "n", false, "Shorthand for --no-browser")
 	fs.IntVar(sessionLimit, "l", 8, "Shorthand for --session-limit")
@@ -181,6 +185,20 @@ func runCmd(args []string) int {
 	})
 	aiCfg := resolveAI(ini, aiOptions{BaseURL: *aiBaseURL, Model: *aiModel, APIKey: aiKeyOverride})
 
+	// Resolve auth token (--auth-token-file takes precedence over --auth-token when set).
+	// The file is read once at startup; for rotation, restart the server.
+	var authTokenValue string
+	if *authTokenFile != "" {
+		data, err := os.ReadFile(*authTokenFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "run: cannot read --auth-token-file %s: %v\n", *authTokenFile, err)
+			return int(host.ExitIOError)
+		}
+		authTokenValue = strings.TrimSpace(string(data))
+	} else {
+		authTokenValue = *authToken
+	}
+
 	if *testMode {
 		// Run in headless mode for tests
 		cfg := host.RunConfig{
@@ -211,11 +229,13 @@ func runCmd(args []string) int {
 	}
 
 	server := web.NewServer(*hostFlag, *port, *sessionLimit,
-		bindings.Options{AllowFS: allowFSFlag.values, Verbose: *verbose, AIConfig: &common.AIConfig{
-			BaseURL: aiCfg.BaseURL,
-			APIKey:  aiCfg.APIKey,
-			Model:   aiCfg.Model,
-		}}, host.NewLogger(*verbose))
+		bindings.Options{
+			AllowFS:     allowFSFlag.values,
+			Verbose:     *verbose,
+			AIConfig:    &common.AIConfig{BaseURL: aiCfg.BaseURL, APIKey: aiCfg.APIKey, Model: aiCfg.Model},
+			AllowOrigin: allowOriginFlag.values,
+			AuthToken:   authTokenValue,
+		}, host.NewLogger(*verbose))
 
 	// SIGHUP triggers a hot reload (same path as the --watch file watcher).
 	hup := make(chan os.Signal, 1)
@@ -779,6 +799,9 @@ func addRunFlags(fs *flag.FlagSet) {
 	fs.Var(&multiFlag{}, "a", "Shorthand for --arg")
 	fs.Var(&multiFlag{}, "allow-fs", "Allow filesystem access outside cwd (repeatable)")
 	fs.Var(&multiFlag{}, "f", "Shorthand for --allow-fs")
+	fs.Var(&multiFlag{}, "allow-origin", "Additional Origin pattern to accept for WebSocket (repeatable, e.g. http://192.168.1.*)")
+	fs.String("auth-token", "", "Shared token for WebSocket auth (query param or X-Kalua-Token header)")
+	fs.String("auth-token-file", "", "Path to file containing auth token (supports rotation)")
 }
 
 // hasHelpFlag reports whether -h or --help appears anywhere in args.

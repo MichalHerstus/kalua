@@ -84,6 +84,19 @@ type Options struct {
 	// SOAPStats accumulates serve-mode SOAP metrics readable from k.soap_stats().
 	// The server increments it per request; bindings only read it.
 	SOAPStats *SOAPStats
+
+	// AllowOrigin lists additional Origin patterns to accept for WebSocket
+	// connections in run mode (e.g., "http://192.168.1.*"). Patterns support
+	// glob-style * in host and port. When binding to a specific IP (not
+	// 0.0.0.0/::), that host:port is automatically allowed. When binding to
+	// 0.0.0.0/::, only localhost is allowed by default; use this to add LAN origins.
+	AllowOrigin []string
+
+	// AuthToken is an optional shared secret for WebSocket authentication in
+	// run mode. When non-empty, the client must provide the token via the
+	// "token" query parameter or "X-Kalua-Token" header. Use AuthTokenFile
+	// to read the token from a file (supports rotation).
+	AuthToken string
 }
 
 // DefaultMaxFileSize bounds k.file_load/k.json_load reads unless Options

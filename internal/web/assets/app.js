@@ -14,76 +14,117 @@
         // Initialize WebSocket transport
         initWebSocket: function() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const url = `${protocol}//${window.location.host}/ws/ui?script=${encodeURIComponent(getScriptParam())}`;
+            
+            // Get auth token from URL param or localStorage
+            const urlParams = new URLSearchParams(window.location.search);
+            let token = urlParams.get('token');
+            if (!token) {
+                token = localStorage.getItem('kalua_auth_token');
+            }
+            
+            // Build WebSocket URL with token if present
+            let url = `${protocol}//${window.location.host}/ws/ui?script=${encodeURIComponent(getScriptParam())}`;
+            if (token) {
+                url += `&token=${encodeURIComponent(token)}`;
+            }
 
-            const ws = new WebSocket(url);
-            let pingTimer = null;
-            let reconnectTimer = null;
+            // Check if auth is required by doing a quick fetch first (only if no token)
+            if (!token) {
+                fetch(`${protocol}//${window.location.host}/ws/ui?script=${encodeURIComponent(getScriptParam())}`, { method: 'GET' })
+                    .then(function(resp) {
+                        if (resp.status === 401) {
+                            // Auth required, prompt for token
+                            promptAuthToken();
+                            return;
+                        }
+                        // No auth required or other status, proceed with WebSocket
+                        connectWebSocket(url);
+                    })
+                    .catch(function() {
+                        // Fetch failed, try WebSocket anyway
+                        connectWebSocket(url);
+                    });
+            } else {
+                connectWebSocket(url);
+            }
 
-            const transport = {
-                send: function(msg) {
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify(msg));
+            function connectWebSocket(url) {
+                const ws = new WebSocket(url);
+                let pingTimer = null;
+                let reconnectTimer = null;
+
+                const transport = {
+                    send: function(msg) {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify(msg));
+                        }
+                    },
+                    close: function() {
+                        if (pingTimer) clearInterval(pingTimer);
+                        if (reconnectTimer) clearTimeout(reconnectTimer);
+                        ws.close(1000);
                     }
-                },
-                close: function() {
-                    if (pingTimer) clearInterval(pingTimer);
+                };
+
+                ws.onopen = function() {
+                    console.log('[KALUA] WebSocket connected');
                     if (reconnectTimer) clearTimeout(reconnectTimer);
-                    ws.close(1000);
-                }
-            };
-
-            ws.onopen = function() {
-                console.log('[KALUA] WebSocket connected');
-                if (reconnectTimer) clearTimeout(reconnectTimer);
-                sendClientInfo();
-                pingTimer = setInterval(function() {
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        transport.send({ type: 'ping' });
-                    }
-                }, 30000);
-            };
-
-            transport.startPing = function() {
-                if (!pingTimer) {
+                    sendClientInfo();
                     pingTimer = setInterval(function() {
                         if (ws && ws.readyState === WebSocket.OPEN) {
                             transport.send({ type: 'ping' });
                         }
                     }, 30000);
-                }
-            };
+                };
 
-            transport.stopPing = function() {
-                if (pingTimer) {
-                    clearInterval(pingTimer);
-                    pingTimer = null;
-                }
-            };
+                transport.startPing = function() {
+                    if (!pingTimer) {
+                        pingTimer = setInterval(function() {
+                            if (ws && ws.readyState === WebSocket.OPEN) {
+                                transport.send({ type: 'ping' });
+                            }
+                        }, 30000);
+                    }
+                };
 
-            ws.onmessage = function(event) {
-                try {
-                    handleMessage(JSON.parse(event.data));
-                } catch (e) {
-                    console.error('[KALUA] Failed to parse message:', e);
-                }
-            };
+                transport.stopPing = function() {
+                    if (pingTimer) {
+                        clearInterval(pingTimer);
+                        pingTimer = null;
+                    }
+                };
 
-            ws.onclose = function(event) {
-                console.log('[KALUA] WebSocket closed:', event.code, event.reason);
-                if (pingTimer) clearInterval(pingTimer);
-                if (event.code !== 1000) {
-                    reconnectTimer = setTimeout(function() {
-                        Transport.initWebSocket();
-                    }, 2000);
-                }
-            };
+                ws.onmessage = function(event) {
+                    try {
+                        handleMessage(JSON.parse(event.data));
+                    } catch (e) {
+                        console.error('[KALUA] Failed to parse message:', e);
+                    }
+                };
 
-            ws.onerror = function(error) {
-                console.error('[KALUA] WebSocket error:', error);
-            };
+                ws.onclose = function(event) {
+                    console.log('[KALUA] WebSocket closed:', event.code, event.reason);
+                    if (pingTimer) clearInterval(pingTimer);
+                    if (event.code !== 1000) {
+                        // Don't reconnect on auth failure (4001) or policy violation (4003)
+                        if (event.code !== 4001 && event.code !== 4003) {
+                            reconnectTimer = setTimeout(function() {
+                                Transport.initWebSocket();
+                            }, 2000);
+                        } else if (event.code === 4001) {
+                            // Auth failed - clear stored token and prompt again
+                            localStorage.removeItem('kalua_auth_token');
+                            promptAuthToken();
+                        }
+                    }
+                };
 
-            Transport.current = transport;
+                ws.onerror = function(error) {
+                    console.error('[KALUA] WebSocket error:', error);
+                };
+
+                Transport.current = transport;
+            }
         },
 
         // Initialize WASM transport
@@ -155,6 +196,51 @@
             console.log('[KALUA] Initializing WebSocket transport');
             Transport.initWebSocket();
         }
+    }
+
+    // Prompt for auth token and store in localStorage
+    function promptAuthToken() {
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 10000;
+        `;
+        modal.innerHTML = `
+            <div style="background: white; padding: 30px; border-radius: 8px; max-width: 400px; width: 90%; box-shadow: 0 4px 20px rgba(0,0,0,0.2);">
+                <h2 style="margin-top: 0; color: #333;">Authentication Required</h2>
+                <p style="color: #666; margin-bottom: 20px;">This KALUA application requires an authentication token.</p>
+                <input type="password" id="kalua-token-input" placeholder="Enter token" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; box-sizing: border-box; margin-bottom: 16px;">
+                <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                    <button id="kalua-token-cancel" style="padding: 10px 20px; border: 1px solid #ddd; background: white; border-radius: 4px; cursor: pointer;">Cancel</button>
+                    <button id="kalua-token-submit" style="padding: 10px 20px; border: none; background: #4a90d9; color: white; border-radius: 4px; cursor: pointer;">Connect</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        const input = document.getElementById('kalua-token-input');
+        const submitBtn = document.getElementById('kalua-token-submit');
+        const cancelBtn = document.getElementById('kalua-token-cancel');
+        
+        input.focus();
+        
+        const submit = function() {
+            const token = input.value.trim();
+            if (token) {
+                localStorage.setItem('kalua_auth_token', token);
+                document.body.removeChild(modal);
+                window.location.reload();
+            }
+        };
+        
+        submitBtn.addEventListener('click', submit);
+        cancelBtn.addEventListener('click', function() {
+            document.body.removeChild(modal);
+        });
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') submit();
+            if (e.key === 'Escape') document.body.removeChild(modal);
+        });
     }
 
     function getScriptParam() {

@@ -189,9 +189,117 @@ KALUA run <app.lua> [--host 127.0.0.1] [--port 9000] [--no-browser] [--session-l
 | `--db NAME=DSN` | `-d` | | Pre-register a named connection, usable as `k.connect_db("#NAME")` |
 | `--arg K=V` | `-a` | | Seed the `ARGS` global table |
 | `--allow-fs PATH` | `-f` | | Allow script file access outside the working directory (repeatable) |
+| `--allow-origin PATTERN` | | | Additional Origin pattern to accept for WebSocket (repeatable, e.g. `http://192.168.1.*`) |
+| `--auth-token TOKEN` | | | Shared token for WebSocket auth; client must send via `?token=` query param or `X-Kalua-Token` header |
+| `--auth-token-file PATH` | | | Path to file containing auth token (read once at startup; supports rotation via file update + restart) |
 | `--ini PATH` | | | Read persistent flag values from a `KALUA.INI` file (see §3.7) |
 
-> **LAN access:** Use `--host 0.0.0.0` to make the app reachable from other devices on the local network (e.g. `http://<your-lan-ip>:9000`). This requires your firewall to allow incoming connections on the port. Only use on trusted networks; the WebSocket origin check is relaxed when binding to a non-loopback address.
+> **LAN access:** Use `--host 0.0.0.0` to make the app reachable from other devices on the local network (e.g. `http://<your-lan-ip>:9000`). This requires your firewall to allow incoming connections on the port. **By default, when binding to `0.0.0.0`, only `localhost` origins are accepted for WebSocket connections.** Use `--allow-origin "http://192.168.1.*"` to allow LAN origins. For multi-user LAN deployments, use `--auth-token` or `--auth-token-file` to require a shared secret. See **§3.8 Secure LAN Deployment** for a complete guide.
+
+## 3.8 Secure LAN Deployment
+
+When running `KALUA run` on a local network (not behind a reverse proxy), you should enable both **origin restriction** and **token authentication** to prevent unauthorized access.
+
+### 3.8.1 Threat model
+
+- **Trusted network**: Home lab, office LAN, isolated VLAN — no public internet exposure.
+- **Attacker**: Compromised device on same LAN, or malicious insider with network access.
+- **Assets**: App data, script logic, host filesystem (via `k.file_*`), DB connections, outbound network calls.
+- **Assumption**: For internet exposure, always use a reverse proxy (Caddy/nginx) with TLS termination, auth, and rate limiting.
+
+### 3.8.2 Minimal secure configuration
+
+**Option A: Direct LAN with token auth (simplest)**
+
+```bash
+# Generate a random token
+TOKEN=$(openssl rand -hex 16)
+
+KALUA run app.lua --host 0.0.0.0 --port 9000 \
+    --auth-token "$TOKEN" \
+    --allow-origin "http://192.168.1.*"
+```
+
+- `--auth-token`: Shared secret. Clients must provide it via `?token=` in the URL or `X-Kalua-Token` header. On first visit, the browser prompts for the token and stores it in `localStorage`.
+- `--allow-origin`: Glob pattern for allowed WebSocket origins. Without this, only `localhost` is accepted even when binding to `0.0.0.0`.
+
+**Option B: Token from file (supports rotation)**
+
+```bash
+echo "my-secret-token" > /etc/kalua/token.txt
+chmod 600 /etc/kalua/token.txt
+
+KALUA run app.lua --host 0.0.0.0 --port 9000 \
+    --auth-token-file /etc/kalua/token.txt \
+    --allow-origin "http://192.168.1.*"
+```
+
+Update the file to rotate the token; restart KALUA to pick up the new value.
+
+**Option C: Bind to specific LAN IP (no `--allow-origin` needed)**
+
+```bash
+KALUA run app.lua --host 192.168.1.50 --port 9000 \
+    --auth-token "$TOKEN"
+```
+
+When binding to a specific IP (not `0.0.0.0`), that host:port is automatically allowed. `--allow-origin` is only needed for `0.0.0.0`/`::` bindings.
+
+### 3.8.3 Reverse proxy (recommended for production)
+
+Use Caddy for automatic HTTPS and basic auth:
+
+```caddy
+# Caddyfile
+kalua.local {
+    reverse_proxy 192.168.1.50:9000
+    basicauth {
+        alice $2a$14$...  # caddy hash-password
+    }
+}
+```
+
+With a reverse proxy:
+- TLS is handled by Caddy (automatic Let's Encrypt or self-signed for LAN)
+- Auth is handled by Caddy (basic auth, or integrate with OAuth/OIDC)
+- KALUA can bind to `127.0.0.1` only (`--host 127.0.0.1`), no LAN exposure
+- No need for `--auth-token` or `--allow-origin` in KALUA
+
+### 3.8.4 INI file configuration
+
+Persist LAN flags in `KALUA.INI`:
+
+```ini
+[RUN]
+host = 0.0.0.0
+port = 9000
+allow-origin = http://192.168.1.*
+auth-token-file = /etc/kalua/token.txt
+```
+
+**Important**: `chmod 600 KALUA.INI` if it contains secrets (tokens, DSNs with passwords).
+
+### 3.8.5 Firewall
+
+Prefer binding to a specific LAN IP over `0.0.0.0`:
+
+```bash
+# Good: only accessible on the LAN interface
+KALUA run app.lua --host 192.168.1.50 --port 9000
+
+# Less ideal: accessible on all interfaces, requires --allow-origin
+KALUA run app.lua --host 0.0.0.0 --port 9000 --allow-origin "http://192.168.1.*"
+```
+
+### 3.8.6 Security checklist for LAN
+
+- [ ] Bind to specific LAN IP (`--host 192.168.1.x`) instead of `0.0.0.0` when possible
+- [ ] Use `--auth-token` or `--auth-token-file` for any multi-user LAN deployment
+- [ ] Use `--allow-origin` with a specific subnet pattern (not `*`)
+- [ ] Set `chmod 600` on `KALUA.INI` and any `--auth-token-file`
+- [ ] Use a reverse proxy with TLS + auth for any internet-facing deployment
+- [ ] Keep `klog.db` and `.kalua.params.json` protected (enforced by DenyFS, but verify filesystem perms)
+- [ ] Don't use `--allow-fs /` (disables filesystem sandbox)
 
 ## 3.2 `serve` — headless API
 

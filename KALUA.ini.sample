@@ -22,6 +22,9 @@ verbose       = 1            ; maps to the -v flag
 ; db          = main=sqlite://app.db   ; repeat the key for more connections
 ; arg         = env=dev
 ; allow-fs    = ./data
+; LAN security (see docs/USER_GUIDE.md §3.8)
+; allow-origin = http://192.168.1.*     ; additional Origin patterns (repeatable)
+; auth-token-file = /etc/kalua/token.txt ; auth token from file (supports rotation)
 
 [SERVE]
 host    = 127.0.0.1
